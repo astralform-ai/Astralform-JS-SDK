@@ -177,7 +177,7 @@ export class ChatSession {
     this.abortController = new AbortController();
 
     try {
-      await this.consumeStream(request, request.conversation_id ?? "");
+      await this.consumeJobStream(request);
     } catch (err) {
       this.emit({
         type: "error",
@@ -190,30 +190,30 @@ export class ChatSession {
     }
   }
 
-  /** Maximum number of tool-use continuation rounds to prevent infinite loops */
-  private static readonly MAX_TOOL_ROUNDS = 20;
+  /** Last received sequence number for resumable reconnection */
+  private lastSeq = -1;
 
-  private async consumeStream(
-    request: ChatStreamRequest,
-    conversationId: string,
-    toolRoundDepth = 0,
-  ): Promise<void> {
-    if (toolRoundDepth >= ChatSession.MAX_TOOL_ROUNDS) {
-      this.emit({
-        type: "error",
-        error: new AstralformError(
-          `Tool execution exceeded maximum of ${ChatSession.MAX_TOOL_ROUNDS} rounds`,
-          "max_tool_rounds_exceeded",
-        ),
-      });
-      return;
+  /** Current job ID for cancellation */
+  private currentJobId: string | null = null;
+
+  private async consumeJobStream(request: ChatStreamRequest): Promise<void> {
+    // Step 1: Create job
+    const job = await this.client.createJob(request);
+    this.currentJobId = job.job_id;
+
+    let conversationId = job.conversation_id;
+    if (!this.conversationId) {
+      this.conversationId = conversationId;
     }
-    let messageId = "";
-    let pendingClientToolCalls: ToolCallRequest[] = [];
+
+    const messageId = job.message_id;
+    this.lastSeq = -1;
     let stopTitle: string | undefined;
 
-    const stream = this.client.chatStream(
-      request,
+    // Step 2: Stream events
+    const stream = this.client.streamJobEvents(
+      job.job_id,
+      this.lastSeq,
       this.abortController?.signal,
     );
 
@@ -221,22 +221,28 @@ export class ChatSession {
       let parsed: SSEEvent;
       try {
         const data = JSON.parse(raw.data);
-        // Validate that parsed data has a known event type
         if (
           typeof data !== "object" ||
           data === null ||
           typeof data.type !== "string"
         ) {
+          // Track seq even for non-typed events (e.g. ping)
+          if (typeof data?.seq === "number") {
+            this.lastSeq = data.seq;
+          }
           continue;
         }
         parsed = data as SSEEvent;
+        // Track seq from every event
+        if (typeof (data as Record<string, unknown>).seq === "number") {
+          this.lastSeq = (data as Record<string, unknown>).seq as number;
+        }
       } catch {
         continue;
       }
 
       switch (parsed.type) {
         case "message_start":
-          messageId = parsed.message_id;
           conversationId = parsed.conversation_id;
           if (!this.conversationId) {
             this.conversationId = conversationId;
@@ -271,7 +277,13 @@ export class ChatSession {
           };
           this.emit({ type: "tool_call", request: toolCall });
           if (parsed.is_client_tool) {
-            pendingClientToolCalls.push(toolCall);
+            // Execute tool and submit result — job auto-resumes
+            const results = await this.executeClientTools([toolCall]);
+            await this.client.submitToolResult({
+              conversation_id: conversationId,
+              message_id: messageId,
+              tool_results: results,
+            });
           }
           break;
         }
@@ -290,34 +302,7 @@ export class ChatSession {
 
         case "message_stop":
           stopTitle = parsed.title;
-          if (
-            parsed.stop_reason === "tool_use" &&
-            pendingClientToolCalls.length > 0
-          ) {
-            const results = await this.executeClientTools(
-              pendingClientToolCalls,
-            );
-            await this.client.submitToolResult({
-              conversation_id: conversationId,
-              message_id: messageId,
-              tool_results: results,
-            });
-            pendingClientToolCalls = [];
-
-            const continueRequest: ChatStreamRequest = {
-              conversation_id: conversationId,
-              continue_from_message: messageId,
-              mcp_manifest: this.toolRegistry.getManifest(),
-              enabled_mcp: Array.from(this.enabledMcp),
-              enabled_tools: Array.from(this.enabledTools),
-            };
-            await this.consumeStream(
-              continueRequest,
-              conversationId,
-              toolRoundDepth + 1,
-            );
-            return;
-          }
+          // No continuation needed — job handles tool result resumption
           break;
 
         case "error":
@@ -329,6 +314,7 @@ export class ChatSession {
       }
     }
 
+    this.currentJobId = null;
     await this.completeStream(conversationId, messageId, stopTitle);
   }
 
@@ -387,6 +373,11 @@ export class ChatSession {
   }
 
   disconnect(): void {
+    // Cancel the running job if any
+    if (this.currentJobId) {
+      this.client.cancelJob(this.currentJobId).catch(() => {});
+      this.currentJobId = null;
+    }
     this.abortController?.abort();
     this.abortController = null;
     this.isStreaming = false;

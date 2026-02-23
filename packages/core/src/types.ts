@@ -146,6 +146,15 @@ export interface SkillInfo {
   isEnabled: boolean;
 }
 
+// --- Job Types ---
+
+export interface JobCreateResponse {
+  job_id: string;
+  conversation_id: string;
+  message_id: string;
+  status: string;
+}
+
 // --- Request Types ---
 
 export interface ChatStreamRequest {
@@ -213,6 +222,13 @@ export type WebMCPToolHandler = (
 export interface StreamSSEOptions {
   url: string;
   body: ChatStreamRequest;
+  headers: Record<string, string>;
+  signal?: AbortSignal;
+  fetchFn: typeof globalThis.fetch;
+}
+
+export interface StreamJobSSEOptions {
+  url: string;
   headers: Record<string, string>;
   signal?: AbortSignal;
   fetchFn: typeof globalThis.fetch;

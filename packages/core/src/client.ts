@@ -4,13 +4,14 @@ import {
   RateLimitError,
   ServerError,
 } from "./errors.js";
-import { streamSSE } from "./streaming.js";
+import { streamJobSSE, streamSSE } from "./streaming.js";
 import type {
   AgentInfo,
   AstralformConfig,
   ChatStreamEvent,
   ChatStreamRequest,
   Conversation,
+  JobCreateResponse,
   Message,
   PlatformTool,
   ProjectStatus,
@@ -259,8 +260,33 @@ export class AstralformClient {
     await this.post("/v1/tool-result", request);
   }
 
-  // --- Streaming ---
+  // --- Jobs API ---
 
+  async createJob(request: ChatStreamRequest): Promise<JobCreateResponse> {
+    return this.post<JobCreateResponse>("/v1/jobs", request);
+  }
+
+  async *streamJobEvents(
+    jobId: string,
+    afterSeq = -1,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const url = `${this.baseURL}/v1/jobs/${encodeURIComponent(jobId)}/events?after=${afterSeq}`;
+    yield* streamJobSSE({
+      url,
+      headers: this.headers,
+      signal,
+      fetchFn: this.fetchFn,
+    });
+  }
+
+  async cancelJob(jobId: string): Promise<void> {
+    await this.post(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+  }
+
+  // --- Legacy Streaming (deprecated) ---
+
+  /** @deprecated Use createJob() + streamJobEvents() instead */
   async *chatStream(
     request: ChatStreamRequest,
     signal?: AbortSignal,

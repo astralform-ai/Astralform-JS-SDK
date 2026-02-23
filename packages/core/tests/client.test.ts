@@ -153,4 +153,51 @@ describe("AstralformClient", () => {
     expect(parsed.conversation_id).toBe("c1");
     expect(parsed.tool_results[0].tool_name).toBe("mcp_test");
   });
+
+  it("createJob posts to /v1/jobs and returns job response", async () => {
+    let capturedUrl = "";
+    let capturedBody: string | undefined;
+    const mockFetch: typeof globalThis.fetch = async (input, init) => {
+      capturedUrl = typeof input === "string" ? input : (input as Request).url;
+      capturedBody = init?.body as string;
+      return new Response(
+        JSON.stringify({
+          job_id: "job-123",
+          conversation_id: "c1",
+          message_id: "m1",
+          status: "queued",
+        }),
+        { status: 201 },
+      );
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const result = await client.createJob({
+      message: "Hello",
+      conversation_id: "c1",
+    });
+
+    expect(capturedUrl).toContain("/v1/jobs");
+    expect(result.job_id).toBe("job-123");
+    expect(result.conversation_id).toBe("c1");
+    expect(result.status).toBe("queued");
+
+    const body = JSON.parse(capturedBody!);
+    expect(body.message).toBe("Hello");
+  });
+
+  it("cancelJob posts to /v1/jobs/{id}/cancel", async () => {
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      capturedUrl = typeof input === "string" ? input : (input as Request).url;
+      return new Response(JSON.stringify({ status: "cancelled" }), {
+        status: 200,
+      });
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    await client.cancelJob("job-123");
+
+    expect(capturedUrl).toContain("/v1/jobs/job-123/cancel");
+  });
 });

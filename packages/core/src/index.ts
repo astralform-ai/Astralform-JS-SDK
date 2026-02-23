@@ -20,7 +20,7 @@ export {
 export { generateId } from "./utils.js";
 
 // Streaming
-export { streamSSE } from "./streaming.js";
+export { streamSSE, streamJobSSE } from "./streaming.js";
 
 // Types
 export type {
@@ -50,6 +50,8 @@ export type {
   WebMCPContext,
   WebMCPToolHandler,
   StreamSSEOptions,
+  StreamJobSSEOptions,
+  JobCreateResponse,
   ChatStreamEvent,
   SendOptions,
 } from "./types.js";

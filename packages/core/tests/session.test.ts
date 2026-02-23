@@ -46,22 +46,30 @@ describe("ChatSession", () => {
     expect(events.some((e) => e.type === "connected")).toBe(true);
   });
 
-  it("send streams a message and emits events", async () => {
+  it("send creates a job and streams events", async () => {
     const sseData = [
-      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","model_display_name":"GPT-4o"}\n',
+      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","model_display_name":"GPT-4o","seq":0}\n',
       "",
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"},"seq":1}\n',
       "",
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"},"seq":2}\n',
       "",
-      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","title":"Greeting"}\n',
+      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","title":"Greeting","seq":3}\n',
+      "",
+      'event: done\ndata: {"data":"[DONE]","seq":4}\n',
       "",
       "data: [DONE]\n",
       "",
     ].join("\n");
 
     const mockFetch = createSessionMockFetch({
-      "/v1/chat/stream": sseData,
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
       "/v1/project/status": {
         is_ready: true,
         llm_configured: true,
