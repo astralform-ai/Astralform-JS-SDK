@@ -11,6 +11,11 @@ import type {
   PlatformTool,
   ServerMCPTool,
   SendOptions,
+  SubagentState,
+  ToolState,
+  CapsuleOutput,
+  Source,
+  TodoItem,
 } from "@astralform/js";
 import { ChatSession as ChatSessionClass } from "@astralform/js";
 
@@ -37,6 +42,13 @@ export interface UseChatReturn {
   error: Error | null;
   isConnected: boolean;
   activeAgent: string | null;
+  thinkingContent: string;
+  isThinking: boolean;
+  activeSubagents: Map<string, SubagentState>;
+  sources: Source[];
+  capsuleOutputs: CapsuleOutput[];
+  todos: TodoItem[];
+  activeTools: Map<string, ToolState>;
   send: (content: string, options?: SendOptions) => Promise<void>;
   createNewConversation: () => Promise<string>;
   switchConversation: (id: string) => Promise<void>;
@@ -78,6 +90,16 @@ export function useChat(
         case "tool_call":
         case "tool_executing":
         case "tool_completed":
+        case "tool_end":
+        case "thinking_delta":
+        case "thinking_complete":
+        case "subagent_start":
+        case "subagent_update":
+        case "subagent_chunk":
+        case "subagent_end":
+        case "sources":
+        case "capsule_output":
+        case "todo_update":
           sync();
           break;
         case "agent_start":
@@ -181,6 +203,13 @@ export function useChat(
     enabledTools: session.enabledTools,
     enabledMcp: session.enabledMcp,
     modelDisplayName: session.modelDisplayName,
+    thinkingContent: session.thinkingContent,
+    isThinking: session.isThinking,
+    activeSubagents: session.activeSubagents,
+    sources: session.sources,
+    capsuleOutputs: session.capsuleOutputs,
+    todos: session.todos,
+    activeTools: session.activeTools,
     error,
     isConnected,
     activeAgent,

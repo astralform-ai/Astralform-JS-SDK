@@ -5,6 +5,7 @@ import { ToolRegistry } from "./tools.js";
 import type {
   AgentInfo,
   AstralformConfig,
+  CapsuleOutput,
   ChatEvent,
   ChatStreamRequest,
   Conversation,
@@ -14,9 +15,13 @@ import type {
   SendOptions,
   ServerMCPTool,
   SkillInfo,
+  Source,
   SSEEvent,
+  SubagentState,
+  TodoItem,
   ToolCallRequest,
   ToolResult,
+  ToolState,
 } from "./types.js";
 import { generateId } from "./utils.js";
 import { WebMCPBridge } from "./web-mcp.js";
@@ -44,6 +49,15 @@ export class ChatSession {
   enabledTools = new Set<string>();
   enabledMcp = new Set<string>();
   modelDisplayName: string | null = null;
+
+  // New state fields
+  thinkingContent = "";
+  isThinking = false;
+  activeSubagents = new Map<string, SubagentState>();
+  sources: Source[] = [];
+  capsuleOutputs: CapsuleOutput[] = [];
+  todos: TodoItem[] = [];
+  activeTools = new Map<string, ToolState>();
 
   private handlers: Set<ChatEventHandler> = new Set();
   private abortController: AbortController | null = null;
@@ -174,6 +188,13 @@ export class ChatSession {
   private async processStream(request: ChatStreamRequest): Promise<void> {
     this.isStreaming = true;
     this.streamingContent = "";
+    this.thinkingContent = "";
+    this.isThinking = false;
+    this.activeSubagents.clear();
+    this.sources = [];
+    this.capsuleOutputs = [];
+    this.todos = [];
+    this.activeTools.clear();
     this.abortController = new AbortController();
 
     try {
@@ -275,6 +296,14 @@ export class ChatSession {
             arguments: parsed.arguments,
             isClientTool: parsed.is_client_tool,
           };
+          // Track in activeTools
+          this.activeTools.set(parsed.call_id, {
+            toolName: parsed.tool,
+            displayName: parsed.display_name,
+            callId: parsed.call_id,
+            status: parsed.is_client_tool ? "calling" : "executing",
+            isClientTool: parsed.is_client_tool,
+          });
           this.emit({ type: "tool_call", request: toolCall });
           if (parsed.is_client_tool) {
             // Execute tool and submit result — job auto-resumes
@@ -288,16 +317,126 @@ export class ChatSession {
           break;
         }
 
+        case "tool_use_end": {
+          const toolState = this.activeTools.get(parsed.call_id);
+          if (toolState) {
+            toolState.status = "completed";
+          }
+          this.emit({
+            type: "tool_end",
+            callId: parsed.call_id,
+            toolName: parsed.tool,
+          });
+          break;
+        }
+
         case "agent_start":
           this.emit({
             type: "agent_start",
             agentName: parsed.agent_name,
             agentDisplayName: parsed.agent_display_name,
+            avatarUrl: parsed.avatar_url,
           });
           break;
 
         case "agent_end":
           this.emit({ type: "agent_end", agentName: parsed.agent_name });
+          break;
+
+        case "subagent_start":
+          this.activeSubagents.set(parsed.tool_call_id, {
+            agentName: parsed.agent_name,
+            displayName: parsed.display_name,
+            avatarUrl: parsed.avatar_url,
+            description: parsed.description,
+            content: "",
+            isActive: true,
+          });
+          this.emit({
+            type: "subagent_start",
+            agentName: parsed.agent_name,
+            displayName: parsed.display_name,
+            toolCallId: parsed.tool_call_id,
+            avatarUrl: parsed.avatar_url,
+            description: parsed.description,
+          });
+          break;
+
+        case "subagent_update": {
+          const sub = this.activeSubagents.get(parsed.tool_call_id);
+          if (sub) {
+            sub.agentName = parsed.agent_name;
+            sub.displayName = parsed.display_name;
+          }
+          this.emit({
+            type: "subagent_update",
+            agentName: parsed.agent_name,
+            displayName: parsed.display_name,
+            toolCallId: parsed.tool_call_id,
+          });
+          break;
+        }
+
+        case "subagent_content_delta": {
+          const subagent = this.activeSubagents.get(parsed.tool_call_id);
+          if (subagent) {
+            subagent.content += parsed.delta.text;
+          }
+          this.emit({
+            type: "subagent_chunk",
+            agentName: parsed.agent_name,
+            toolCallId: parsed.tool_call_id,
+            text: parsed.delta.text,
+          });
+          break;
+        }
+
+        case "subagent_end": {
+          const sub = this.activeSubagents.get(parsed.tool_call_id);
+          if (sub) {
+            sub.isActive = false;
+          }
+          this.emit({
+            type: "subagent_end",
+            agentName: parsed.agent_name,
+            displayName: parsed.display_name,
+            toolCallId: parsed.tool_call_id,
+          });
+          break;
+        }
+
+        case "thinking_delta":
+          this.thinkingContent += parsed.delta.text;
+          this.isThinking = true;
+          this.emit({ type: "thinking_delta", text: parsed.delta.text });
+          break;
+
+        case "thinking_complete":
+          this.isThinking = false;
+          this.emit({ type: "thinking_complete" });
+          break;
+
+        case "sources":
+          this.sources.push(...parsed.sources);
+          this.emit({ type: "sources", sources: parsed.sources });
+          break;
+
+        case "capsule_output": {
+          const capsule: CapsuleOutput = {
+            toolName: parsed.tool_name,
+            agentName: parsed.agent_name,
+            command: parsed.command,
+            output: parsed.output,
+            durationMs: parsed.duration_ms,
+          };
+          this.capsuleOutputs.push(capsule);
+          this.emit({ type: "capsule_output", ...capsule });
+          break;
+        }
+
+        case "todo_update":
+          this.todos = parsed.todos;
+          this.emit({ type: "todo_update", todos: parsed.todos });
           break;
 
         case "message_stop":
@@ -324,9 +463,16 @@ export class ChatSession {
     const results: ToolResult[] = [];
     for (const call of toolCalls) {
       this.executingTool = call.toolName;
+      const toolState = this.activeTools.get(call.callId);
+      if (toolState) {
+        toolState.status = "executing";
+      }
       this.emit({ type: "tool_executing", name: call.toolName });
       const result = await this.toolRegistry.executeTool(call);
       results.push(result);
+      if (toolState) {
+        toolState.status = "completed";
+      }
       this.emit({
         type: "tool_completed",
         name: call.toolName,
