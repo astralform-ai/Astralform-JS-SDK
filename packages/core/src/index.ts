@@ -20,7 +20,7 @@ export {
 export { generateId } from "./utils.js";
 
 // Streaming
-export { streamSSE, streamJobSSE } from "./streaming.js";
+export { streamJobSSE } from "./streaming.js";
 
 // Types
 export type {
@@ -28,8 +28,17 @@ export type {
   MessageStartEvent,
   ContentBlockDeltaEvent,
   ToolUseStartEvent,
+  ToolUseEndEvent,
   AgentStartEvent,
   AgentEndEvent,
+  SubagentStartEvent,
+  SubagentContentDeltaEvent,
+  SubagentEndEvent,
+  ThinkingDeltaEvent,
+  ThinkingCompleteEvent,
+  SourcesEvent,
+  CapsuleOutputEvent,
+  TodoUpdateEvent,
   MessageStopEvent,
   SSEErrorEvent,
   SSEEvent,
@@ -41,6 +50,11 @@ export type {
   ServerMCPTool,
   AgentInfo,
   SkillInfo,
+  SubagentState,
+  ToolState,
+  CapsuleOutput,
+  Source,
+  TodoItem,
   ChatStreamRequest,
   ToolResultRequest,
   ToolResult,
@@ -49,7 +63,6 @@ export type {
   WebMCPTool,
   WebMCPContext,
   WebMCPToolHandler,
-  StreamSSEOptions,
   StreamJobSSEOptions,
   JobCreateResponse,
   ChatStreamEvent,

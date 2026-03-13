@@ -111,7 +111,7 @@ describe("AstralformClient", () => {
             name: "helper",
             display_name: "Helper Agent",
             description: "Helps users",
-            is_default: true,
+            is_orchestrator: true,
             is_enabled: true,
           },
         ],
@@ -122,7 +122,7 @@ describe("AstralformClient", () => {
     const agents = await client.getAgents();
 
     expect(agents[0]!.displayName).toBe("Helper Agent");
-    expect(agents[0]!.isDefault).toBe(true);
+    expect(agents[0]!.isOrchestrator).toBe(true);
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {

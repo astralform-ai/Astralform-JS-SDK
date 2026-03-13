@@ -4,7 +4,7 @@ import {
   RateLimitError,
   ServerError,
 } from "./errors.js";
-import { streamJobSSE, streamSSE } from "./streaming.js";
+import { streamJobSSE } from "./streaming.js";
 import type {
   AgentInfo,
   AstralformConfig,
@@ -226,16 +226,18 @@ export class AstralformClient {
         name: string;
         display_name: string;
         description: string;
-        is_default: boolean;
+        is_orchestrator: boolean;
         is_enabled: boolean;
+        avatar_url?: string;
       }[]
     >("/v1/agents");
     return raw.map((a) => ({
       name: a.name,
       displayName: a.display_name,
       description: a.description,
-      isDefault: a.is_default,
+      isOrchestrator: a.is_orchestrator,
       isEnabled: a.is_enabled,
+      avatarUrl: a.avatar_url,
     }));
   }
 
@@ -282,21 +284,5 @@ export class AstralformClient {
 
   async cancelJob(jobId: string): Promise<void> {
     await this.post(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
-  }
-
-  // --- Legacy Streaming (deprecated) ---
-
-  /** @deprecated Use createJob() + streamJobEvents() instead */
-  async *chatStream(
-    request: ChatStreamRequest,
-    signal?: AbortSignal,
-  ): AsyncGenerator<ChatStreamEvent> {
-    yield* streamSSE({
-      url: `${this.baseURL}/v1/chat/stream`,
-      body: request,
-      headers: this.headers,
-      signal,
-      fetchFn: this.fetchFn,
-    });
   }
 }

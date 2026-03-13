@@ -241,8 +241,9 @@ const mcpTools = await client.getMcpTools();
 const agents = await client.getAgents();
 const skills = await client.getSkills();
 
-// SSE streaming
-for await (const event of client.chatStream({ message: "Hello" })) {
+// Job-based streaming
+const job = await client.createJob({ message: "Hello" });
+for await (const event of client.streamJobEvents(job.job_id)) {
   const data = JSON.parse(event.data);
   if (data.type === "content_block_delta") {
     process.stdout.write(data.delta.text);

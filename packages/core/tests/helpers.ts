@@ -21,8 +21,7 @@ export function createMockFetch(
 
 /**
  * Creates a mock fetch for job-based SSE streaming and JSON endpoints.
- * Entries whose key contains "/jobs/" and "/events" are returned as SSE text streams.
- * Entries whose key contains "chat/stream" are returned as SSE text streams (legacy).
+ * Entries whose key contains "/events" are returned as SSE text streams.
  * All other entries are returned as JSON with status 200 (or custom status).
  */
 export function createSessionMockFetch(
@@ -34,7 +33,7 @@ export function createSessionMockFetch(
     for (const [pattern, body] of Object.entries(responses)) {
       if (url.includes(pattern)) {
         // SSE stream patterns
-        if (pattern.includes("chat/stream") || pattern.includes("/events")) {
+        if (pattern.includes("/events")) {
           const encoder = new TextEncoder();
           const sseData = body as string;
           const stream = new ReadableStream({

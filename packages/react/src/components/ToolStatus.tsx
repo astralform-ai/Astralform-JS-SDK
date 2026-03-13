@@ -3,6 +3,7 @@ import { cn } from "../utils/cn.js";
 
 export interface ToolStatusProps {
   toolName: string;
+  displayName?: string;
   status: "calling" | "executing" | "completed" | "error";
   result?: string;
   className?: string;
@@ -10,6 +11,7 @@ export interface ToolStatusProps {
 
 export function ToolStatus({
   toolName,
+  displayName,
   status,
   result,
   className,
@@ -88,7 +90,14 @@ export function ToolStatus({
           </svg>
         )}
 
-        <span className="font-mono text-zinc-300">{toolName}</span>
+        <span className="text-zinc-300">
+          {displayName ?? toolName}
+          {displayName && (
+            <span className="ml-1.5 font-mono text-[10px] text-zinc-500">
+              {toolName}
+            </span>
+          )}
+        </span>
 
         <span className="text-xs text-zinc-500">
           {status === "calling" && "Calling..."}

@@ -31,5 +31,20 @@ export type { AgentBadgeProps } from "./components/AgentBadge.js";
 export { TypingIndicator } from "./components/TypingIndicator.js";
 export type { TypingIndicatorProps } from "./components/TypingIndicator.js";
 
+export { ThinkingBlock } from "./components/ThinkingBlock.js";
+export type { ThinkingBlockProps } from "./components/ThinkingBlock.js";
+
+export { SubagentCard } from "./components/SubagentCard.js";
+export type { SubagentCardProps } from "./components/SubagentCard.js";
+
+export { SourcesPill } from "./components/SourcesPill.js";
+export type { SourcesPillProps } from "./components/SourcesPill.js";
+
+export { CapsuleBlock } from "./components/CapsuleBlock.js";
+export type { CapsuleBlockProps } from "./components/CapsuleBlock.js";
+
+export { TodoProgress } from "./components/TodoProgress.js";
+export type { TodoProgressProps } from "./components/TodoProgress.js";
+
 // Utilities
 export { cn } from "./utils/cn.js";
