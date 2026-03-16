@@ -10,7 +10,7 @@ describe("ChatSession", () => {
     userId: "user-1",
   };
 
-  it("connect fetches project status and tools", async () => {
+  it("connect fetches project status and agents", async () => {
     const mockFetch = createSessionMockFetch({
       "/v1/project/status": {
         is_ready: true,
@@ -20,15 +20,15 @@ describe("ChatSession", () => {
         message: "Ready",
       },
       "/v1/conversations": [],
-      "/v1/tools": [
+      "/v1/agents": [
         {
-          name: "search",
-          display_name: "Web Search",
-          description: "Search",
+          name: "helper",
+          display_name: "Helper",
+          description: "Helps",
+          is_orchestrator: false,
+          is_enabled: true,
         },
       ],
-      "/v1/mcp-tools": [],
-      "/v1/agents": [],
       "/v1/skills": [],
     });
 
@@ -41,8 +41,7 @@ describe("ChatSession", () => {
 
     expect(session.projectStatus).not.toBeNull();
     expect(session.projectStatus!.isReady).toBe(true);
-    expect(session.platformTools).toHaveLength(1);
-    expect(session.enabledTools.has("search")).toBe(true);
+    expect(session.agents).toHaveLength(1);
     expect(events.some((e) => e.type === "connected")).toBe(true);
   });
 
@@ -76,8 +75,6 @@ describe("ChatSession", () => {
         message: "Ready",
       },
       "/v1/conversations": [],
-      "/v1/tools": [],
-      "/v1/mcp-tools": [],
     });
 
     const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
@@ -102,20 +99,68 @@ describe("ChatSession", () => {
     expect(session.conversationId).toBe("c1");
   });
 
-  it("toggleTool toggles enabled state", () => {
+  it("toggleClientTool toggles enabled state", () => {
     const session = new ChatSession({
       ...baseConfig,
       fetch: async () => new Response(),
     });
 
-    session.enabledTools.add("search");
-    const removed = session.toggleTool("search");
+    session.enabledClientTools.add("my_tool");
+    const removed = session.toggleClientTool("my_tool");
     expect(removed).toBe(false);
-    expect(session.enabledTools.has("search")).toBe(false);
+    expect(session.enabledClientTools.has("my_tool")).toBe(false);
 
-    const added = session.toggleTool("search");
+    const added = session.toggleClientTool("my_tool");
     expect(added).toBe(true);
-    expect(session.enabledTools.has("search")).toBe(true);
+    expect(session.enabledClientTools.has("my_tool")).toBe(true);
+  });
+
+  it("send passes uploadIds to the request", async () => {
+    let capturedBody: string | undefined;
+    const sseData = [
+      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","seq":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","seq":1}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/project/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [],
+    });
+
+    // Wrap to capture the /v1/jobs POST body
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs") && !url.includes("/events")) {
+        capturedBody = init?.body as string;
+      }
+      return mockFetch(input, init);
+    };
+
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: wrappedFetch,
+    });
+    await session.connect();
+    await session.send("Hi", { uploadIds: ["file-1", "file-2"] });
+
+    expect(capturedBody).toBeDefined();
+    const body = JSON.parse(capturedBody!);
+    expect(body.upload_ids).toEqual(["file-1", "file-2"]);
   });
 
   it("createNewConversation creates and switches", async () => {
@@ -144,6 +189,53 @@ describe("ChatSession", () => {
 
     expect(session.isStreaming).toBe(false);
     expect(events.some((e) => e.type === "disconnected")).toBe(true);
+  });
+
+  it("asset_created event emits camelCase fields", async () => {
+    const sseData = [
+      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","seq":0}\n',
+      "",
+      'event: asset_created\ndata: {"type":"asset_created","asset_id":"abc123","name":"report.pdf","url":"https://cdn.example.com/report.pdf","media_type":"application/pdf","size_bytes":5000,"seq":1}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","seq":2}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/project/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [],
+    });
+
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    await session.connect();
+
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await session.send("Generate a PDF");
+
+    const assetEvent = events.find((e) => e.type === "asset_created");
+    expect(assetEvent).toBeDefined();
+    if (assetEvent?.type === "asset_created") {
+      expect(assetEvent.assetId).toBe("abc123");
+      expect(assetEvent.name).toBe("report.pdf");
+      expect(assetEvent.url).toBe("https://cdn.example.com/report.pdf");
+      expect(assetEvent.mediaType).toBe("application/pdf");
+      expect(assetEvent.sizeBytes).toBe(5000);
+    }
   });
 
   it("on returns unsubscribe function", () => {

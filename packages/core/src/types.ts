@@ -33,6 +33,7 @@ export interface ToolUseStartEvent {
   call_id: string;
   tool: string;
   display_name?: string;
+  description?: string;
   arguments: Record<string, unknown>;
   is_client_tool: boolean;
 }
@@ -131,6 +132,30 @@ export interface SSEErrorEvent {
   message: string;
 }
 
+export interface SubagentToolUseEvent {
+  type: "subagent_tool_use";
+  agent_name: string;
+  tool: string;
+  tool_call_id: string;
+  result?: string;
+}
+
+export interface AssetCreatedEvent {
+  type: "asset_created";
+  asset_id: string;
+  name: string;
+  url: string;
+  media_type: string;
+  size_bytes: number;
+}
+
+export interface RetryEvent {
+  type: "retry";
+  attempt: number;
+  max_attempts: number;
+  delay_seconds: number;
+}
+
 export type SSEEvent =
   | MessageStartEvent
   | ContentBlockDeltaEvent
@@ -142,12 +167,15 @@ export type SSEEvent =
   | SubagentContentDeltaEvent
   | SubagentUpdateEvent
   | SubagentEndEvent
+  | SubagentToolUseEvent
   | ThinkingDeltaEvent
   | ThinkingCompleteEvent
   | SourcesEvent
   | CapsuleOutputEvent
   | TodoUpdateEvent
   | MessageStopEvent
+  | AssetCreatedEvent
+  | RetryEvent
   | SSEErrorEvent;
 
 // --- High-Level Chat Events (SDK → consumer) ---
@@ -214,6 +242,27 @@ export type ChatEvent =
       messageId: string;
       title?: string;
     }
+  | {
+      type: "subagent_tool_use";
+      agentName: string;
+      toolName: string;
+      toolCallId: string;
+      result?: string;
+    }
+  | {
+      type: "asset_created";
+      assetId: string;
+      name: string;
+      url: string;
+      mediaType: string;
+      sizeBytes: number;
+    }
+  | {
+      type: "retry";
+      attempt: number;
+      maxAttempts: number;
+      delaySeconds: number;
+    }
   | { type: "model_info"; name: string }
   | { type: "error"; error: Error }
   | { type: "disconnected" };
@@ -247,19 +296,6 @@ export interface ProjectStatus {
   message: string;
 }
 
-export interface PlatformTool {
-  name: string;
-  displayName: string;
-  description: string;
-  icon?: string;
-}
-
-export interface ServerMCPTool {
-  name: string;
-  description: string;
-  serverName: string;
-}
-
 export interface AgentInfo {
   name: string;
   displayName: string;
@@ -290,6 +326,8 @@ export interface SubagentState {
 export interface ToolState {
   toolName: string;
   displayName?: string;
+  description?: string;
+  arguments?: Record<string, unknown>;
   callId: string;
   status: "calling" | "executing" | "completed";
   isClientTool: boolean;
@@ -330,9 +368,9 @@ export interface ChatStreamRequest {
   conversation_id?: string;
   mcp_manifest?: ToolDefinition[];
   enabled_mcp?: string[];
-  enabled_tools?: string[];
   continue_from_message?: string;
   resend_from?: string;
+  upload_ids?: string[];
   agent_name?: string;
 }
 
@@ -358,32 +396,11 @@ export interface ToolDefinition {
 export interface ToolCallRequest {
   callId: string;
   toolName: string;
+  displayName?: string;
+  description?: string;
   arguments: Record<string, unknown>;
   isClientTool: boolean;
 }
-
-// --- WebMCP Types ---
-
-export interface WebMCPTool {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-}
-
-export interface WebMCPContext {
-  tools: {
-    list(): Promise<WebMCPTool[]>;
-    call(
-      name: string,
-      args: Record<string, unknown>,
-    ): Promise<{ content: string }>;
-    register(tool: WebMCPTool & { handler: WebMCPToolHandler }): void;
-  };
-}
-
-export type WebMCPToolHandler = (
-  args: Record<string, unknown>,
-) => Promise<string>;
 
 // --- SSE Stream Options ---
 
@@ -405,15 +422,21 @@ export interface ChatStreamEvent {
 
 export interface SendOptions {
   conversationId?: string;
-  enabledTools?: string[];
-  enabledMcp?: string[];
+  enabledClientTools?: string[];
+  uploadIds?: string[];
   agentName?: string;
 }
 
-// --- Navigator augmentation for WebMCP ---
+// --- Conversation Assets ---
 
-declare global {
-  interface Navigator {
-    modelContext?: WebMCPContext;
-  }
+export interface ConversationAsset {
+  id: string;
+  kind: "upload" | "output";
+  originalName: string;
+  mediaType: string;
+  sizeBytes: number;
+  workspacePath?: string;
+  sourceMessageId?: string;
+  agentName?: string;
+  createdAt: string;
 }

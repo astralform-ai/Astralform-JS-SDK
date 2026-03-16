@@ -10,10 +10,8 @@ import type {
   ChatStreamRequest,
   Conversation,
   Message,
-  PlatformTool,
   ProjectStatus,
   SendOptions,
-  ServerMCPTool,
   SkillInfo,
   Source,
   SSEEvent,
@@ -24,14 +22,12 @@ import type {
   ToolState,
 } from "./types.js";
 import { generateId } from "./utils.js";
-import { WebMCPBridge } from "./web-mcp.js";
 
 type ChatEventHandler = (event: ChatEvent) => void;
 
 export class ChatSession {
   readonly client: AstralformClient;
   readonly toolRegistry: ToolRegistry;
-  readonly webMCP: WebMCPBridge;
   readonly storage: ChatStorage;
 
   // State
@@ -44,10 +40,7 @@ export class ChatSession {
   projectStatus: ProjectStatus | null = null;
   agents: AgentInfo[] = [];
   skills: SkillInfo[] = [];
-  platformTools: PlatformTool[] = [];
-  mcpTools: ServerMCPTool[] = [];
-  enabledTools = new Set<string>();
-  enabledMcp = new Set<string>();
+  enabledClientTools = new Set<string>();
   modelDisplayName: string | null = null;
 
   // New state fields
@@ -65,7 +58,6 @@ export class ChatSession {
   constructor(config: AstralformConfig, storage?: ChatStorage) {
     this.client = new AstralformClient(config);
     this.toolRegistry = new ToolRegistry();
-    this.webMCP = new WebMCPBridge(this.toolRegistry);
     this.storage = storage ?? new InMemoryStorage();
   }
 
@@ -87,15 +79,12 @@ export class ChatSession {
   }
 
   async connect(): Promise<void> {
-    const [status, conversations, tools, mcpTools, agents, skills] =
-      await Promise.allSettled([
-        this.client.getProjectStatus(),
-        this.client.getConversations(),
-        this.client.getTools(),
-        this.client.getMcpTools(),
-        this.client.getAgents().catch(() => [] as AgentInfo[]),
-        this.client.getSkills().catch(() => [] as SkillInfo[]),
-      ]);
+    const [status, conversations, agents, skills] = await Promise.allSettled([
+      this.client.getProjectStatus(),
+      this.client.getConversations(),
+      this.client.getAgents().catch(() => [] as AgentInfo[]),
+      this.client.getSkills().catch(() => [] as SkillInfo[]),
+    ]);
 
     if (status.status === "fulfilled") {
       this.projectStatus = status.value;
@@ -103,31 +92,11 @@ export class ChatSession {
     if (conversations.status === "fulfilled") {
       this.conversations = conversations.value;
     }
-    if (tools.status === "fulfilled") {
-      this.platformTools = tools.value;
-      for (const tool of this.platformTools) {
-        this.enabledTools.add(tool.name);
-      }
-    }
-    if (mcpTools.status === "fulfilled") {
-      this.mcpTools = mcpTools.value;
-      for (const tool of this.mcpTools) {
-        this.enabledMcp.add(tool.name);
-      }
-    }
     if (agents.status === "fulfilled") {
       this.agents = agents.value;
     }
     if (skills.status === "fulfilled") {
       this.skills = skills.value;
-    }
-
-    if (this.webMCP.isAvailable()) {
-      try {
-        await this.webMCP.discover();
-      } catch {
-        // WebMCP discovery failed, continue without it
-      }
     }
 
     this.emit({ type: "connected" });
@@ -159,8 +128,10 @@ export class ChatSession {
       message: content,
       conversation_id: conversationId,
       mcp_manifest: this.toolRegistry.getManifest(),
-      enabled_mcp: Array.from(options?.enabledMcp ?? this.enabledMcp),
-      enabled_tools: Array.from(options?.enabledTools ?? this.enabledTools),
+      enabled_mcp: Array.from(
+        options?.enabledClientTools ?? this.enabledClientTools,
+      ),
+      upload_ids: options?.uploadIds,
       agent_name: options?.agentName,
     };
 
@@ -178,8 +149,7 @@ export class ChatSession {
       conversation_id: this.conversationId ?? undefined,
       resend_from: messageId,
       mcp_manifest: this.toolRegistry.getManifest(),
-      enabled_mcp: Array.from(this.enabledMcp),
-      enabled_tools: Array.from(this.enabledTools),
+      enabled_mcp: Array.from(this.enabledClientTools),
     };
 
     await this.processStream(request);
@@ -293,6 +263,8 @@ export class ChatSession {
           const toolCall: ToolCallRequest = {
             callId: parsed.call_id,
             toolName: parsed.tool,
+            displayName: parsed.display_name,
+            description: parsed.description,
             arguments: parsed.arguments,
             isClientTool: parsed.is_client_tool,
           };
@@ -300,6 +272,8 @@ export class ChatSession {
           this.activeTools.set(parsed.call_id, {
             toolName: parsed.tool,
             displayName: parsed.display_name,
+            description: parsed.description,
+            arguments: parsed.arguments,
             callId: parsed.call_id,
             status: parsed.is_client_tool ? "calling" : "executing",
             isClientTool: parsed.is_client_tool,
@@ -439,6 +413,36 @@ export class ChatSession {
           this.emit({ type: "todo_update", todos: parsed.todos });
           break;
 
+        case "subagent_tool_use":
+          this.emit({
+            type: "subagent_tool_use",
+            agentName: parsed.agent_name,
+            toolName: parsed.tool,
+            toolCallId: parsed.tool_call_id,
+            result: parsed.result,
+          });
+          break;
+
+        case "asset_created":
+          this.emit({
+            type: "asset_created",
+            assetId: parsed.asset_id,
+            name: parsed.name,
+            url: parsed.url,
+            mediaType: parsed.media_type,
+            sizeBytes: parsed.size_bytes,
+          });
+          break;
+
+        case "retry":
+          this.emit({
+            type: "retry",
+            attempt: parsed.attempt,
+            maxAttempts: parsed.max_attempts,
+            delaySeconds: parsed.delay_seconds,
+          });
+          break;
+
         case "message_stop":
           stopTitle = parsed.title;
           // No continuation needed — job handles tool result resumption
@@ -569,21 +573,12 @@ export class ChatSession {
     }
   }
 
-  toggleTool(name: string): boolean {
-    if (this.enabledTools.has(name)) {
-      this.enabledTools.delete(name);
+  toggleClientTool(name: string): boolean {
+    if (this.enabledClientTools.has(name)) {
+      this.enabledClientTools.delete(name);
       return false;
     }
-    this.enabledTools.add(name);
-    return true;
-  }
-
-  toggleMcp(name: string): boolean {
-    if (this.enabledMcp.has(name)) {
-      this.enabledMcp.delete(name);
-      return false;
-    }
-    this.enabledMcp.add(name);
+    this.enabledClientTools.add(name);
     return true;
   }
 }
