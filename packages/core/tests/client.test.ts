@@ -72,26 +72,6 @@ describe("AstralformClient", () => {
     expect(convos[0]!.createdAt).toBe("2026-01-01T00:00:00Z");
   });
 
-  it("getTools maps display_name to displayName", async () => {
-    const mockFetch = createMockFetch({
-      "/v1/tools": {
-        status: 200,
-        body: [
-          {
-            name: "search",
-            display_name: "Web Search",
-            description: "Search the web",
-          },
-        ],
-      },
-    });
-
-    const client = new AstralformClient({ ...config, fetch: mockFetch });
-    const tools = await client.getTools();
-
-    expect(tools[0]!.displayName).toBe("Web Search");
-  });
-
   it("throws AuthenticationError on 401", async () => {
     const mockFetch = createMockFetch({
       "/v1/health": { status: 401, body: "Unauthorized" },
@@ -199,5 +179,88 @@ describe("AstralformClient", () => {
     await client.cancelJob("job-123");
 
     expect(capturedUrl).toContain("/v1/jobs/job-123/cancel");
+  });
+
+  it("uploadFile sends multipart FormData", async () => {
+    let capturedUrl = "";
+    let capturedContentType: string | null = null;
+    const mockFetch: typeof globalThis.fetch = async (input, init) => {
+      capturedUrl = typeof input === "string" ? input : (input as Request).url;
+      const headers = init?.headers as Record<string, string> | undefined;
+      capturedContentType = headers?.["Content-Type"] ?? null;
+      return new Response(
+        JSON.stringify({
+          id: "upload-1",
+          kind: "upload",
+          original_name: "test.txt",
+          media_type: "text/plain",
+          size_bytes: 12,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+        { status: 200 },
+      );
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const blob = new Blob(["hello world!"], { type: "text/plain" });
+    const asset = await client.uploadFile("c1", blob, "test.txt");
+
+    expect(capturedUrl).toContain("/v1/conversations/c1/uploads");
+    expect(capturedContentType).toBeNull(); // No Content-Type — FormData sets its own
+    expect(asset.id).toBe("upload-1");
+    expect(asset.originalName).toBe("test.txt");
+    expect(asset.sizeBytes).toBe(12);
+  });
+
+  it("listUploads returns mapped assets", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/uploads": {
+        status: 200,
+        body: [
+          {
+            id: "u1",
+            kind: "upload",
+            original_name: "file.pdf",
+            media_type: "application/pdf",
+            size_bytes: 1024,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const uploads = await client.listUploads("c1");
+
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]!.originalName).toBe("file.pdf");
+    expect(uploads[0]!.kind).toBe("upload");
+  });
+
+  it("listOutputs returns mapped assets", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/outputs": {
+        status: 200,
+        body: [
+          {
+            id: "o1",
+            kind: "output",
+            original_name: "result.json",
+            media_type: "application/json",
+            size_bytes: 512,
+            agent_name: "helper",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const outputs = await client.listOutputs("c1");
+
+    expect(outputs).toHaveLength(1);
+    expect(outputs[0]!.originalName).toBe("result.json");
+    expect(outputs[0]!.kind).toBe("output");
+    expect(outputs[0]!.agentName).toBe("helper");
   });
 });

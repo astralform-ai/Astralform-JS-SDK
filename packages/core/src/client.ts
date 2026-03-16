@@ -10,12 +10,11 @@ import type {
   AstralformConfig,
   ChatStreamEvent,
   ChatStreamRequest,
+  ConversationAsset,
   Conversation,
   JobCreateResponse,
   Message,
-  PlatformTool,
   ProjectStatus,
-  ServerMCPTool,
   SkillInfo,
   ToolResultRequest,
 } from "./types.js";
@@ -188,38 +187,6 @@ export class AstralformClient {
     await this.del(`/v1/conversations/${encodeURIComponent(id)}`);
   }
 
-  async getTools(): Promise<PlatformTool[]> {
-    const raw = await this.get<
-      {
-        name: string;
-        display_name: string;
-        description: string;
-        icon?: string;
-      }[]
-    >("/v1/tools");
-    return raw.map((t) => ({
-      name: t.name,
-      displayName: t.display_name,
-      description: t.description,
-      icon: t.icon,
-    }));
-  }
-
-  async getMcpTools(): Promise<ServerMCPTool[]> {
-    const raw = await this.get<
-      {
-        name: string;
-        description: string;
-        server_name: string;
-      }[]
-    >("/v1/mcp-tools");
-    return raw.map((t) => ({
-      name: t.name,
-      description: t.description,
-      serverName: t.server_name,
-    }));
-  }
-
   async getAgents(): Promise<AgentInfo[]> {
     const raw = await this.get<
       {
@@ -260,6 +227,64 @@ export class AstralformClient {
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {
     await this.post("/v1/tool-result", request);
+  }
+
+  // --- Conversation Assets ---
+
+  private mapAsset(raw: Record<string, unknown>): ConversationAsset {
+    return {
+      id: raw.id as string,
+      kind: raw.kind as "upload" | "output",
+      originalName: raw.original_name as string,
+      mediaType: raw.media_type as string,
+      sizeBytes: raw.size_bytes as number,
+      workspacePath: raw.workspace_path as string | undefined,
+      sourceMessageId: raw.source_message_id as string | undefined,
+      agentName: raw.agent_name as string | undefined,
+      createdAt: raw.created_at as string,
+    };
+  }
+
+  async uploadFile(
+    conversationId: string,
+    file: Blob,
+    filename?: string,
+  ): Promise<ConversationAsset> {
+    const formData = new FormData();
+    formData.append("file", file, filename);
+
+    const response = await this.fetchFn(
+      `${this.baseURL}/v1/conversations/${encodeURIComponent(conversationId)}/uploads`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-End-User-ID": this.userId,
+        },
+        body: formData,
+      },
+    ).catch((err) => {
+      throw new ConnectionError(
+        err instanceof Error ? err.message : "Failed to connect",
+      );
+    });
+    await this.handleError(response);
+    const raw = await response.json();
+    return this.mapAsset(raw as Record<string, unknown>);
+  }
+
+  async listUploads(conversationId: string): Promise<ConversationAsset[]> {
+    const raw = await this.get<Record<string, unknown>[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/uploads`,
+    );
+    return raw.map((r) => this.mapAsset(r));
+  }
+
+  async listOutputs(conversationId: string): Promise<ConversationAsset[]> {
+    const raw = await this.get<Record<string, unknown>[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/outputs`,
+    );
+    return raw.map((r) => this.mapAsset(r));
   }
 
   // --- Jobs API ---

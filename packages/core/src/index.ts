@@ -2,7 +2,6 @@
 export { AstralformClient } from "./client.js";
 export { ChatSession } from "./session.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
-export { WebMCPBridge } from "./web-mcp.js";
 export { InMemoryStorage, type ChatStorage } from "./storage.js";
 
 // Errors
@@ -34,20 +33,20 @@ export type {
   SubagentStartEvent,
   SubagentContentDeltaEvent,
   SubagentEndEvent,
+  SubagentToolUseEvent,
   ThinkingDeltaEvent,
   ThinkingCompleteEvent,
   SourcesEvent,
   CapsuleOutputEvent,
   TodoUpdateEvent,
   MessageStopEvent,
+  RetryEvent,
   SSEErrorEvent,
   SSEEvent,
   ChatEvent,
   Conversation,
   Message,
   ProjectStatus,
-  PlatformTool,
-  ServerMCPTool,
   AgentInfo,
   SkillInfo,
   SubagentState,
@@ -60,9 +59,7 @@ export type {
   ToolResult,
   ToolDefinition,
   ToolCallRequest,
-  WebMCPTool,
-  WebMCPContext,
-  WebMCPToolHandler,
+  ConversationAsset,
   StreamJobSSEOptions,
   JobCreateResponse,
   ChatStreamEvent,
