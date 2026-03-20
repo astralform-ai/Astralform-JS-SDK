@@ -1,6 +1,6 @@
 {
   "name": "@astralform/js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Astralform JS SDK - AI agent orchestration with WebMCP support",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -44,7 +44,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/astralform-ai/js-sdk"
+    "url": "https://github.com/astralform-ai/Astralform-JS-SDK"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

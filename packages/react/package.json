@@ -1,6 +1,6 @@
 {
   "name": "@astralform/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "React chat UI components for Astralform",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -33,7 +33,7 @@
   "peerDependencies": {
     "react": ">=18",
     "react-dom": ">=18",
-    "@astralform/js": ">=0.1.0"
+    "@astralform/js": ">=0.1.1"
   },
   "devDependencies": {
     "@astralform/js": "workspace:*",
@@ -60,7 +60,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/astralform-ai/js-sdk",
+    "url": "https://github.com/astralform-ai/Astralform-JS-SDK",
     "directory": "packages/react"
   }
 }
