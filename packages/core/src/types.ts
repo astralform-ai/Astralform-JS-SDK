@@ -42,6 +42,7 @@ export interface ToolUseEndEvent {
   type: "tool_use_end";
   call_id: string;
   tool: string;
+  result?: string;
 }
 
 export interface AgentStartEvent {
@@ -113,6 +114,14 @@ export interface CapsuleOutputEvent {
   command?: string;
   output: string;
   duration_ms?: number;
+  call_id?: string;
+}
+
+export interface CapsuleOutputChunkEvent {
+  type: "capsule_output_chunk";
+  call_id: string;
+  stream: "stdout" | "stderr";
+  chunk: string;
 }
 
 export interface TodoUpdateEvent {
@@ -172,6 +181,7 @@ export type SSEEvent =
   | ThinkingCompleteEvent
   | SourcesEvent
   | CapsuleOutputEvent
+  | CapsuleOutputChunkEvent
   | TodoUpdateEvent
   | MessageStopEvent
   | AssetCreatedEvent
@@ -186,7 +196,7 @@ export type ChatEvent =
   | { type: "tool_call"; request: ToolCallRequest }
   | { type: "tool_executing"; name: string }
   | { type: "tool_completed"; name: string; result: string }
-  | { type: "tool_end"; callId: string; toolName: string }
+  | { type: "tool_end"; callId: string; toolName: string; result?: string }
   | {
       type: "agent_start";
       agentName: string;
@@ -230,6 +240,13 @@ export type ChatEvent =
       command?: string;
       output: string;
       durationMs?: number;
+      callId?: string;
+    }
+  | {
+      type: "capsule_output_chunk";
+      callId: string;
+      stream: "stdout" | "stderr";
+      chunk: string;
     }
   | {
       type: "todo_update";
@@ -339,6 +356,7 @@ export interface CapsuleOutput {
   command?: string;
   output: string;
   durationMs?: number;
+  callId?: string;
 }
 
 export interface Source {
@@ -416,6 +434,12 @@ export interface StreamJobSSEOptions {
 export interface ChatStreamEvent {
   event: string;
   data: string;
+}
+
+export interface ConversationEvent {
+  seq: number;
+  event: string;
+  data: Record<string, unknown>;
 }
 
 // --- Send Options ---

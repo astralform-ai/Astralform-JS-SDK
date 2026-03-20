@@ -155,8 +155,7 @@ export class ChatSession {
     await this.processStream(request);
   }
 
-  private async processStream(request: ChatStreamRequest): Promise<void> {
-    this.isStreaming = true;
+  private resetStreamingState(): void {
     this.streamingContent = "";
     this.thinkingContent = "";
     this.isThinking = false;
@@ -165,6 +164,11 @@ export class ChatSession {
     this.capsuleOutputs = [];
     this.todos = [];
     this.activeTools.clear();
+  }
+
+  private async processStream(request: ChatStreamRequest): Promise<void> {
+    this.isStreaming = true;
+    this.resetStreamingState();
     this.abortController = new AbortController();
 
     try {
@@ -245,13 +249,6 @@ export class ChatSession {
               name: parsed.model_display_name,
             });
           }
-          if (parsed.agent_name) {
-            this.emit({
-              type: "agent_start",
-              agentName: parsed.agent_name,
-              agentDisplayName: parsed.agent_display_name,
-            });
-          }
           break;
 
         case "content_block_delta":
@@ -260,94 +257,25 @@ export class ChatSession {
           break;
 
         case "tool_use_start": {
-          const toolCall: ToolCallRequest = {
-            callId: parsed.call_id,
-            toolName: parsed.tool,
-            displayName: parsed.display_name,
-            description: parsed.description,
-            arguments: parsed.arguments,
-            isClientTool: parsed.is_client_tool,
-          };
-          // Track in activeTools
-          this.activeTools.set(parsed.call_id, {
-            toolName: parsed.tool,
-            displayName: parsed.display_name,
-            description: parsed.description,
-            arguments: parsed.arguments,
-            callId: parsed.call_id,
-            status: parsed.is_client_tool ? "calling" : "executing",
-            isClientTool: parsed.is_client_tool,
-          });
-          this.emit({ type: "tool_call", request: toolCall });
+          this.applyEvent(parsed);
           if (parsed.is_client_tool) {
             // Execute tool and submit result — job auto-resumes
-            const results = await this.executeClientTools([toolCall]);
+            const results = await this.executeClientTools([
+              {
+                callId: parsed.call_id,
+                toolName: parsed.tool,
+                displayName: parsed.display_name,
+                description: parsed.description,
+                arguments: parsed.arguments,
+                isClientTool: parsed.is_client_tool,
+              },
+            ]);
             await this.client.submitToolResult({
               conversation_id: conversationId,
               message_id: messageId,
               tool_results: results,
             });
           }
-          break;
-        }
-
-        case "tool_use_end": {
-          const toolState = this.activeTools.get(parsed.call_id);
-          if (toolState) {
-            toolState.status = "completed";
-          }
-          this.emit({
-            type: "tool_end",
-            callId: parsed.call_id,
-            toolName: parsed.tool,
-          });
-          break;
-        }
-
-        case "agent_start":
-          this.emit({
-            type: "agent_start",
-            agentName: parsed.agent_name,
-            agentDisplayName: parsed.agent_display_name,
-            avatarUrl: parsed.avatar_url,
-          });
-          break;
-
-        case "agent_end":
-          this.emit({ type: "agent_end", agentName: parsed.agent_name });
-          break;
-
-        case "subagent_start":
-          this.activeSubagents.set(parsed.tool_call_id, {
-            agentName: parsed.agent_name,
-            displayName: parsed.display_name,
-            avatarUrl: parsed.avatar_url,
-            description: parsed.description,
-            content: "",
-            isActive: true,
-          });
-          this.emit({
-            type: "subagent_start",
-            agentName: parsed.agent_name,
-            displayName: parsed.display_name,
-            toolCallId: parsed.tool_call_id,
-            avatarUrl: parsed.avatar_url,
-            description: parsed.description,
-          });
-          break;
-
-        case "subagent_update": {
-          const sub = this.activeSubagents.get(parsed.tool_call_id);
-          if (sub) {
-            sub.agentName = parsed.agent_name;
-            sub.displayName = parsed.display_name;
-          }
-          this.emit({
-            type: "subagent_update",
-            agentName: parsed.agent_name,
-            displayName: parsed.display_name,
-            toolCallId: parsed.tool_call_id,
-          });
           break;
         }
 
@@ -365,20 +293,6 @@ export class ChatSession {
           break;
         }
 
-        case "subagent_end": {
-          const sub = this.activeSubagents.get(parsed.tool_call_id);
-          if (sub) {
-            sub.isActive = false;
-          }
-          this.emit({
-            type: "subagent_end",
-            agentName: parsed.agent_name,
-            displayName: parsed.display_name,
-            toolCallId: parsed.tool_call_id,
-          });
-          break;
-        }
-
         case "thinking_delta":
           this.thinkingContent += parsed.delta.text;
           this.isThinking = true;
@@ -388,50 +302,6 @@ export class ChatSession {
         case "thinking_complete":
           this.isThinking = false;
           this.emit({ type: "thinking_complete" });
-          break;
-
-        case "sources":
-          this.sources.push(...parsed.sources);
-          this.emit({ type: "sources", sources: parsed.sources });
-          break;
-
-        case "capsule_output": {
-          const capsule: CapsuleOutput = {
-            toolName: parsed.tool_name,
-            agentName: parsed.agent_name,
-            command: parsed.command,
-            output: parsed.output,
-            durationMs: parsed.duration_ms,
-          };
-          this.capsuleOutputs.push(capsule);
-          this.emit({ type: "capsule_output", ...capsule });
-          break;
-        }
-
-        case "todo_update":
-          this.todos = parsed.todos;
-          this.emit({ type: "todo_update", todos: parsed.todos });
-          break;
-
-        case "subagent_tool_use":
-          this.emit({
-            type: "subagent_tool_use",
-            agentName: parsed.agent_name,
-            toolName: parsed.tool,
-            toolCallId: parsed.tool_call_id,
-            result: parsed.result,
-          });
-          break;
-
-        case "asset_created":
-          this.emit({
-            type: "asset_created",
-            assetId: parsed.asset_id,
-            name: parsed.name,
-            url: parsed.url,
-            mediaType: parsed.media_type,
-            sizeBytes: parsed.size_bytes,
-          });
           break;
 
         case "retry":
@@ -445,7 +315,6 @@ export class ChatSession {
 
         case "message_stop":
           stopTitle = parsed.title;
-          // No continuation needed — job handles tool result resumption
           break;
 
         case "error":
@@ -454,11 +323,168 @@ export class ChatSession {
             error: new AstralformError(parsed.message, parsed.code),
           });
           break;
+
+        default:
+          this.applyEvent(parsed);
       }
     }
 
     this.currentJobId = null;
     await this.completeStream(conversationId, messageId, stopTitle);
+  }
+
+  /**
+   * Apply a single SSE event to session state and notify consumers.
+   * Shared between live streaming and historical event replay.
+   */
+  private applyEvent(event: SSEEvent): void {
+    switch (event.type) {
+      case "tool_use_start": {
+        const request: ToolCallRequest = {
+          callId: event.call_id,
+          toolName: event.tool,
+          displayName: event.display_name,
+          description: event.description,
+          arguments: event.arguments,
+          isClientTool: event.is_client_tool,
+        };
+        this.activeTools.set(event.call_id, {
+          ...request,
+          status: event.is_client_tool ? "calling" : "executing",
+        });
+        this.emit({ type: "tool_call", request });
+        break;
+      }
+
+      case "tool_use_end": {
+        const toolState = this.activeTools.get(event.call_id);
+        if (toolState) {
+          toolState.status = "completed";
+        }
+        this.emit({
+          type: "tool_end",
+          callId: event.call_id,
+          toolName: event.tool,
+          result: event.result,
+        });
+        break;
+      }
+
+      case "agent_start":
+        this.emit({
+          type: "agent_start",
+          agentName: event.agent_name,
+          agentDisplayName: event.agent_display_name,
+          avatarUrl: event.avatar_url,
+        });
+        break;
+
+      case "agent_end":
+        this.emit({ type: "agent_end", agentName: event.agent_name });
+        break;
+
+      case "subagent_start":
+        this.activeSubagents.set(event.tool_call_id, {
+          agentName: event.agent_name,
+          displayName: event.display_name,
+          avatarUrl: event.avatar_url,
+          description: event.description,
+          content: "",
+          isActive: true,
+        });
+        this.emit({
+          type: "subagent_start",
+          agentName: event.agent_name,
+          displayName: event.display_name,
+          toolCallId: event.tool_call_id,
+          avatarUrl: event.avatar_url,
+          description: event.description,
+        });
+        break;
+
+      case "subagent_update": {
+        const sub = this.activeSubagents.get(event.tool_call_id);
+        if (sub) {
+          sub.agentName = event.agent_name;
+          sub.displayName = event.display_name;
+        }
+        this.emit({
+          type: "subagent_update",
+          agentName: event.agent_name,
+          displayName: event.display_name,
+          toolCallId: event.tool_call_id,
+        });
+        break;
+      }
+
+      case "subagent_end": {
+        const sub = this.activeSubagents.get(event.tool_call_id);
+        if (sub) {
+          sub.isActive = false;
+        }
+        this.emit({
+          type: "subagent_end",
+          agentName: event.agent_name,
+          displayName: event.display_name,
+          toolCallId: event.tool_call_id,
+        });
+        break;
+      }
+
+      case "subagent_tool_use":
+        this.emit({
+          type: "subagent_tool_use",
+          agentName: event.agent_name,
+          toolName: event.tool,
+          toolCallId: event.tool_call_id,
+          result: event.result,
+        });
+        break;
+
+      case "sources":
+        this.sources.push(...event.sources);
+        this.emit({ type: "sources", sources: event.sources });
+        break;
+
+      case "capsule_output": {
+        const capsule: CapsuleOutput = {
+          toolName: event.tool_name,
+          agentName: event.agent_name,
+          command: event.command,
+          output: event.output,
+          durationMs: event.duration_ms,
+          callId: event.call_id,
+        };
+        this.capsuleOutputs.push(capsule);
+        this.emit({ type: "capsule_output", ...capsule });
+        break;
+      }
+
+      case "capsule_output_chunk":
+        this.emit({
+          type: "capsule_output_chunk",
+          callId: event.call_id,
+          stream: event.stream,
+          chunk: event.chunk,
+        });
+        break;
+
+      case "todo_update":
+        this.todos = event.todos;
+        this.emit({ type: "todo_update", todos: event.todos });
+        break;
+
+      case "asset_created":
+        this.emit({
+          type: "asset_created",
+          assetId: event.asset_id,
+          name: event.name,
+          url: event.url,
+          mediaType: event.media_type,
+          sizeBytes: event.size_bytes,
+        });
+        break;
+    }
   }
 
   private async executeClientTools(
@@ -551,12 +577,37 @@ export class ChatSession {
 
   async switchConversation(id: string): Promise<void> {
     this.conversationId = id;
-    try {
-      this.messages = await this.client.getMessages(id);
-    } catch {
-      this.messages = await this.storage.fetchMessages(id);
+    this.resetStreamingState();
+
+    const [messagesResult, eventsResult] = await Promise.allSettled([
+      this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
+      this.client.getConversationEvents(id),
+    ]);
+
+    this.messages =
+      messagesResult.status === "fulfilled" ? messagesResult.value : [];
+
+    if (eventsResult.status === "fulfilled") {
+      for (const ev of eventsResult.value) {
+        this.replayEvent(ev.event, ev.data);
+      }
     }
-    this.streamingContent = "";
+  }
+
+  /**
+   * Replay a single persisted event to reconstruct session state.
+   * Skips text deltas (final content is already in messages[]).
+   */
+  private replayEvent(eventType: string, data: Record<string, unknown>): void {
+    if (
+      eventType === "content_block_delta" ||
+      eventType === "thinking_delta" ||
+      eventType === "subagent_content_delta" ||
+      eventType === "thinking_complete"
+    ) {
+      return;
+    }
+    this.applyEvent({ type: eventType, ...data } as SSEEvent);
   }
 
   async deleteConversation(id: string): Promise<void> {

@@ -11,6 +11,7 @@ import type {
   ChatStreamEvent,
   ChatStreamRequest,
   ConversationAsset,
+  ConversationEvent,
   Conversation,
   JobCreateResponse,
   Message,
@@ -223,6 +224,14 @@ export class AstralformClient {
       description: s.description,
       isEnabled: s.is_enabled,
     }));
+  }
+
+  async getConversationEvents(
+    conversationId: string,
+  ): Promise<ConversationEvent[]> {
+    return this.get(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/events`,
+    );
   }
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {

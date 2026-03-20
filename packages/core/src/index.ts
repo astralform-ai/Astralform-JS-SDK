@@ -38,6 +38,7 @@ export type {
   ThinkingCompleteEvent,
   SourcesEvent,
   CapsuleOutputEvent,
+  CapsuleOutputChunkEvent,
   TodoUpdateEvent,
   MessageStopEvent,
   RetryEvent,
@@ -63,5 +64,6 @@ export type {
   StreamJobSSEOptions,
   JobCreateResponse,
   ChatStreamEvent,
+  ConversationEvent,
   SendOptions,
 } from "./types.js";
