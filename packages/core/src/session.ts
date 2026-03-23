@@ -133,6 +133,7 @@ export class ChatSession {
       ),
       upload_ids: options?.uploadIds,
       agent_name: options?.agentName,
+      enable_search: options?.enableSearch,
     };
 
     await this.processStream(request);
@@ -268,6 +269,8 @@ export class ChatSession {
                 description: parsed.description,
                 arguments: parsed.arguments,
                 isClientTool: parsed.is_client_tool,
+                toolCategory: parsed.tool_category,
+                iconUrl: parsed.icon_url,
               },
             ]);
             await this.client.submitToolResult({
@@ -347,6 +350,8 @@ export class ChatSession {
           description: event.description,
           arguments: event.arguments,
           isClientTool: event.is_client_tool,
+          toolCategory: event.tool_category,
+          iconUrl: event.icon_url,
         };
         this.activeTools.set(event.call_id, {
           ...request,
@@ -482,6 +487,21 @@ export class ChatSession {
           url: event.url,
           mediaType: event.media_type,
           sizeBytes: event.size_bytes,
+        });
+        break;
+
+      case "activity":
+        this.emit({
+          type: "activity",
+          activityId: event.activity_id,
+          status: event.status,
+          category: event.category,
+          title: event.title,
+          detail: event.detail,
+          sources: event.sources,
+          toolName: event.tool_name,
+          agentName: event.agent_name,
+          durationMs: event.duration_ms,
         });
         break;
     }

@@ -36,6 +36,8 @@ export interface ToolUseStartEvent {
   description?: string;
   arguments: Record<string, unknown>;
   is_client_tool: boolean;
+  tool_category?: string;
+  icon_url?: string;
 }
 
 export interface ToolUseEndEvent {
@@ -158,6 +160,19 @@ export interface AssetCreatedEvent {
   size_bytes: number;
 }
 
+export interface ActivitySSEEvent {
+  type: "activity";
+  activity_id: string;
+  status: "started" | "completed";
+  category: string;
+  title: string;
+  detail?: string;
+  sources?: Array<{ title: string; url: string; snippet?: string }>;
+  tool_name?: string;
+  agent_name?: string;
+  duration_ms?: number;
+}
+
 export interface RetryEvent {
   type: "retry";
   attempt: number;
@@ -185,6 +200,7 @@ export type SSEEvent =
   | TodoUpdateEvent
   | MessageStopEvent
   | AssetCreatedEvent
+  | ActivitySSEEvent
   | RetryEvent
   | SSEErrorEvent;
 
@@ -279,6 +295,18 @@ export type ChatEvent =
       attempt: number;
       maxAttempts: number;
       delaySeconds: number;
+    }
+  | {
+      type: "activity";
+      activityId: string;
+      status: "started" | "completed";
+      category: string;
+      title: string;
+      detail?: string;
+      sources?: Array<{ title: string; url: string; snippet?: string }>;
+      toolName?: string;
+      agentName?: string;
+      durationMs?: number;
     }
   | { type: "model_info"; name: string }
   | { type: "error"; error: Error }
@@ -390,6 +418,7 @@ export interface ChatStreamRequest {
   resend_from?: string;
   upload_ids?: string[];
   agent_name?: string;
+  enable_search?: boolean;
 }
 
 export interface ToolResultRequest {
@@ -418,6 +447,8 @@ export interface ToolCallRequest {
   description?: string;
   arguments: Record<string, unknown>;
   isClientTool: boolean;
+  toolCategory?: string;
+  iconUrl?: string;
 }
 
 // --- SSE Stream Options ---
@@ -449,6 +480,7 @@ export interface SendOptions {
   enabledClientTools?: string[];
   uploadIds?: string[];
   agentName?: string;
+  enableSearch?: boolean;
 }
 
 // --- Conversation Assets ---
