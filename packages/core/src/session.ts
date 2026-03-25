@@ -504,6 +504,31 @@ export class ChatSession {
           durationMs: event.duration_ms,
         });
         break;
+
+      case "editor_content_start":
+        this.emit({
+          type: "editor_content_start",
+          callId: event.call_id,
+          path: event.path,
+          language: event.language,
+        });
+        break;
+
+      case "editor_content_delta":
+        this.emit({
+          type: "editor_content_delta",
+          callId: event.call_id,
+          path: event.path,
+          delta: event.delta,
+        });
+        break;
+
+      case "editor_content_end":
+        this.emit({
+          type: "editor_content_end",
+          callId: event.call_id,
+        });
+        break;
     }
   }
 
@@ -623,7 +648,10 @@ export class ChatSession {
       eventType === "content_block_delta" ||
       eventType === "thinking_delta" ||
       eventType === "subagent_content_delta" ||
-      eventType === "thinking_complete"
+      eventType === "thinking_complete" ||
+      eventType === "editor_content_start" ||
+      eventType === "editor_content_delta" ||
+      eventType === "editor_content_end"
     ) {
       return;
     }

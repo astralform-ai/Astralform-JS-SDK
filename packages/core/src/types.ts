@@ -173,6 +173,25 @@ export interface ActivitySSEEvent {
   duration_ms?: number;
 }
 
+export interface EditorContentStartEvent {
+  type: "editor_content_start";
+  call_id: string;
+  path: string;
+  language: string;
+}
+
+export interface EditorContentDeltaEvent {
+  type: "editor_content_delta";
+  call_id: string;
+  path: string;
+  delta: string;
+}
+
+export interface EditorContentEndEvent {
+  type: "editor_content_end";
+  call_id: string;
+}
+
 export interface RetryEvent {
   type: "retry";
   attempt: number;
@@ -201,6 +220,9 @@ export type SSEEvent =
   | MessageStopEvent
   | AssetCreatedEvent
   | ActivitySSEEvent
+  | EditorContentStartEvent
+  | EditorContentDeltaEvent
+  | EditorContentEndEvent
   | RetryEvent
   | SSEErrorEvent;
 
@@ -308,6 +330,19 @@ export type ChatEvent =
       agentName?: string;
       durationMs?: number;
     }
+  | {
+      type: "editor_content_start";
+      callId: string;
+      path: string;
+      language: string;
+    }
+  | {
+      type: "editor_content_delta";
+      callId: string;
+      path: string;
+      delta: string;
+    }
+  | { type: "editor_content_end"; callId: string }
   | { type: "model_info"; name: string }
   | { type: "error"; error: Error }
   | { type: "disconnected" };
