@@ -228,10 +228,11 @@ export class AstralformClient {
 
   async getConversationEvents(
     conversationId: string,
+    jobId?: string,
   ): Promise<ConversationEvent[]> {
-    return this.get(
-      `/v1/conversations/${encodeURIComponent(conversationId)}/events`,
-    );
+    let url = `/v1/conversations/${encodeURIComponent(conversationId)}/events`;
+    if (jobId) url += `?job_id=${encodeURIComponent(jobId)}`;
+    return this.get(url);
   }
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {

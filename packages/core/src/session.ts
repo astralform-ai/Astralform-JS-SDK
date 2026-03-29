@@ -779,14 +779,14 @@ export class ChatSession {
     return id;
   }
 
-  async switchConversation(id: string): Promise<void> {
+  async switchConversation(id: string, jobId?: string): Promise<void> {
     this.conversationId = id;
     this.resetStreamingState();
     this.blockBuilder.reset();
 
     const [messagesResult, eventsResult] = await Promise.allSettled([
       this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
-      this.client.getConversationEvents(id),
+      this.client.getConversationEvents(id, jobId),
     ]);
 
     this.messages =
