@@ -1,6 +1,19 @@
 // Core classes
 export { AstralformClient } from "./client.js";
 export { ChatSession } from "./session.js";
+export {
+  BlockBuilder,
+  type Block,
+  type UserBlock,
+  type TextBlock,
+  type ThinkingBlock,
+  type AgentBlock,
+  type SubagentBlock,
+  type ToolBlock,
+  type ErrorBlock,
+  type EventHandler,
+} from "./block-builder.js";
+export { standardHandlers } from "./standard-handlers.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
 export { InMemoryStorage, type ChatStorage } from "./storage.js";
 

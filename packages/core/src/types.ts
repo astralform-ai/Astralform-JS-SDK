@@ -9,6 +9,16 @@ export interface AstralformConfig {
 
 // --- SSE Raw Events (from backend) ---
 
+export interface UserMessageEvent {
+  type: "user_message";
+  content: string;
+}
+
+export interface TitleGeneratedEvent {
+  type: "title_generated";
+  title: string;
+}
+
 export interface MessageStartEvent {
   type: "message_start";
   message_id: string;
@@ -45,6 +55,8 @@ export interface ToolUseEndEvent {
   call_id: string;
   tool: string;
   result?: string;
+  sources?: { title: string; url: string; snippet?: string }[];
+  duration_ms?: number;
 }
 
 export interface AgentStartEvent {
@@ -135,6 +147,8 @@ export interface MessageStopEvent {
   type: "message_stop";
   stop_reason: "end_turn" | "tool_use";
   title?: string;
+  metrics?: Record<string, unknown>;
+  job_id?: string;
 }
 
 export interface SSEErrorEvent {
@@ -160,17 +174,24 @@ export interface AssetCreatedEvent {
   size_bytes: number;
 }
 
-export interface ActivitySSEEvent {
-  type: "activity";
-  activity_id: string;
+export interface TimelineEntrySSEEvent {
+  type: "timeline_entry";
+  id: string;
   status: "started" | "completed";
-  category: string;
-  title: string;
-  detail?: string;
-  sources?: Array<{ title: string; url: string; snippet?: string }>;
-  tool_name?: string;
+  kind?: string;
   agent_name?: string;
+  tool_name?: string;
+  display_name?: string;
+  tool_category?: string;
+  viewer?: string;
+  call_id?: string;
+  detail?: string;
+  started_at?: number;
   duration_ms?: number;
+  output_summary?: string;
+  sources?: Array<{ title: string; url: string; snippet?: string }>;
+  parent_id?: string;
+  structured_output?: Record<string, unknown>;
 }
 
 export interface EditorContentStartEvent {
@@ -201,6 +222,8 @@ export interface RetryEvent {
 
 export type SSEEvent =
   | MessageStartEvent
+  | UserMessageEvent
+  | TitleGeneratedEvent
   | ContentBlockDeltaEvent
   | ToolUseStartEvent
   | ToolUseEndEvent
@@ -219,7 +242,7 @@ export type SSEEvent =
   | TodoUpdateEvent
   | MessageStopEvent
   | AssetCreatedEvent
-  | ActivitySSEEvent
+  | TimelineEntrySSEEvent
   | EditorContentStartEvent
   | EditorContentDeltaEvent
   | EditorContentEndEvent
@@ -230,11 +253,20 @@ export type SSEEvent =
 
 export type ChatEvent =
   | { type: "connected" }
+  | { type: "user_message"; content: string }
+  | { type: "title_generated"; title: string }
   | { type: "chunk"; text: string }
   | { type: "tool_call"; request: ToolCallRequest }
   | { type: "tool_executing"; name: string }
   | { type: "tool_completed"; name: string; result: string }
-  | { type: "tool_end"; callId: string; toolName: string; result?: string }
+  | {
+      type: "tool_end";
+      callId: string;
+      toolName: string;
+      result?: string;
+      sources?: { title: string; url: string; snippet?: string }[];
+      durationMs?: number;
+    }
   | {
       type: "agent_start";
       agentName: string;
@@ -296,6 +328,8 @@ export type ChatEvent =
       conversationId: string;
       messageId: string;
       title?: string;
+      metrics?: Record<string, unknown>;
+      job_id?: string;
     }
   | {
       type: "subagent_tool_use";
@@ -319,16 +353,23 @@ export type ChatEvent =
       delaySeconds: number;
     }
   | {
-      type: "activity";
-      activityId: string;
+      type: "timeline_entry";
+      id: string;
       status: "started" | "completed";
-      category: string;
-      title: string;
+      kind?: string;
+      agent_name?: string;
+      tool_name?: string;
+      display_name?: string;
+      tool_category?: string;
+      viewer?: string;
+      call_id?: string;
       detail?: string;
+      started_at?: number;
+      duration_ms?: number;
+      output_summary?: string;
       sources?: Array<{ title: string; url: string; snippet?: string }>;
-      toolName?: string;
-      agentName?: string;
-      durationMs?: number;
+      parent_id?: string;
+      structured_output?: Record<string, unknown>;
     }
   | {
       type: "editor_content_start";
@@ -344,6 +385,7 @@ export type ChatEvent =
     }
   | { type: "editor_content_end"; callId: string }
   | { type: "model_info"; name: string }
+  | { type: "blocks_changed"; blocks: import("./block-builder.js").Block[] }
   | { type: "error"; error: Error }
   | { type: "disconnected" };
 

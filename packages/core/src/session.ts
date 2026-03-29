@@ -1,3 +1,4 @@
+import { BlockBuilder } from "./block-builder.js";
 import { AstralformClient } from "./client.js";
 import { AstralformError, ConnectionError } from "./errors.js";
 import { InMemoryStorage, type ChatStorage } from "./storage.js";
@@ -29,6 +30,7 @@ export class ChatSession {
   readonly client: AstralformClient;
   readonly toolRegistry: ToolRegistry;
   readonly storage: ChatStorage;
+  readonly blockBuilder: BlockBuilder;
 
   // State
   conversationId: string | null = null;
@@ -55,10 +57,23 @@ export class ChatSession {
   private handlers: Set<ChatEventHandler> = new Set();
   private abortController: AbortController | null = null;
 
-  constructor(config: AstralformConfig, storage?: ChatStorage) {
+  constructor(
+    config: AstralformConfig,
+    storage?: ChatStorage,
+    blockBuilder?: BlockBuilder,
+  ) {
     this.client = new AstralformClient(config);
     this.toolRegistry = new ToolRegistry();
     this.storage = storage ?? new InMemoryStorage();
+    this.blockBuilder = blockBuilder ?? new BlockBuilder();
+
+    // Wire block builder to emit blocks_changed events
+    this.blockBuilder.setOnChange(() => {
+      this.emit({
+        type: "blocks_changed",
+        blocks: this.blockBuilder.getBlocks(),
+      });
+    });
   }
 
   on(handler: ChatEventHandler): () => void {
@@ -69,6 +84,11 @@ export class ChatSession {
   }
 
   private emit(event: ChatEvent): void {
+    // Feed the block builder first (produces blocks_changed events)
+    if (event.type !== "blocks_changed" && event.type !== "connected") {
+      this.blockBuilder.processEvent(event);
+    }
+
     for (const handler of this.handlers) {
       try {
         handler(event);
@@ -142,6 +162,7 @@ export class ChatSession {
   async resendFromCheckpoint(
     messageId: string,
     newContent: string,
+    options?: { enableSearch?: boolean },
   ): Promise<void> {
     if (this.isStreaming) return;
 
@@ -151,6 +172,7 @@ export class ChatSession {
       resend_from: messageId,
       mcp_manifest: this.toolRegistry.getManifest(),
       enabled_mcp: Array.from(this.enabledClientTools),
+      enable_search: options?.enableSearch,
     };
 
     await this.processStream(request);
@@ -170,6 +192,8 @@ export class ChatSession {
   private async processStream(request: ChatStreamRequest): Promise<void> {
     this.isStreaming = true;
     this.resetStreamingState();
+    // Don't reset blockBuilder here — the client controls when to reset
+    // (e.g. addUserBlock resets before adding the user block)
     this.abortController = new AbortController();
 
     try {
@@ -193,7 +217,6 @@ export class ChatSession {
   private currentJobId: string | null = null;
 
   private async consumeJobStream(request: ChatStreamRequest): Promise<void> {
-    // Step 1: Create job
     const job = await this.client.createJob(request);
     this.currentJobId = job.job_id;
 
@@ -204,15 +227,32 @@ export class ChatSession {
 
     const messageId = job.message_id;
     this.lastSeq = -1;
-    let stopTitle: string | undefined;
 
-    // Step 2: Stream events
     const stream = this.client.streamJobEvents(
       job.job_id,
       this.lastSeq,
       this.abortController?.signal,
     );
 
+    // completeStream is called inside consumeEventStream when message_stop arrives
+    // — no second call needed here
+    await this.consumeEventStream(
+      stream,
+      conversationId,
+      messageId,
+      true, // executeClientTools
+    );
+  }
+
+  /**
+   * Shared event consumption loop used by both consumeJobStream and reconnectToJob.
+   */
+  private async consumeEventStream(
+    stream: AsyncGenerator<{ data: string }>,
+    conversationId: string,
+    messageId: string,
+    executeClientTools: boolean,
+  ): Promise<void> {
     for await (const raw of stream) {
       let parsed: SSEEvent;
       try {
@@ -222,14 +262,12 @@ export class ChatSession {
           data === null ||
           typeof data.type !== "string"
         ) {
-          // Track seq even for non-typed events (e.g. ping)
           if (typeof data?.seq === "number") {
             this.lastSeq = data.seq;
           }
           continue;
         }
         parsed = data as SSEEvent;
-        // Track seq from every event
         if (typeof (data as Record<string, unknown>).seq === "number") {
           this.lastSeq = (data as Record<string, unknown>).seq as number;
         }
@@ -242,6 +280,9 @@ export class ChatSession {
           conversationId = parsed.conversation_id;
           if (!this.conversationId) {
             this.conversationId = conversationId;
+          }
+          if (parsed.message_id) {
+            messageId = parsed.message_id;
           }
           if (parsed.model_display_name) {
             this.modelDisplayName = parsed.model_display_name;
@@ -259,8 +300,7 @@ export class ChatSession {
 
         case "tool_use_start": {
           this.applyEvent(parsed);
-          if (parsed.is_client_tool) {
-            // Execute tool and submit result — job auto-resumes
+          if (executeClientTools && parsed.is_client_tool) {
             const results = await this.executeClientTools([
               {
                 callId: parsed.call_id,
@@ -317,7 +357,17 @@ export class ChatSession {
           break;
 
         case "message_stop":
-          stopTitle = parsed.title;
+          // Emit complete IMMEDIATELY — don't wait for stream close
+          // Post-processing continues in background but user is unlocked
+          await this.completeStream(
+            conversationId,
+            messageId,
+            parsed.title,
+            parsed.metrics,
+            parsed.job_id,
+          );
+          this.isStreaming = false;
+          this.currentJobId = null;
           break;
 
         case "error":
@@ -331,9 +381,6 @@ export class ChatSession {
           this.applyEvent(parsed);
       }
     }
-
-    this.currentJobId = null;
-    await this.completeStream(conversationId, messageId, stopTitle);
   }
 
   /**
@@ -342,6 +389,52 @@ export class ChatSession {
    */
   private applyEvent(event: SSEEvent): void {
     switch (event.type) {
+      case "user_message":
+        this.emit({ type: "user_message", content: event.content });
+        break;
+
+      case "title_generated":
+        this.emit({ type: "title_generated", title: event.title });
+        break;
+
+      case "message_start":
+        if (event.conversation_id && !this.conversationId) {
+          this.conversationId = event.conversation_id;
+        }
+        if (event.model_display_name) {
+          this.modelDisplayName = event.model_display_name;
+          this.emit({ type: "model_info", name: event.model_display_name });
+        }
+        break;
+
+      case "content_block_delta":
+        this.streamingContent += event.delta.text;
+        this.emit({ type: "chunk", text: event.delta.text });
+        break;
+
+      case "thinking_delta":
+        this.thinkingContent += event.delta.text;
+        this.isThinking = true;
+        this.emit({ type: "thinking_delta", text: event.delta.text });
+        break;
+
+      case "thinking_complete":
+        this.isThinking = false;
+        this.emit({ type: "thinking_complete" });
+        break;
+
+      case "message_stop":
+        this.emit({
+          type: "complete",
+          content: this.streamingContent,
+          conversationId: this.conversationId ?? "",
+          messageId: event.job_id ?? "",
+          title: event.title,
+          metrics: event.metrics,
+          job_id: event.job_id,
+        });
+        break;
+
       case "tool_use_start": {
         const request: ToolCallRequest = {
           callId: event.call_id,
@@ -371,6 +464,8 @@ export class ChatSession {
           callId: event.call_id,
           toolName: event.tool,
           result: event.result,
+          sources: event.sources,
+          durationMs: event.duration_ms,
         });
         break;
       }
@@ -490,18 +585,25 @@ export class ChatSession {
         });
         break;
 
-      case "activity":
+      case "timeline_entry":
         this.emit({
-          type: "activity",
-          activityId: event.activity_id,
+          type: "timeline_entry",
+          id: event.id,
           status: event.status,
-          category: event.category,
-          title: event.title,
+          kind: event.kind,
+          agent_name: event.agent_name,
+          tool_name: event.tool_name,
+          display_name: event.display_name,
+          tool_category: event.tool_category,
+          viewer: event.viewer,
+          call_id: event.call_id,
           detail: event.detail,
+          started_at: event.started_at,
+          duration_ms: event.duration_ms,
+          output_summary: event.output_summary,
           sources: event.sources,
-          toolName: event.tool_name,
-          agentName: event.agent_name,
-          durationMs: event.duration_ms,
+          parent_id: event.parent_id,
+          structured_output: event.structured_output,
         });
         break;
 
@@ -562,6 +664,8 @@ export class ChatSession {
     conversationId: string,
     messageId: string,
     title?: string,
+    metrics?: Record<string, unknown>,
+    jobId?: string,
   ): Promise<void> {
     // Store assistant message
     const assistantMessage: Message = {
@@ -590,7 +694,62 @@ export class ChatSession {
       conversationId,
       messageId: assistantMessage.id,
       title,
+      metrics,
+      job_id: jobId,
     });
+  }
+
+  /**
+   * Load conversation context (messages) without replaying events.
+   * Used before reconnectToJob — SSE replay handles event replay.
+   */
+  async loadConversation(id: string): Promise<void> {
+    this.conversationId = id;
+    this.resetStreamingState();
+    this.blockBuilder.reset();
+    this.messages = await this.client
+      .getMessages(id)
+      .catch(() => this.storage.fetchMessages(id));
+  }
+
+  /**
+   * Reconnect to a running job's SSE stream (e.g. after page reload).
+   * Replays all events from the beginning and continues live.
+   * Does NOT reset BlockBuilder — caller controls reset.
+   */
+  async reconnectToJob(jobId: string): Promise<void> {
+    if (this.isStreaming) return;
+
+    this.isStreaming = true;
+    this.currentJobId = jobId;
+    this.lastSeq = -1;
+    this.resetStreamingState();
+    this.abortController = new AbortController();
+
+    try {
+      const stream = this.client.streamJobEvents(
+        jobId,
+        this.lastSeq,
+        this.abortController?.signal,
+      );
+
+      // completeStream is called inside consumeEventStream on message_stop
+      await this.consumeEventStream(
+        stream,
+        this.conversationId ?? "",
+        "",
+        false, // don't execute client tools on reconnect
+      );
+    } catch (err) {
+      this.emit({
+        type: "error",
+        error: err instanceof Error ? err : new ConnectionError(String(err)),
+      });
+    } finally {
+      this.isStreaming = false;
+      this.executingTool = null;
+      this.abortController = null;
+    }
   }
 
   disconnect(): void {
@@ -623,6 +782,7 @@ export class ChatSession {
   async switchConversation(id: string): Promise<void> {
     this.conversationId = id;
     this.resetStreamingState();
+    this.blockBuilder.reset();
 
     const [messagesResult, eventsResult] = await Promise.allSettled([
       this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
@@ -632,30 +792,12 @@ export class ChatSession {
     this.messages =
       messagesResult.status === "fulfilled" ? messagesResult.value : [];
 
+    // Replay ALL stored events through the same handlers as live streaming
     if (eventsResult.status === "fulfilled") {
       for (const ev of eventsResult.value) {
-        this.replayEvent(ev.event, ev.data);
+        this.applyEvent({ type: ev.event, ...ev.data } as SSEEvent);
       }
     }
-  }
-
-  /**
-   * Replay a single persisted event to reconstruct session state.
-   * Skips text deltas (final content is already in messages[]).
-   */
-  private replayEvent(eventType: string, data: Record<string, unknown>): void {
-    if (
-      eventType === "content_block_delta" ||
-      eventType === "thinking_delta" ||
-      eventType === "subagent_content_delta" ||
-      eventType === "thinking_complete" ||
-      eventType === "editor_content_start" ||
-      eventType === "editor_content_delta" ||
-      eventType === "editor_content_end"
-    ) {
-      return;
-    }
-    this.applyEvent({ type: eventType, ...data } as SSEEvent);
   }
 
   async deleteConversation(id: string): Promise<void> {
