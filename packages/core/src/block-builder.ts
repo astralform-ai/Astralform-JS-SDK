@@ -19,6 +19,7 @@ export interface UserBlock {
   type: "user";
   id: string;
   content: string;
+  createdAt?: number;
 }
 
 export interface TextBlock {
@@ -72,6 +73,43 @@ export interface ToolBlock {
   result?: string;
 }
 
+export interface CapsuleBlock {
+  type: "capsule";
+  id: string;
+  callId: string;
+  toolName: string;
+  command?: string;
+  output: string;
+  durationMs?: number;
+  isActive: boolean;
+}
+
+export interface AssetBlock {
+  type: "asset";
+  id: string;
+  assetId: string;
+  name: string;
+  url: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+export interface TodoBlock {
+  type: "todo";
+  id: string;
+  todos: { content: string; status: string }[];
+}
+
+export interface EditorBlock {
+  type: "editor";
+  id: string;
+  callId: string;
+  path: string;
+  language: string;
+  content: string;
+  isStreaming: boolean;
+}
+
 export interface ErrorBlock {
   type: "error";
   id: string;
@@ -85,6 +123,10 @@ export type Block =
   | AgentBlock
   | SubagentBlock
   | ToolBlock
+  | CapsuleBlock
+  | AssetBlock
+  | TodoBlock
+  | EditorBlock
   | ErrorBlock;
 
 // =============================================================================
@@ -108,6 +150,8 @@ export class BlockBuilder {
   activeTextId: string | null = null;
   activeThinkingId: string | null = null;
   thinkingStartMs: number | null = null;
+  activeEditorId: string | null = null;
+  activeTodoId: string | null = null;
 
   // ── Registration ──────────────────────────────────────────────
 
@@ -141,6 +185,8 @@ export class BlockBuilder {
     this.activeTextId = null;
     this.activeThinkingId = null;
     this.thinkingStartMs = null;
+    this.activeEditorId = null;
+    this.activeTodoId = null;
   }
 
   setOnChange(fn: (() => void) | null): void {

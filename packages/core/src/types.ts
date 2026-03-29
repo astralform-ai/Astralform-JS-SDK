@@ -12,6 +12,7 @@ export interface AstralformConfig {
 export interface UserMessageEvent {
   type: "user_message";
   content: string;
+  created_at?: number;
 }
 
 export interface TitleGeneratedEvent {
@@ -57,6 +58,21 @@ export interface ToolUseEndEvent {
   result?: string;
   sources?: { title: string; url: string; snippet?: string }[];
   duration_ms?: number;
+}
+
+export interface ToolExecutingEvent {
+  type: "tool_executing";
+  call_id: string;
+  tool: string;
+}
+
+export interface ToolProgressEvent {
+  type: "tool_progress";
+  call_id: string;
+  tool: string;
+  index: number;
+  total: number;
+  item: { title: string; url: string; snippet?: string };
 }
 
 export interface AgentStartEvent {
@@ -116,11 +132,6 @@ export interface ThinkingCompleteEvent {
   type: "thinking_complete";
 }
 
-export interface SourcesEvent {
-  type: "sources";
-  sources: Array<{ title: string; url: string }>;
-}
-
 export interface CapsuleOutputEvent {
   type: "capsule_output";
   tool_name: string;
@@ -174,26 +185,6 @@ export interface AssetCreatedEvent {
   size_bytes: number;
 }
 
-export interface TimelineEntrySSEEvent {
-  type: "timeline_entry";
-  id: string;
-  status: "started" | "completed";
-  kind?: string;
-  agent_name?: string;
-  tool_name?: string;
-  display_name?: string;
-  tool_category?: string;
-  viewer?: string;
-  call_id?: string;
-  detail?: string;
-  started_at?: number;
-  duration_ms?: number;
-  output_summary?: string;
-  sources?: Array<{ title: string; url: string; snippet?: string }>;
-  parent_id?: string;
-  structured_output?: Record<string, unknown>;
-}
-
 export interface EditorContentStartEvent {
   type: "editor_content_start";
   call_id: string;
@@ -227,6 +218,8 @@ export type SSEEvent =
   | ContentBlockDeltaEvent
   | ToolUseStartEvent
   | ToolUseEndEvent
+  | ToolExecutingEvent
+  | ToolProgressEvent
   | AgentStartEvent
   | AgentEndEvent
   | SubagentStartEvent
@@ -236,13 +229,11 @@ export type SSEEvent =
   | SubagentToolUseEvent
   | ThinkingDeltaEvent
   | ThinkingCompleteEvent
-  | SourcesEvent
   | CapsuleOutputEvent
   | CapsuleOutputChunkEvent
   | TodoUpdateEvent
   | MessageStopEvent
   | AssetCreatedEvent
-  | TimelineEntrySSEEvent
   | EditorContentStartEvent
   | EditorContentDeltaEvent
   | EditorContentEndEvent
@@ -253,12 +244,20 @@ export type SSEEvent =
 
 export type ChatEvent =
   | { type: "connected" }
-  | { type: "user_message"; content: string }
+  | { type: "user_message"; content: string; createdAt?: number }
   | { type: "title_generated"; title: string }
   | { type: "chunk"; text: string }
   | { type: "tool_call"; request: ToolCallRequest }
-  | { type: "tool_executing"; name: string }
+  | { type: "tool_executing"; name: string; call_id?: string }
   | { type: "tool_completed"; name: string; result: string }
+  | {
+      type: "tool_progress";
+      callId: string;
+      tool: string;
+      index: number;
+      total: number;
+      item: { title: string; url: string; snippet?: string };
+    }
   | {
       type: "tool_end";
       callId: string;
@@ -302,7 +301,6 @@ export type ChatEvent =
       displayName: string;
       toolCallId: string;
     }
-  | { type: "sources"; sources: Array<{ title: string; url: string }> }
   | {
       type: "capsule_output";
       toolName: string;
@@ -351,25 +349,6 @@ export type ChatEvent =
       attempt: number;
       maxAttempts: number;
       delaySeconds: number;
-    }
-  | {
-      type: "timeline_entry";
-      id: string;
-      status: "started" | "completed";
-      kind?: string;
-      agent_name?: string;
-      tool_name?: string;
-      display_name?: string;
-      tool_category?: string;
-      viewer?: string;
-      call_id?: string;
-      detail?: string;
-      started_at?: number;
-      duration_ms?: number;
-      output_summary?: string;
-      sources?: Array<{ title: string; url: string; snippet?: string }>;
-      parent_id?: string;
-      structured_output?: Record<string, unknown>;
     }
   | {
       type: "editor_content_start";

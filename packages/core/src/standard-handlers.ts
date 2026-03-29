@@ -9,7 +9,18 @@
  *   builder.registerHandlers(standardHandlers);
  */
 
-import type { BlockBuilder, EventHandler } from "./block-builder.js";
+import type {
+  BlockBuilder,
+  CapsuleBlock,
+  EditorBlock,
+  EventHandler,
+  SubagentBlock,
+  TextBlock,
+  ThinkingBlock,
+  TodoBlock,
+  ToolBlock,
+  UserBlock,
+} from "./block-builder.js";
 import type { ChatEvent } from "./types.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -18,7 +29,7 @@ function finalizeText(builder: BlockBuilder): void {
   if (builder.activeTextId) {
     builder.patchBlock(builder.activeTextId, {
       isStreaming: false,
-    } as Partial<import("./block-builder.js").TextBlock>);
+    } as Partial<TextBlock>);
     builder.activeTextId = null;
   }
 }
@@ -27,9 +38,18 @@ function finalizeThinking(builder: BlockBuilder): void {
   if (builder.activeThinkingId) {
     builder.patchBlock(builder.activeThinkingId, {
       isActive: false,
-    } as Partial<import("./block-builder.js").ThinkingBlock>);
+    } as Partial<ThinkingBlock>);
     builder.activeThinkingId = null;
     builder.thinkingStartMs = null;
+  }
+}
+
+function finalizeEditor(builder: BlockBuilder): void {
+  if (builder.activeEditorId) {
+    builder.patchBlock(builder.activeEditorId, {
+      isStreaming: false,
+    } as Partial<EditorBlock>);
+    builder.activeEditorId = null;
   }
 }
 
@@ -38,10 +58,24 @@ function finalizeThinking(builder: BlockBuilder): void {
 // ── User message ────────────────────────────────────────────────────
 
 const handleUserMessage: EventHandler = (event, builder) => {
-  // Skip if user block already exists (optimistic add from frontend)
-  if (builder.findBlock((b) => b.type === "user")) return;
   const e = event as ChatEvent & { type: "user_message" };
-  builder.addBlock({ type: "user", id: builder.nextId(), content: e.content });
+  // Skip if user block already exists (optimistic add from frontend),
+  // but patch createdAt if the server provides it
+  const existing = builder.findBlock((b) => b.type === "user");
+  if (existing) {
+    if (e.createdAt) {
+      builder.patchBlock(existing.id, {
+        createdAt: e.createdAt,
+      } as Partial<UserBlock>);
+    }
+    return;
+  }
+  builder.addBlock({
+    type: "user",
+    id: builder.nextId(),
+    content: e.content,
+    createdAt: e.createdAt,
+  });
 };
 
 // ── Text streaming ──────────────────────────────────────────────────
@@ -63,7 +97,7 @@ const handleChunk: EventHandler = (event, builder) => {
     if (existing && existing.type === "text") {
       builder.patchBlock(id, {
         content: existing.content + e.text,
-      } as Partial<import("./block-builder.js").TextBlock>);
+      } as Partial<TextBlock>);
     }
   }
 };
@@ -88,14 +122,30 @@ const handleToolCall: EventHandler = (event, builder) => {
 };
 
 const handleToolExecuting: EventHandler = (event, builder) => {
-  const e = event as ChatEvent & { type: "tool_executing" };
+  const e = event as ChatEvent & { type: "tool_executing"; call_id?: string };
   const block = builder.findBlock(
-    (b) => b.type === "tool" && b.toolName === e.name && b.status === "calling",
+    (b) =>
+      b.type === "tool" &&
+      (e.call_id ? b.callId === e.call_id : b.toolName === e.name) &&
+      b.status === "calling",
   );
   if (block) {
-    builder.patchBlock(block.id, { status: "executing" } as Partial<
-      import("./block-builder.js").ToolBlock
-    >);
+    builder.patchBlock(block.id, { status: "executing" } as Partial<ToolBlock>);
+  }
+};
+
+const handleToolProgress: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "tool_progress" };
+  const block = builder.findBlock(
+    (b) => b.type === "tool" && b.callId === e.callId,
+  );
+  if (block && block.type === "tool") {
+    const sources = block.sources ? [...block.sources] : [];
+    sources.push(e.item);
+    builder.patchBlock(block.id, {
+      sources,
+      status: "executing",
+    } as Partial<ToolBlock>);
   }
 };
 
@@ -126,7 +176,7 @@ const handleToolEnd: EventHandler = (event, builder) => {
         ? { durationMs: toolEnd.durationMs }
         : {}),
       ...(toolEnd?.result ? { result: toolEnd.result } : {}),
-    } as Partial<import("./block-builder.js").ToolBlock>);
+    } as Partial<ToolBlock>);
   }
 };
 
@@ -164,7 +214,7 @@ const handleThinkingDelta: EventHandler = (event, builder) => {
     if (existing && existing.type === "thinking") {
       builder.patchBlock(id, {
         content: existing.content + e.text,
-      } as Partial<import("./block-builder.js").ThinkingBlock>);
+      } as Partial<ThinkingBlock>);
     }
   }
 };
@@ -177,7 +227,7 @@ const handleThinkingComplete: EventHandler = (_event, builder) => {
     builder.patchBlock(builder.activeThinkingId, {
       isActive: false,
       durationMs,
-    } as Partial<import("./block-builder.js").ThinkingBlock>);
+    } as Partial<ThinkingBlock>);
     builder.activeThinkingId = null;
     builder.thinkingStartMs = null;
   }
@@ -209,7 +259,7 @@ const handleSubagentChunk: EventHandler = (event, builder) => {
   if (block && block.type === "subagent") {
     builder.patchBlock(block.id, {
       content: block.content + e.text,
-    } as Partial<import("./block-builder.js").SubagentBlock>);
+    } as Partial<SubagentBlock>);
   }
 };
 
@@ -221,7 +271,7 @@ const handleSubagentUpdate: EventHandler = (event, builder) => {
   if (block) {
     builder.patchBlock(block.id, {
       displayName: e.displayName,
-    } as Partial<import("./block-builder.js").SubagentBlock>);
+    } as Partial<SubagentBlock>);
   }
 };
 
@@ -233,7 +283,7 @@ const handleSubagentEnd: EventHandler = (event, builder) => {
   if (block) {
     builder.patchBlock(block.id, {
       isActive: false,
-    } as Partial<import("./block-builder.js").SubagentBlock>);
+    } as Partial<SubagentBlock>);
   }
 };
 
@@ -242,11 +292,10 @@ const handleSubagentEnd: EventHandler = (event, builder) => {
 const handleComplete: EventHandler = (_event, builder) => {
   finalizeText(builder);
   finalizeThinking(builder);
+  finalizeEditor(builder);
   for (const b of builder.getBlocks()) {
     if (b.type === "tool" && b.status !== "completed") {
-      builder.patchBlock(b.id, { status: "completed" } as Partial<
-        import("./block-builder.js").ToolBlock
-      >);
+      builder.patchBlock(b.id, { status: "completed" } as Partial<ToolBlock>);
     }
   }
 };
@@ -265,7 +314,138 @@ const handleError: EventHandler = (event, builder) => {
 const handleDisconnected: EventHandler = (_event, builder) => {
   finalizeText(builder);
   finalizeThinking(builder);
+  finalizeEditor(builder);
 };
+
+// ── Capsule output ──────────────────────────────────────────────────
+
+const handleCapsuleOutputChunk: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "capsule_output_chunk" };
+  const block = builder.findBlock(
+    (b) => b.type === "capsule" && b.callId === e.callId,
+  );
+  if (block && block.type === "capsule") {
+    builder.patchBlock(block.id, {
+      output: block.output + e.chunk,
+    } as Partial<CapsuleBlock>);
+  } else {
+    builder.addBlock({
+      type: "capsule",
+      id: builder.nextId(),
+      callId: e.callId,
+      toolName: "",
+      output: e.chunk,
+      isActive: true,
+    });
+  }
+};
+
+const handleCapsuleOutput: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "capsule_output" };
+  const block = builder.findBlock(
+    (b) => b.type === "capsule" && b.callId === (e.callId ?? ""),
+  );
+  if (block) {
+    builder.patchBlock(block.id, {
+      output: e.output,
+      command: e.command,
+      toolName: e.toolName,
+      durationMs: e.durationMs,
+      isActive: false,
+    } as Partial<CapsuleBlock>);
+  } else {
+    builder.addBlock({
+      type: "capsule",
+      id: builder.nextId(),
+      callId: e.callId ?? "",
+      toolName: e.toolName,
+      command: e.command,
+      output: e.output,
+      durationMs: e.durationMs,
+      isActive: false,
+    });
+  }
+};
+
+// ── Assets ──────────────────────────────────────────────────────────
+
+const handleAssetCreated: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "asset_created" };
+  builder.addBlock({
+    type: "asset",
+    id: builder.nextId(),
+    assetId: e.assetId,
+    name: e.name,
+    url: e.url,
+    mediaType: e.mediaType,
+    sizeBytes: e.sizeBytes,
+  });
+};
+
+// ── Todos ───────────────────────────────────────────────────────────
+
+const handleTodoUpdate: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "todo_update" };
+  if (builder.activeTodoId) {
+    builder.patchBlock(builder.activeTodoId, {
+      todos: e.todos,
+    } as Partial<TodoBlock>);
+  } else {
+    const id = builder.nextId();
+    builder.activeTodoId = id;
+    builder.addBlock({
+      type: "todo",
+      id,
+      todos: e.todos,
+    });
+  }
+};
+
+// ── Editor content ──────────────────────────────────────────────────
+
+const handleEditorContentStart: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "editor_content_start" };
+  const id = builder.nextId();
+  builder.activeEditorId = id;
+  builder.addBlock({
+    type: "editor",
+    id,
+    callId: e.callId,
+    path: e.path,
+    language: e.language,
+    content: "",
+    isStreaming: true,
+  });
+};
+
+const handleEditorContentDelta: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "editor_content_delta" };
+  const block = builder.findBlock(
+    (b) => b.type === "editor" && b.callId === e.callId,
+  );
+  if (block && block.type === "editor") {
+    builder.patchBlock(block.id, {
+      content: block.content + e.delta,
+    } as Partial<EditorBlock>);
+  }
+};
+
+const handleEditorContentEnd: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "editor_content_end" };
+  const block = builder.findBlock(
+    (b) => b.type === "editor" && b.callId === e.callId,
+  );
+  if (block) {
+    builder.patchBlock(block.id, {
+      isStreaming: false,
+    } as Partial<EditorBlock>);
+  }
+  builder.activeEditorId = null;
+};
+
+// ── Lifecycle no-ops (intentionally handled, no blocks produced) ────
+
+const noop: EventHandler = () => {};
 
 // ── Exported handler map ────────────────────────────────────────────
 
@@ -274,15 +454,26 @@ export const standardHandlers: Record<string, EventHandler> = {
   chunk: handleChunk,
   tool_call: handleToolCall,
   tool_executing: handleToolExecuting,
+  tool_progress: handleToolProgress,
   tool_completed: handleToolEnd,
   tool_end: handleToolEnd,
   agent_start: handleAgentStart,
+  agent_end: noop,
   thinking_delta: handleThinkingDelta,
   thinking_complete: handleThinkingComplete,
   subagent_start: handleSubagentStart,
   subagent_chunk: handleSubagentChunk,
   subagent_update: handleSubagentUpdate,
   subagent_end: handleSubagentEnd,
+  subagent_tool_use: noop,
+  capsule_output: handleCapsuleOutput,
+  capsule_output_chunk: handleCapsuleOutputChunk,
+  asset_created: handleAssetCreated,
+  todo_update: handleTodoUpdate,
+  editor_content_start: handleEditorContentStart,
+  editor_content_delta: handleEditorContentDelta,
+  editor_content_end: handleEditorContentEnd,
+  retry: noop,
   complete: handleComplete,
   error: handleError,
   disconnected: handleDisconnected,

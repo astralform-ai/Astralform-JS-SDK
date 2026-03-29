@@ -14,7 +14,6 @@ import type {
   ProjectStatus,
   SendOptions,
   SkillInfo,
-  Source,
   SSEEvent,
   SubagentState,
   TodoItem,
@@ -49,7 +48,6 @@ export class ChatSession {
   thinkingContent = "";
   isThinking = false;
   activeSubagents = new Map<string, SubagentState>();
-  sources: Source[] = [];
   capsuleOutputs: CapsuleOutput[] = [];
   todos: TodoItem[] = [];
   activeTools = new Map<string, ToolState>();
@@ -183,7 +181,6 @@ export class ChatSession {
     this.thinkingContent = "";
     this.isThinking = false;
     this.activeSubagents.clear();
-    this.sources = [];
     this.capsuleOutputs = [];
     this.todos = [];
     this.activeTools.clear();
@@ -390,12 +387,27 @@ export class ChatSession {
   private applyEvent(event: SSEEvent): void {
     switch (event.type) {
       case "user_message":
-        this.emit({ type: "user_message", content: event.content });
+        this.emit({
+          type: "user_message",
+          content: event.content,
+          createdAt: event.created_at,
+        });
         break;
 
-      case "title_generated":
+      case "title_generated": {
+        // Update SDK's internal conversations array so syncConversations
+        // doesn't overwrite the title with a stale value
+        if (this.conversationId && event.title) {
+          const conv = this.conversations.find(
+            (c) => c.id === this.conversationId,
+          );
+          if (conv) {
+            conv.title = event.title;
+          }
+        }
         this.emit({ type: "title_generated", title: event.title });
         break;
+      }
 
       case "message_start":
         if (event.conversation_id && !this.conversationId) {
@@ -421,6 +433,25 @@ export class ChatSession {
       case "thinking_complete":
         this.isThinking = false;
         this.emit({ type: "thinking_complete" });
+        break;
+
+      case "tool_executing":
+        this.emit({
+          type: "tool_executing",
+          name: event.tool,
+          call_id: event.call_id,
+        });
+        break;
+
+      case "tool_progress":
+        this.emit({
+          type: "tool_progress",
+          callId: event.call_id,
+          tool: event.tool,
+          index: event.index,
+          total: event.total,
+          item: event.item,
+        });
         break;
 
       case "message_stop":
@@ -541,11 +572,6 @@ export class ChatSession {
         });
         break;
 
-      case "sources":
-        this.sources.push(...event.sources);
-        this.emit({ type: "sources", sources: event.sources });
-        break;
-
       case "capsule_output": {
         const capsule: CapsuleOutput = {
           toolName: event.tool_name,
@@ -582,28 +608,6 @@ export class ChatSession {
           url: event.url,
           mediaType: event.media_type,
           sizeBytes: event.size_bytes,
-        });
-        break;
-
-      case "timeline_entry":
-        this.emit({
-          type: "timeline_entry",
-          id: event.id,
-          status: event.status,
-          kind: event.kind,
-          agent_name: event.agent_name,
-          tool_name: event.tool_name,
-          display_name: event.display_name,
-          tool_category: event.tool_category,
-          viewer: event.viewer,
-          call_id: event.call_id,
-          detail: event.detail,
-          started_at: event.started_at,
-          duration_ms: event.duration_ms,
-          output_summary: event.output_summary,
-          sources: event.sources,
-          parent_id: event.parent_id,
-          structured_output: event.structured_output,
         });
         break;
 
