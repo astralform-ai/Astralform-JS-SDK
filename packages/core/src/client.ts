@@ -82,12 +82,12 @@ export class AstralformClient {
     return response;
   }
 
-  private async get<T>(path: string): Promise<T> {
+  async get<T>(path: string): Promise<T> {
     const response = await this.request("GET", path);
     return response.json() as Promise<T>;
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  async post<T>(path: string, body: unknown): Promise<T> {
     const response = await this.request("POST", path, body);
     return response.json() as Promise<T>;
   }

@@ -7,6 +7,42 @@ export interface AstralformConfig {
   fetch?: typeof globalThis.fetch;
 }
 
+// --- Event type constants ---
+
+export const ChatEventType = {
+  Connected: "connected",
+  BlocksChanged: "blocks_changed",
+  UserMessage: "user_message",
+  TitleGenerated: "title_generated",
+  ModelInfo: "model_info",
+  Chunk: "chunk",
+  ToolCall: "tool_call",
+  ToolExecuting: "tool_executing",
+  ToolProgress: "tool_progress",
+  ToolCompleted: "tool_completed",
+  ToolEnd: "tool_end",
+  AgentStart: "agent_start",
+  AgentEnd: "agent_end",
+  ThinkingDelta: "thinking_delta",
+  ThinkingComplete: "thinking_complete",
+  SubagentStart: "subagent_start",
+  SubagentChunk: "subagent_chunk",
+  SubagentUpdate: "subagent_update",
+  SubagentEnd: "subagent_end",
+  SubagentToolUse: "subagent_tool_use",
+  CapsuleOutput: "capsule_output",
+  CapsuleOutputChunk: "capsule_output_chunk",
+  AssetCreated: "asset_created",
+  TodoUpdate: "todo_update",
+  EditorContentStart: "editor_content_start",
+  EditorContentDelta: "editor_content_delta",
+  EditorContentEnd: "editor_content_end",
+  Complete: "complete",
+  Error: "error",
+  Disconnected: "disconnected",
+  Retry: "retry",
+} as const;
+
 // --- SSE Raw Events (from backend) ---
 
 export interface UserMessageEvent {

@@ -38,6 +38,17 @@ export { generateId } from "./utils.js";
 // Streaming
 export { streamJobSSE } from "./streaming.js";
 
+// Stream manager
+export { StreamManager } from "./stream-manager.js";
+export type {
+  StreamState,
+  SendOptions,
+  StreamManagerEvent,
+} from "./stream-manager.js";
+
+// Constants
+export { ChatEventType } from "./types.js";
+
 // Types
 export type {
   AstralformConfig,
@@ -83,5 +94,4 @@ export type {
   JobCreateResponse,
   ChatStreamEvent,
   ConversationEvent,
-  SendOptions,
 } from "./types.js";

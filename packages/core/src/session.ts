@@ -196,10 +196,13 @@ export class ChatSession {
     try {
       await this.consumeJobStream(request);
     } catch (err) {
-      this.emit({
-        type: "error",
-        error: err instanceof Error ? err : new ConnectionError(String(err)),
-      });
+      // Don't emit error for intentional abort (detach/disconnect)
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        this.emit({
+          type: "error",
+          error: err instanceof Error ? err : new ConnectionError(String(err)),
+        });
+      }
     } finally {
       this.isStreaming = false;
       this.executingTool = null;
@@ -211,7 +214,7 @@ export class ChatSession {
   private lastSeq = -1;
 
   /** Current job ID for cancellation */
-  private currentJobId: string | null = null;
+  currentJobId: string | null = null;
 
   private async consumeJobStream(request: ChatStreamRequest): Promise<void> {
     const job = await this.client.createJob(request);
@@ -756,18 +759,27 @@ export class ChatSession {
     }
   }
 
-  disconnect(): void {
-    // Cancel the running job if any
-    if (this.currentJobId) {
-      this.client.cancelJob(this.currentJobId).catch(() => {});
-      this.currentJobId = null;
-    }
+  /** Detach from the SSE stream without cancelling the job.
+   *  The backend job keeps running — caller can reconnect later. */
+  detach(): void {
     this.abortController?.abort();
     this.abortController = null;
     this.isStreaming = false;
     this.streamingContent = "";
     this.executingTool = null;
+    // Reset block builder to prevent stale blocks from leaking
+    // into the next conversation's render
+    this.blockBuilder.reset();
     this.emit({ type: "disconnected" });
+  }
+
+  /** Stop the job and disconnect (explicit user action). */
+  disconnect(): void {
+    if (this.currentJobId) {
+      this.client.cancelJob(this.currentJobId).catch(() => {});
+    }
+    this.detach();
+    this.currentJobId = null;
   }
 
   async createNewConversation(): Promise<string> {
