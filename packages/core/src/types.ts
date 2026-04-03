@@ -41,6 +41,7 @@ export const ChatEventType = {
   Error: "error",
   Disconnected: "disconnected",
   Retry: "retry",
+  ContextUpdate: "context_update",
 } as const;
 
 // --- SSE Raw Events (from backend) ---
@@ -247,6 +248,13 @@ export interface RetryEvent {
   delay_seconds: number;
 }
 
+export interface ContextUpdateEvent {
+  type: "context_update";
+  context: Record<string, unknown>;
+  phase?: string;
+  updated_at?: number;
+}
+
 export type SSEEvent =
   | MessageStartEvent
   | UserMessageEvent
@@ -274,6 +282,7 @@ export type SSEEvent =
   | EditorContentDeltaEvent
   | EditorContentEndEvent
   | RetryEvent
+  | ContextUpdateEvent
   | SSEErrorEvent;
 
 // --- High-Level Chat Events (SDK → consumer) ---
@@ -385,6 +394,12 @@ export type ChatEvent =
       attempt: number;
       maxAttempts: number;
       delaySeconds: number;
+    }
+  | {
+      type: "context_update";
+      context: Record<string, unknown>;
+      phase?: string;
+      updatedAt?: number;
     }
   | {
       type: "editor_content_start";

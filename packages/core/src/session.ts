@@ -603,6 +603,15 @@ export class ChatSession {
         this.emit({ type: "todo_update", todos: event.todos });
         break;
 
+      case "context_update":
+        this.emit({
+          type: "context_update",
+          context: event.context,
+          phase: event.phase,
+          updatedAt: event.updated_at,
+        });
+        break;
+
       case "asset_created":
         this.emit({
           type: "asset_created",
