@@ -124,6 +124,12 @@ export interface DesktopStreamBlock {
   sandboxId: string;
 }
 
+export interface AttachmentBlock {
+  type: "attachment";
+  id: string;
+  files: { name: string; path: string; mediaType: string; sizeBytes: number }[];
+}
+
 export type Block =
   | UserBlock
   | TextBlock
@@ -136,6 +142,7 @@ export type Block =
   | TodoBlock
   | EditorBlock
   | DesktopStreamBlock
+  | AttachmentBlock
   | ErrorBlock;
 
 // =============================================================================

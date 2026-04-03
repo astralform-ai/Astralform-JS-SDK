@@ -10,6 +10,7 @@
  */
 
 import type {
+  AttachmentBlock,
   BlockBuilder,
   CapsuleBlock,
   DesktopStreamBlock,
@@ -467,6 +468,18 @@ const handleDesktopStream: EventHandler = (event, builder) => {
   }
 };
 
+// ── Attachment staged ────────────────────────────────────────────────
+
+const handleAttachmentStaged: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "attachment_staged" };
+  if (!e.files || e.files.length === 0) return;
+  builder.addBlock({
+    type: "attachment",
+    id: builder.nextId(),
+    files: e.files,
+  } as AttachmentBlock);
+};
+
 // ── Lifecycle no-ops (intentionally handled, no blocks produced) ────
 
 const noop: EventHandler = () => {};
@@ -498,6 +511,8 @@ export const standardHandlers: Record<string, EventHandler> = {
   editor_content_delta: handleEditorContentDelta,
   editor_content_end: handleEditorContentEnd,
   desktop_stream: handleDesktopStream,
+  attachment_staged: handleAttachmentStaged,
+  workspace_ready: noop,
   retry: noop,
   complete: handleComplete,
   error: handleError,

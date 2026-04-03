@@ -43,6 +43,8 @@ export const ChatEventType = {
   Retry: "retry",
   ContextUpdate: "context_update",
   DesktopStream: "desktop_stream",
+  AttachmentStaged: "attachment_staged",
+  WorkspaceReady: "workspace_ready",
 } as const;
 
 // --- SSE Raw Events (from backend) ---
@@ -263,6 +265,22 @@ export interface DesktopStreamEvent {
   sandbox_id: string;
 }
 
+export interface AttachmentStagedEvent {
+  type: "attachment_staged";
+  files: {
+    name: string;
+    path: string;
+    media_type: string;
+    size_bytes: number;
+  }[];
+}
+
+export interface WorkspaceReadyEvent {
+  type: "workspace_ready";
+  conversation_id: string;
+  sandbox_id: string;
+}
+
 export type SSEEvent =
   | MessageStartEvent
   | UserMessageEvent
@@ -292,6 +310,8 @@ export type SSEEvent =
   | RetryEvent
   | ContextUpdateEvent
   | DesktopStreamEvent
+  | AttachmentStagedEvent
+  | WorkspaceReadyEvent
   | SSEErrorEvent;
 
 // --- High-Level Chat Events (SDK → consumer) ---
@@ -427,6 +447,20 @@ export type ChatEvent =
       type: "desktop_stream";
       url: string;
       authKey: string;
+      sandboxId: string;
+    }
+  | {
+      type: "attachment_staged";
+      files: {
+        name: string;
+        path: string;
+        mediaType: string;
+        sizeBytes: number;
+      }[];
+    }
+  | {
+      type: "workspace_ready";
+      conversationId: string;
       sandboxId: string;
     }
   | { type: "model_info"; name: string }

@@ -621,6 +621,26 @@ export class ChatSession {
         });
         break;
 
+      case "attachment_staged":
+        this.emit({
+          type: "attachment_staged",
+          files: (event.files || []).map((f: any) => ({
+            name: f.name,
+            path: f.path,
+            mediaType: f.media_type,
+            sizeBytes: f.size_bytes,
+          })),
+        });
+        break;
+
+      case "workspace_ready":
+        this.emit({
+          type: "workspace_ready",
+          conversationId: event.conversation_id,
+          sandboxId: event.sandbox_id,
+        });
+        break;
+
       case "asset_created":
         this.emit({
           type: "asset_created",
