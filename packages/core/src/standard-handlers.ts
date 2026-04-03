@@ -10,7 +10,6 @@
  */
 
 import type {
-  AttachmentBlock,
   BlockBuilder,
   CapsuleBlock,
   DesktopStreamBlock,
@@ -477,7 +476,7 @@ const handleAttachmentStaged: EventHandler = (event, builder) => {
     type: "attachment",
     id: builder.nextId(),
     files: e.files,
-  } as AttachmentBlock);
+  });
 };
 
 // ── Lifecycle no-ops (intentionally handled, no blocks produced) ────

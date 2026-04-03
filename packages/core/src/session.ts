@@ -624,7 +624,7 @@ export class ChatSession {
       case "attachment_staged":
         this.emit({
           type: "attachment_staged",
-          files: (event.files || []).map((f: any) => ({
+          files: (event.files || []).map((f) => ({
             name: f.name,
             path: f.path,
             mediaType: f.media_type,
