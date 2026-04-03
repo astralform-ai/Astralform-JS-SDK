@@ -116,6 +116,14 @@ export interface ErrorBlock {
   message: string;
 }
 
+export interface DesktopStreamBlock {
+  type: "desktop_stream";
+  id: string;
+  url: string;
+  authKey: string;
+  sandboxId: string;
+}
+
 export type Block =
   | UserBlock
   | TextBlock
@@ -127,6 +135,7 @@ export type Block =
   | AssetBlock
   | TodoBlock
   | EditorBlock
+  | DesktopStreamBlock
   | ErrorBlock;
 
 // =============================================================================

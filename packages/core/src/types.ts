@@ -42,6 +42,7 @@ export const ChatEventType = {
   Disconnected: "disconnected",
   Retry: "retry",
   ContextUpdate: "context_update",
+  DesktopStream: "desktop_stream",
 } as const;
 
 // --- SSE Raw Events (from backend) ---
@@ -255,6 +256,13 @@ export interface ContextUpdateEvent {
   updated_at?: number;
 }
 
+export interface DesktopStreamEvent {
+  type: "desktop_stream";
+  url: string;
+  auth_key: string;
+  sandbox_id: string;
+}
+
 export type SSEEvent =
   | MessageStartEvent
   | UserMessageEvent
@@ -283,6 +291,7 @@ export type SSEEvent =
   | EditorContentEndEvent
   | RetryEvent
   | ContextUpdateEvent
+  | DesktopStreamEvent
   | SSEErrorEvent;
 
 // --- High-Level Chat Events (SDK → consumer) ---
@@ -414,6 +423,12 @@ export type ChatEvent =
       delta: string;
     }
   | { type: "editor_content_end"; callId: string }
+  | {
+      type: "desktop_stream";
+      url: string;
+      authKey: string;
+      sandboxId: string;
+    }
   | { type: "model_info"; name: string }
   | { type: "blocks_changed"; blocks: import("./block-builder.js").Block[] }
   | { type: "error"; error: Error }

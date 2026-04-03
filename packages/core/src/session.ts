@@ -612,6 +612,15 @@ export class ChatSession {
         });
         break;
 
+      case "desktop_stream":
+        this.emit({
+          type: "desktop_stream",
+          url: event.url,
+          authKey: event.auth_key,
+          sandboxId: event.sandbox_id,
+        });
+        break;
+
       case "asset_created":
         this.emit({
           type: "asset_created",

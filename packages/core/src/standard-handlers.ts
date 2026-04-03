@@ -12,6 +12,7 @@
 import type {
   BlockBuilder,
   CapsuleBlock,
+  DesktopStreamBlock,
   EditorBlock,
   EventHandler,
   SubagentBlock,
@@ -443,6 +444,29 @@ const handleEditorContentEnd: EventHandler = (event, builder) => {
   builder.activeEditorId = null;
 };
 
+// ── Desktop stream ───────────────────────────────────────────────────
+
+const handleDesktopStream: EventHandler = (event, builder) => {
+  const e = event as ChatEvent & { type: "desktop_stream" };
+  if (!e.url) return;
+  const existing = builder.findBlock((b) => b.type === "desktop_stream");
+  if (existing) {
+    builder.patchBlock(existing.id, {
+      url: e.url,
+      authKey: e.authKey,
+      sandboxId: e.sandboxId,
+    } as Partial<DesktopStreamBlock>);
+  } else {
+    builder.addBlock({
+      type: "desktop_stream",
+      id: builder.nextId(),
+      url: e.url,
+      authKey: e.authKey,
+      sandboxId: e.sandboxId,
+    });
+  }
+};
+
 // ── Lifecycle no-ops (intentionally handled, no blocks produced) ────
 
 const noop: EventHandler = () => {};
@@ -473,6 +497,7 @@ export const standardHandlers: Record<string, EventHandler> = {
   editor_content_start: handleEditorContentStart,
   editor_content_delta: handleEditorContentDelta,
   editor_content_end: handleEditorContentEnd,
+  desktop_stream: handleDesktopStream,
   retry: noop,
   complete: handleComplete,
   error: handleError,
