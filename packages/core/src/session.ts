@@ -1,6 +1,7 @@
 import { BlockBuilder } from "./block-builder.js";
 import { AstralformClient } from "./client.js";
 import { AstralformError, ConnectionError } from "./errors.js";
+import { createRateLimitErrorFromPayload } from "./rate-limit.js";
 import { InMemoryStorage, type ChatStorage } from "./storage.js";
 import { ToolRegistry } from "./tools.js";
 import type {
@@ -24,6 +25,8 @@ import type {
 import { generateId } from "./utils.js";
 
 type ChatEventHandler = (event: ChatEvent) => void;
+
+const RATE_LIMIT_PATTERN = /rate\s*limit/i;
 
 export class ChatSession {
   readonly client: AstralformClient;
@@ -370,12 +373,25 @@ export class ChatSession {
           this.currentJobId = null;
           break;
 
-        case "error":
+        case "error": {
+          const isRateLimit =
+            parsed.code === "rate_limit_exceeded" ||
+            RATE_LIMIT_PATTERN.test(parsed.message);
+          if (isRateLimit) {
+            this.emit({
+              type: "error",
+              error: createRateLimitErrorFromPayload(
+                parsed as unknown as Record<string, unknown>,
+              ),
+            });
+            break;
+          }
           this.emit({
             type: "error",
             error: new AstralformError(parsed.message, parsed.code),
           });
           break;
+        }
 
         default:
           this.applyEvent(parsed);

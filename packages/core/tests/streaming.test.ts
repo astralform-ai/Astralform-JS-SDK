@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { streamJobSSE } from "../src/streaming.js";
-import { AuthenticationError, StreamAbortedError } from "../src/errors.js";
+import {
+  AuthenticationError,
+  RateLimitError,
+  StreamAbortedError,
+} from "../src/errors.js";
 
 function createMockResponse(
   chunks: string[],
@@ -82,6 +86,40 @@ describe("streamJobSSE", () => {
         // consume
       }
     }).rejects.toThrow(AuthenticationError);
+  });
+
+  it("throws RateLimitError with metadata on 429", async () => {
+    const resetSec = Math.floor(Date.now() / 1000) + 30;
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response("Too Many Requests", {
+        status: 429,
+        headers: {
+          "Retry-After": "30",
+          "X-RateLimit-Limit": "120",
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Reset": String(resetSec),
+          "X-Request-ID": "req_stream_123",
+        },
+      });
+
+    try {
+      for await (const _ of streamJobSSE({
+        url: "http://test.com/v1/jobs/j1/events",
+        headers: {},
+        fetchFn: mockFetch,
+      })) {
+        // consume
+      }
+      throw new Error("Expected streamJobSSE to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RateLimitError);
+      const rateErr = err as RateLimitError;
+      expect(rateErr.retryAfterSec).toBe(30);
+      expect(rateErr.limit).toBe(120);
+      expect(rateErr.remaining).toBe(0);
+      expect(rateErr.requestId).toBe("req_stream_123");
+      expect(rateErr.resetAt).toBe(resetSec * 1000);
+    }
   });
 
   it("throws StreamAbortedError when signal is aborted", async () => {

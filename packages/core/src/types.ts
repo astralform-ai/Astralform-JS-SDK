@@ -206,6 +206,14 @@ export interface SSEErrorEvent {
   type: "error";
   code: string;
   message: string;
+  retry_after?: number;
+  retry_after_sec?: number;
+  reset_at?: number | string;
+  scope?: string;
+  policy_id?: string;
+  limit?: number;
+  remaining?: number;
+  request_id?: string;
 }
 
 export interface SubagentToolUseEvent {

@@ -1,10 +1,7 @@
-import {
-  AuthenticationError,
-  ConnectionError,
-  RateLimitError,
-  ServerError,
-} from "./errors.js";
+import { AuthenticationError, ConnectionError, ServerError } from "./errors.js";
+import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import { streamJobSSE } from "./streaming.js";
+import { sanitizeErrorText } from "./utils.js";
 import type {
   AgentInfo,
   AstralformConfig,
@@ -103,12 +100,9 @@ export class AstralformClient {
       case 401:
         throw new AuthenticationError();
       case 429:
-        throw new RateLimitError();
+        throw createRateLimitErrorFromHttp(response, text);
       default: {
-        // Sanitize server error text to avoid leaking sensitive details
-        const safeText = text
-          ? text.slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
-          : "";
+        const safeText = text ? sanitizeErrorText(text) : "";
         throw new ServerError(safeText || `HTTP ${response.status}`);
       }
     }

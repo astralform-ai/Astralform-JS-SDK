@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { ChatSession } from "../src/session.js";
 import type { ChatEvent } from "../src/types.js";
+import { RateLimitError } from "../src/errors.js";
 import { createSessionMockFetch } from "./helpers.js";
 
 describe("ChatSession", () => {
@@ -235,6 +236,54 @@ describe("ChatSession", () => {
       expect(assetEvent.url).toBe("https://cdn.example.com/report.pdf");
       expect(assetEvent.mediaType).toBe("application/pdf");
       expect(assetEvent.sizeBytes).toBe(5000);
+    }
+  });
+
+  it("maps SSE rate-limit errors to RateLimitError", async () => {
+    const sseData = [
+      'event: error\ndata: {"type":"error","code":"rate_limit_exceeded","message":"Too many conversation turns","retry_after":25,"scope":"project","policy_id":"conversation.turn","limit":60,"remaining":0,"reset_at":1767225600,"request_id":"req_sse_123","seq":0}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/project/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [],
+    });
+
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    await session.connect();
+
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await session.send("Hit rate limit");
+
+    const errorEvent = events.find((e) => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    if (errorEvent?.type === "error") {
+      expect(errorEvent.error).toBeInstanceOf(RateLimitError);
+      const rateErr = errorEvent.error as RateLimitError;
+      expect(rateErr.message).toBe("Too many conversation turns");
+      expect(rateErr.retryAfterSec).toBe(25);
+      expect(rateErr.scope).toBe("project");
+      expect(rateErr.policyId).toBe("conversation.turn");
+      expect(rateErr.limit).toBe(60);
+      expect(rateErr.remaining).toBe(0);
+      expect(rateErr.requestId).toBe("req_sse_123");
+      expect(rateErr.resetAt).toBe(1767225600 * 1000);
     }
   });
 

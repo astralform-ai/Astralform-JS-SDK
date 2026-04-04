@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { AstralformClient } from "../src/client.js";
-import { AuthenticationError } from "../src/errors.js";
+import { AuthenticationError, RateLimitError } from "../src/errors.js";
 import { createMockFetch } from "./helpers.js";
 
 describe("AstralformClient", () => {
@@ -80,6 +80,52 @@ describe("AstralformClient", () => {
     const client = new AstralformClient({ ...config, fetch: mockFetch });
 
     await expect(client.getHealth()).rejects.toThrow(AuthenticationError);
+  });
+
+  it("throws RateLimitError with metadata on 429", async () => {
+    const nowSec = Math.floor(Date.now() / 1000) + 42;
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: "rate_limit_exceeded",
+          message: "Too many requests",
+          retry_after: 42,
+          scope: "project",
+          policy_id: "conversation.turn",
+          limit: 60,
+          remaining: 0,
+          reset_at: nowSec,
+          request_id: "req_body_123",
+        }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": "42",
+            "X-RateLimit-Limit": "60",
+            "X-RateLimit-Remaining": "0",
+            "X-Request-ID": "req_header_456",
+          },
+        },
+      );
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+
+    try {
+      await client.getHealth();
+      throw new Error("Expected getHealth to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RateLimitError);
+      const rateErr = err as RateLimitError;
+      expect(rateErr.message).toBe("Too many requests");
+      expect(rateErr.retryAfterSec).toBe(42);
+      expect(rateErr.scope).toBe("project");
+      expect(rateErr.policyId).toBe("conversation.turn");
+      expect(rateErr.limit).toBe(60);
+      expect(rateErr.remaining).toBe(0);
+      expect(rateErr.requestId).toBe("req_body_123");
+      expect(rateErr.resetAt).toBe(nowSec * 1000);
+    }
   });
 
   it("getAgents maps fields correctly", async () => {

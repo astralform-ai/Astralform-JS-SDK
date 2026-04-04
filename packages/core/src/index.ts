@@ -33,6 +33,7 @@ export {
   ConnectionError,
   StreamAbortedError,
 } from "./errors.js";
+export type { RateLimitErrorDetails } from "./errors.js";
 
 // Utilities
 export { generateId } from "./utils.js";

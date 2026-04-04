@@ -1,11 +1,12 @@
 import {
   AuthenticationError,
   ConnectionError,
-  RateLimitError,
   ServerError,
   StreamAbortedError,
 } from "./errors.js";
+import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import type { ChatStreamEvent, StreamJobSSEOptions } from "./types.js";
+import { sanitizeErrorText } from "./utils.js";
 
 /**
  * GET-based SSE stream for job events.
@@ -33,14 +34,12 @@ export async function* streamJobSSE(
 
   if (!response.ok) {
     const rawText = await response.text().catch(() => "");
-    const text = rawText
-      ? rawText.slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
-      : "";
+    const text = rawText ? sanitizeErrorText(rawText) : "";
     switch (response.status) {
       case 401:
         throw new AuthenticationError();
       case 429:
-        throw new RateLimitError();
+        throw createRateLimitErrorFromHttp(response, rawText);
       default:
         throw new ServerError(text || `HTTP ${response.status}`);
     }

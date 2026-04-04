@@ -1,3 +1,7 @@
+export function sanitizeErrorText(text: string): string {
+  return text.slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
+}
+
 export function generateId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();

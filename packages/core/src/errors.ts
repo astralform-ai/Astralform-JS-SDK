@@ -1,3 +1,13 @@
+export interface RateLimitErrorDetails {
+  retryAfterSec?: number;
+  resetAt?: number;
+  scope?: string;
+  policyId?: string;
+  limit?: number;
+  remaining?: number;
+  requestId?: string;
+}
+
 export class AstralformError extends Error {
   constructor(
     message: string,
@@ -16,9 +26,21 @@ export class AuthenticationError extends AstralformError {
 }
 
 export class RateLimitError extends AstralformError {
-  constructor(message = "Rate limit exceeded") {
+  declare readonly retryAfterSec?: number;
+  declare readonly resetAt?: number;
+  declare readonly scope?: string;
+  declare readonly policyId?: string;
+  declare readonly limit?: number;
+  declare readonly remaining?: number;
+  declare readonly requestId?: string;
+
+  constructor(
+    message = "Rate limit exceeded",
+    details: RateLimitErrorDetails = {},
+  ) {
     super(message, "rate_limit_error");
     this.name = "RateLimitError";
+    Object.assign(this, details);
   }
 }
 
