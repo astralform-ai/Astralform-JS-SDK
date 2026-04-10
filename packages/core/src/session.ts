@@ -1,4 +1,3 @@
-import { BlockBuilder } from "./block-builder.js";
 import { AstralformClient } from "./client.js";
 import { AstralformError, ConnectionError } from "./errors.js";
 import { createRateLimitErrorFromPayload } from "./rate-limit.js";
@@ -7,7 +6,7 @@ import { ToolRegistry } from "./tools.js";
 import type {
   AgentInfo,
   AstralformConfig,
-  CapsuleOutput,
+  BlockDeltaPayload,
   ChatEvent,
   ChatStreamRequest,
   Conversation,
@@ -15,12 +14,11 @@ import type {
   ProjectStatus,
   SendOptions,
   SkillInfo,
-  SSEEvent,
-  SubagentState,
   TodoItem,
   ToolCallRequest,
   ToolResult,
-  ToolState,
+  WireBlockDeltaPayload,
+  WireEvent,
 } from "./types.js";
 import { generateId } from "./utils.js";
 
@@ -28,53 +26,49 @@ type ChatEventHandler = (event: ChatEvent) => void;
 
 const RATE_LIMIT_PATTERN = /rate\s*limit/i;
 
+function pathEquals(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * ChatSession — translates the backend wire protocol into typed ChatEvents
+ * for consumers. Owns HTTP + SSE plumbing, conversation state, and the
+ * client-tool round-trip. Does NOT own block construction — consumers
+ * build their own block state from the typed events.
+ */
 export class ChatSession {
   readonly client: AstralformClient;
   readonly toolRegistry: ToolRegistry;
   readonly storage: ChatStorage;
-  readonly blockBuilder: BlockBuilder;
 
   // State
   conversationId: string | null = null;
   conversations: Conversation[] = [];
   messages: Message[] = [];
-  streamingContent = "";
   isStreaming = false;
-  executingTool: string | null = null;
   projectStatus: ProjectStatus | null = null;
   agents: AgentInfo[] = [];
   skills: SkillInfo[] = [];
   enabledClientTools = new Set<string>();
   modelDisplayName: string | null = null;
 
-  // New state fields
-  thinkingContent = "";
-  isThinking = false;
-  activeSubagents = new Map<string, SubagentState>();
-  capsuleOutputs: CapsuleOutput[] = [];
-  todos: TodoItem[] = [];
-  activeTools = new Map<string, ToolState>();
+  // Minimal in-session accumulation for the assistant message record.
+  // Only top-level ``text`` blocks contribute; subagent / tool output
+  // is tracked by the consumer's own block store.
+  private accumulatedText = "";
+  private currentTextPath: number[] | null = null;
 
   private handlers: Set<ChatEventHandler> = new Set();
   private abortController: AbortController | null = null;
 
-  constructor(
-    config: AstralformConfig,
-    storage?: ChatStorage,
-    blockBuilder?: BlockBuilder,
-  ) {
+  constructor(config: AstralformConfig, storage?: ChatStorage) {
     this.client = new AstralformClient(config);
     this.toolRegistry = new ToolRegistry();
     this.storage = storage ?? new InMemoryStorage();
-    this.blockBuilder = blockBuilder ?? new BlockBuilder();
-
-    // Wire block builder to emit blocks_changed events
-    this.blockBuilder.setOnChange(() => {
-      this.emit({
-        type: "blocks_changed",
-        blocks: this.blockBuilder.getBlocks(),
-      });
-    });
   }
 
   on(handler: ChatEventHandler): () => void {
@@ -85,11 +79,6 @@ export class ChatSession {
   }
 
   private emit(event: ChatEvent): void {
-    // Feed the block builder first (produces blocks_changed events)
-    if (event.type !== "blocks_changed" && event.type !== "connected") {
-      this.blockBuilder.processEvent(event);
-    }
-
     for (const handler of this.handlers) {
       try {
         handler(event);
@@ -129,7 +118,6 @@ export class ChatSession {
     const conversationId =
       options?.conversationId ?? this.conversationId ?? undefined;
 
-    // Create user message
     const userMessage: Message = {
       id: generateId(),
       conversationId: conversationId ?? "",
@@ -138,13 +126,11 @@ export class ChatSession {
       status: "complete",
       createdAt: new Date().toISOString(),
     };
-
     if (conversationId) {
       await this.storage.addMessage(userMessage, conversationId);
     }
     this.messages.push(userMessage);
 
-    // Build request
     const request: ChatStreamRequest = {
       message: content,
       conversation_id: conversationId,
@@ -180,26 +166,18 @@ export class ChatSession {
   }
 
   private resetStreamingState(): void {
-    this.streamingContent = "";
-    this.thinkingContent = "";
-    this.isThinking = false;
-    this.activeSubagents.clear();
-    this.capsuleOutputs = [];
-    this.todos = [];
-    this.activeTools.clear();
+    this.accumulatedText = "";
+    this.currentTextPath = null;
   }
 
   private async processStream(request: ChatStreamRequest): Promise<void> {
     this.isStreaming = true;
     this.resetStreamingState();
-    // Don't reset blockBuilder here — the client controls when to reset
-    // (e.g. addUserBlock resets before adding the user block)
     this.abortController = new AbortController();
 
     try {
       await this.consumeJobStream(request);
     } catch (err) {
-      // Don't emit error for intentional abort (detach/disconnect)
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         this.emit({
           type: "error",
@@ -208,7 +186,6 @@ export class ChatSession {
       }
     } finally {
       this.isStreaming = false;
-      this.executingTool = null;
       this.abortController = null;
     }
   }
@@ -223,11 +200,25 @@ export class ChatSession {
     const job = await this.client.createJob(request);
     this.currentJobId = job.job_id;
 
-    let conversationId = job.conversation_id;
+    const conversationId = job.conversation_id;
     if (!this.conversationId) {
       this.conversationId = conversationId;
     }
-
+    // Ensure the conversation exists in both the local array and
+    // ChatStorage so title_generated, completeStream, and fallback
+    // reload all work for backend-created conversations.
+    if (!this.conversations.some((c) => c.id === conversationId)) {
+      const now = new Date().toISOString();
+      const conv = {
+        id: conversationId,
+        title: "",
+        messageCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.conversations.unshift(conv);
+      await this.storage.createConversation(conversationId, "").catch(() => {});
+    }
     const messageId = job.message_id;
     this.lastSeq = -1;
 
@@ -237,8 +228,6 @@ export class ChatSession {
       this.abortController?.signal,
     );
 
-    // completeStream is called inside consumeEventStream when message_stop arrives
-    // — no second call needed here
     await this.consumeEventStream(
       stream,
       conversationId,
@@ -248,7 +237,8 @@ export class ChatSession {
   }
 
   /**
-   * Shared event consumption loop used by both consumeJobStream and reconnectToJob.
+   * Shared event consumption loop. Parses each wire event, updates
+   * minimal session state, and emits typed ChatEvents to consumers.
    */
   private async consumeEventStream(
     stream: AsyncGenerator<{ data: string }>,
@@ -257,7 +247,7 @@ export class ChatSession {
     executeClientTools: boolean,
   ): Promise<void> {
     for await (const raw of stream) {
-      let parsed: SSEEvent;
+      let parsed: WireEvent;
       try {
         const data = JSON.parse(raw.data);
         if (
@@ -265,12 +255,14 @@ export class ChatSession {
           data === null ||
           typeof data.type !== "string"
         ) {
-          if (typeof data?.seq === "number") {
-            this.lastSeq = data.seq;
+          // Legacy "done" sentinel — backend still emits it for subscribers.
+          // Silently consume; the new protocol uses message_stop for turn end.
+          if (typeof (data as { seq?: unknown })?.seq === "number") {
+            this.lastSeq = (data as { seq: number }).seq;
           }
           continue;
         }
-        parsed = data as SSEEvent;
+        parsed = data as WireEvent;
         if (typeof (data as Record<string, unknown>).seq === "number") {
           this.lastSeq = (data as Record<string, unknown>).seq as number;
         }
@@ -278,420 +270,259 @@ export class ChatSession {
         continue;
       }
 
-      switch (parsed.type) {
-        case "message_start":
-          conversationId = parsed.conversation_id;
-          if (!this.conversationId) {
-            this.conversationId = conversationId;
-          }
-          if (parsed.message_id) {
-            messageId = parsed.message_id;
-          }
-          if (parsed.model_display_name) {
-            this.modelDisplayName = parsed.model_display_name;
-            this.emit({
-              type: "model_info",
-              name: parsed.model_display_name,
-            });
-          }
-          break;
+      await this.dispatchWireEvent(
+        parsed,
+        conversationId,
+        messageId,
+        executeClientTools,
+      );
+    }
+  }
 
-        case "content_block_delta":
-          this.streamingContent += parsed.delta.text;
-          this.emit({ type: "chunk", text: parsed.delta.text });
-          break;
-
-        case "tool_use_start": {
-          this.applyEvent(parsed);
-          if (executeClientTools && parsed.is_client_tool) {
-            const results = await this.executeClientTools([
-              {
-                callId: parsed.call_id,
-                toolName: parsed.tool,
-                displayName: parsed.display_name,
-                description: parsed.description,
-                arguments: parsed.arguments,
-                isClientTool: parsed.is_client_tool,
-                toolCategory: parsed.tool_category,
-                iconUrl: parsed.icon_url,
-              },
-            ]);
-            await this.client.submitToolResult({
-              conversation_id: conversationId,
-              message_id: messageId,
-              tool_results: results,
-            });
-          }
-          break;
+  private async dispatchWireEvent(
+    wire: WireEvent,
+    conversationId: string,
+    messageId: string,
+    executeClientTools: boolean,
+  ): Promise<void> {
+    switch (wire.type) {
+      case "message_start": {
+        // Reset per-turn accumulator so multi-turn replay doesn't
+        // concatenate text from prior turns into the next complete event.
+        this.resetStreamingState();
+        if (wire.model) {
+          this.modelDisplayName = wire.model;
         }
+        this.emit({
+          type: "message_start",
+          turnId: wire.turn_id,
+          model: wire.model,
+          agentName: wire.agent_name,
+          agentAvatarUrl: wire.agent_avatar_url,
+        });
+        return;
+      }
 
-        case "subagent_content_delta": {
-          const subagent = this.activeSubagents.get(parsed.tool_call_id);
-          if (subagent) {
-            subagent.content += parsed.delta.text;
-          }
-          this.emit({
-            type: "subagent_chunk",
-            agentName: parsed.agent_name,
-            toolCallId: parsed.tool_call_id,
-            text: parsed.delta.text,
-          });
-          break;
+      case "block_start": {
+        // Track the currently open top-level text block so we can
+        // accumulate its content for the assistant Message record.
+        if (
+          wire.kind === "text" &&
+          (!wire.parent_path || wire.parent_path.length === 0)
+        ) {
+          this.currentTextPath = wire.path;
         }
+        this.emit({
+          type: "block_start",
+          turnId: wire.turn_id,
+          path: wire.path,
+          parentPath: wire.parent_path ?? null,
+          kind: wire.kind,
+          metadata: wire.metadata,
+        });
 
-        case "thinking_delta":
-          this.thinkingContent += parsed.delta.text;
-          this.isThinking = true;
-          this.emit({ type: "thinking_delta", text: parsed.delta.text });
-          break;
+        // Client tool execution is deferred to block_stop with
+        // status=awaiting_client_result, where the parsed input is
+        // available in final.input.  See block_stop handler below.
+        return;
+      }
 
-        case "thinking_complete":
-          this.isThinking = false;
-          this.emit({ type: "thinking_complete" });
-          break;
+      case "block_delta": {
+        const delta = translateDelta(wire.delta);
+        // Accumulate text for the top-level assistant content record
+        if (
+          delta.channel === "text" &&
+          this.currentTextPath !== null &&
+          pathEquals(this.currentTextPath, wire.path)
+        ) {
+          this.accumulatedText += delta.text;
+        }
+        this.emit({
+          type: "block_delta",
+          turnId: wire.turn_id,
+          path: wire.path,
+          delta,
+        });
+        return;
+      }
 
-        case "retry":
-          this.emit({
-            type: "retry",
-            attempt: parsed.attempt,
-            maxAttempts: parsed.max_attempts,
-            delaySeconds: parsed.delay_seconds,
+      case "block_stop": {
+        if (
+          this.currentTextPath !== null &&
+          pathEquals(this.currentTextPath, wire.path)
+        ) {
+          this.currentTextPath = null;
+        }
+        this.emit({
+          type: "block_stop",
+          turnId: wire.turn_id,
+          path: wire.path,
+          status: wire.status,
+          final: wire.final,
+        });
+
+        // Client tool execution: the backend emits a block_stop with
+        // status=awaiting_client_result once the tool's input_json is
+        // fully parsed. The parsed arguments are in final.input.
+        if (
+          executeClientTools &&
+          wire.status === "awaiting_client_result" &&
+          wire.final?.call_id
+        ) {
+          const f = wire.final;
+          const request: ToolCallRequest = {
+            callId: (f.call_id as string) ?? "",
+            toolName: (f.tool_name as string) ?? "",
+            arguments: (f.input as Record<string, unknown>) ?? {},
+            isClientTool: true,
+          };
+          this.emit({ type: "tool_call", request });
+          const results = await this.executeClientTools([request]);
+          await this.client.submitToolResult({
+            conversation_id: conversationId,
+            message_id: messageId,
+            tool_results: results,
           });
-          break;
+        }
+        return;
+      }
 
-        case "message_stop":
-          // Emit complete IMMEDIATELY — don't wait for stream close
-          // Post-processing continues in background but user is unlocked
+      case "message_stop": {
+        const usage = {
+          inputTokens: wire.usage.input_tokens ?? 0,
+          outputTokens: wire.usage.output_tokens ?? 0,
+          cachedTokens: wire.usage.cached_tokens ?? 0,
+        };
+        this.emit({
+          type: "message_stop",
+          turnId: wire.turn_id,
+          stopReason: wire.stop_reason,
+          usage,
+          ttfbMs: wire.ttfb_ms,
+          totalMs: wire.total_ms,
+          stallCount: wire.stall_count,
+        });
+        // Only persist the assistant message during live streaming —
+        // during replay (executeClientTools=false), messages are already
+        // loaded from the backend and completeStream would duplicate them.
+        if (executeClientTools || this.isStreaming) {
           await this.completeStream(
             conversationId,
             messageId,
-            parsed.title,
-            parsed.metrics,
-            parsed.job_id,
+            wire.job_id,
+            wire.total_ms,
+            usage,
           );
-          this.isStreaming = false;
-          this.currentJobId = null;
-          break;
+        } else {
+          this.emitComplete(
+            conversationId,
+            "",
+            wire.job_id,
+            wire.total_ms,
+            usage,
+          );
+        }
+        this.isStreaming = false;
+        this.currentJobId = null;
+        return;
+      }
 
-        case "error": {
-          const isRateLimit =
-            parsed.code === "rate_limit_exceeded" ||
-            RATE_LIMIT_PATTERN.test(parsed.message);
-          if (isRateLimit) {
-            this.emit({
-              type: "error",
-              error: createRateLimitErrorFromPayload(
-                parsed as unknown as Record<string, unknown>,
-              ),
-            });
-            break;
-          }
+      case "stall": {
+        this.emit({
+          type: "stall",
+          sinceLastEventMs: wire.since_last_event_ms,
+          stallCount: wire.stall_count,
+        });
+        return;
+      }
+
+      case "retry": {
+        this.emit({
+          type: "retry",
+          attempt: wire.attempt,
+          reason: wire.reason,
+          backoffMs: wire.backoff_ms,
+        });
+        return;
+      }
+
+      case "error": {
+        const isRateLimit =
+          wire.code === "rate_limit_exceeded" ||
+          RATE_LIMIT_PATTERN.test(wire.message);
+        if (isRateLimit) {
           this.emit({
             type: "error",
-            error: new AstralformError(parsed.message, parsed.code),
+            error: createRateLimitErrorFromPayload(
+              wire as unknown as Record<string, unknown>,
+            ),
           });
-          break;
+          return;
         }
+        this.emit({
+          type: "error",
+          error: new AstralformError(wire.message, wire.code),
+        });
+        return;
+      }
 
-        default:
-          this.applyEvent(parsed);
+      case "keepalive": {
+        this.emit({
+          type: "keepalive",
+          sinceLastEventMs: wire.since_last_event_ms,
+        });
+        return;
+      }
+
+      case "custom": {
+        this.handleCustomEvent(wire.name, wire.data);
+        return;
       }
     }
   }
 
-  /**
-   * Apply a single SSE event to session state and notify consumers.
-   * Shared between live streaming and historical event replay.
-   */
-  private applyEvent(event: SSEEvent): void {
-    switch (event.type) {
+  private handleCustomEvent(name: string, data: Record<string, unknown>): void {
+    switch (name) {
       case "user_message":
         this.emit({
           type: "user_message",
-          content: event.content,
-          createdAt: event.created_at,
+          content: (data.content as string) ?? "",
+          createdAt: data.created_at as number | undefined,
         });
-        break;
-
+        return;
       case "title_generated": {
-        // Update SDK's internal conversations array so syncConversations
-        // doesn't overwrite the title with a stale value
-        if (this.conversationId && event.title) {
+        const title = (data.title as string) ?? "";
+        if (this.conversationId && title) {
           const conv = this.conversations.find(
             (c) => c.id === this.conversationId,
           );
           if (conv) {
-            conv.title = event.title;
+            conv.title = title;
           }
+          // Persist to ChatStorage so reloads don't lose the title
+          this.storage
+            .updateConversationTitle(this.conversationId, title)
+            .catch(() => {});
         }
-        this.emit({ type: "title_generated", title: event.title });
-        break;
+        this.emit({ type: "title_generated", title });
+        return;
       }
-
-      case "message_start":
-        if (event.conversation_id && !this.conversationId) {
-          this.conversationId = event.conversation_id;
-        }
-        if (event.model_display_name) {
-          this.modelDisplayName = event.model_display_name;
-          this.emit({ type: "model_info", name: event.model_display_name });
-        }
-        break;
-
-      case "content_block_delta":
-        this.streamingContent += event.delta.text;
-        this.emit({ type: "chunk", text: event.delta.text });
-        break;
-
-      case "thinking_delta":
-        this.thinkingContent += event.delta.text;
-        this.isThinking = true;
-        this.emit({ type: "thinking_delta", text: event.delta.text });
-        break;
-
-      case "thinking_complete":
-        this.isThinking = false;
-        this.emit({ type: "thinking_complete" });
-        break;
-
-      case "tool_executing":
-        this.emit({
-          type: "tool_executing",
-          name: event.tool,
-          call_id: event.call_id,
-        });
-        break;
-
-      case "tool_progress":
-        this.emit({
-          type: "tool_progress",
-          callId: event.call_id,
-          tool: event.tool,
-          index: event.index,
-          total: event.total,
-          item: event.item,
-        });
-        break;
-
-      case "message_stop":
-        this.emit({
-          type: "complete",
-          content: this.streamingContent,
-          conversationId: this.conversationId ?? "",
-          messageId: event.job_id ?? "",
-          title: event.title,
-          metrics: event.metrics,
-          job_id: event.job_id,
-        });
-        break;
-
-      case "tool_use_start": {
-        const request: ToolCallRequest = {
-          callId: event.call_id,
-          toolName: event.tool,
-          displayName: event.display_name,
-          description: event.description,
-          arguments: event.arguments,
-          isClientTool: event.is_client_tool,
-          toolCategory: event.tool_category,
-          iconUrl: event.icon_url,
-        };
-        this.activeTools.set(event.call_id, {
-          ...request,
-          status: event.is_client_tool ? "calling" : "executing",
-        });
-        this.emit({ type: "tool_call", request });
-        break;
+      case "todo_update": {
+        const todos = (data.todos as TodoItem[]) ?? [];
+        this.emit({ type: "todo_update", todos });
+        return;
       }
-
-      case "tool_use_end": {
-        const toolState = this.activeTools.get(event.call_id);
-        if (toolState) {
-          toolState.status = "completed";
-        }
-        this.emit({
-          type: "tool_end",
-          callId: event.call_id,
-          toolName: event.tool,
-          result: event.result,
-          sources: event.sources,
-          durationMs: event.duration_ms,
-        });
-        break;
-      }
-
-      case "agent_start":
-        this.emit({
-          type: "agent_start",
-          agentName: event.agent_name,
-          agentDisplayName: event.agent_display_name,
-          avatarUrl: event.avatar_url,
-        });
-        break;
-
-      case "agent_end":
-        this.emit({ type: "agent_end", agentName: event.agent_name });
-        break;
-
-      case "subagent_start":
-        this.activeSubagents.set(event.tool_call_id, {
-          agentName: event.agent_name,
-          displayName: event.display_name,
-          avatarUrl: event.avatar_url,
-          description: event.description,
-          content: "",
-          isActive: true,
-        });
-        this.emit({
-          type: "subagent_start",
-          agentName: event.agent_name,
-          displayName: event.display_name,
-          toolCallId: event.tool_call_id,
-          avatarUrl: event.avatar_url,
-          description: event.description,
-        });
-        break;
-
-      case "subagent_update": {
-        const sub = this.activeSubagents.get(event.tool_call_id);
-        if (sub) {
-          sub.agentName = event.agent_name;
-          sub.displayName = event.display_name;
-        }
-        this.emit({
-          type: "subagent_update",
-          agentName: event.agent_name,
-          displayName: event.display_name,
-          toolCallId: event.tool_call_id,
-        });
-        break;
-      }
-
-      case "subagent_end": {
-        const sub = this.activeSubagents.get(event.tool_call_id);
-        if (sub) {
-          sub.isActive = false;
-        }
-        this.emit({
-          type: "subagent_end",
-          agentName: event.agent_name,
-          displayName: event.display_name,
-          toolCallId: event.tool_call_id,
-        });
-        break;
-      }
-
-      case "subagent_tool_use":
-        this.emit({
-          type: "subagent_tool_use",
-          agentName: event.agent_name,
-          toolName: event.tool,
-          toolCallId: event.tool_call_id,
-          result: event.result,
-        });
-        break;
-
-      case "capsule_output": {
-        const capsule: CapsuleOutput = {
-          toolName: event.tool_name,
-          agentName: event.agent_name,
-          command: event.command,
-          output: event.output,
-          durationMs: event.duration_ms,
-          callId: event.call_id,
-        };
-        this.capsuleOutputs.push(capsule);
-        this.emit({ type: "capsule_output", ...capsule });
-        break;
-      }
-
-      case "capsule_output_chunk":
-        this.emit({
-          type: "capsule_output_chunk",
-          callId: event.call_id,
-          stream: event.stream,
-          chunk: event.chunk,
-        });
-        break;
-
-      case "todo_update":
-        this.todos = event.todos;
-        this.emit({ type: "todo_update", todos: event.todos });
-        break;
-
       case "context_update":
         this.emit({
           type: "context_update",
-          context: event.context,
-          phase: event.phase,
-          updatedAt: event.updated_at,
+          context: (data.context as Record<string, unknown>) ?? {},
+          phase: data.phase as string | undefined,
+          updatedAt: data.updated_at as number | undefined,
         });
-        break;
-
-      case "desktop_stream":
-        this.emit({
-          type: "desktop_stream",
-          url: event.url,
-          authKey: event.auth_key,
-          sandboxId: event.sandbox_id,
-        });
-        break;
-
-      case "attachment_staged":
-        this.emit({
-          type: "attachment_staged",
-          files: (event.files || []).map((f) => ({
-            name: f.name,
-            path: f.path,
-            mediaType: f.media_type,
-            sizeBytes: f.size_bytes,
-          })),
-        });
-        break;
-
-      case "workspace_ready":
-        this.emit({
-          type: "workspace_ready",
-          conversationId: event.conversation_id,
-          sandboxId: event.sandbox_id,
-        });
-        break;
-
-      case "asset_created":
-        this.emit({
-          type: "asset_created",
-          assetId: event.asset_id,
-          name: event.name,
-          url: event.url,
-          mediaType: event.media_type,
-          sizeBytes: event.size_bytes,
-        });
-        break;
-
-      case "editor_content_start":
-        this.emit({
-          type: "editor_content_start",
-          callId: event.call_id,
-          path: event.path,
-          language: event.language,
-        });
-        break;
-
-      case "editor_content_delta":
-        this.emit({
-          type: "editor_content_delta",
-          callId: event.call_id,
-          path: event.path,
-          delta: event.delta,
-        });
-        break;
-
-      case "editor_content_end":
-        this.emit({
-          type: "editor_content_end",
-          callId: event.call_id,
-        });
-        break;
+        return;
+      default:
+        this.emit({ type: "custom", name, data });
+        return;
     }
   }
 
@@ -700,64 +531,62 @@ export class ChatSession {
   ): Promise<ToolResult[]> {
     const results: ToolResult[] = [];
     for (const call of toolCalls) {
-      this.executingTool = call.toolName;
-      const toolState = this.activeTools.get(call.callId);
-      if (toolState) {
-        toolState.status = "executing";
-      }
-      this.emit({ type: "tool_executing", name: call.toolName });
       const result = await this.toolRegistry.executeTool(call);
       results.push(result);
-      if (toolState) {
-        toolState.status = "completed";
-      }
-      this.emit({
-        type: "tool_completed",
-        name: call.toolName,
-        result: result.result,
-      });
     }
-    this.executingTool = null;
     return results;
+  }
+
+  private emitComplete(
+    conversationId: string,
+    messageId: string,
+    jobId: string | undefined,
+    totalMs: number,
+    usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
+  ): void {
+    const convTitle = this.conversations.find(
+      (c) => c.id === conversationId,
+    )?.title;
+    this.emit({
+      type: "complete",
+      content: this.accumulatedText,
+      conversationId,
+      messageId,
+      title: convTitle || undefined,
+      metrics: {
+        total_ms: totalMs,
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+      },
+      jobId,
+      job_id: jobId, // deprecated alias for backward compat
+    });
   }
 
   private async completeStream(
     conversationId: string,
     messageId: string,
-    title?: string,
-    metrics?: Record<string, unknown>,
-    jobId?: string,
+    jobId: string | undefined,
+    totalMs: number,
+    usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
   ): Promise<void> {
-    // Store assistant message
     const assistantMessage: Message = {
       id: messageId || generateId(),
       conversationId,
       role: "assistant",
-      content: this.streamingContent,
+      content: this.accumulatedText,
       status: "complete",
       createdAt: new Date().toISOString(),
     };
     this.messages.push(assistantMessage);
     await this.storage.addMessage(assistantMessage, conversationId);
-
-    // Update conversation title if provided
-    if (title && conversationId) {
-      await this.storage.updateConversationTitle(conversationId, title);
-      const conv = this.conversations.find((c) => c.id === conversationId);
-      if (conv) {
-        conv.title = title;
-      }
-    }
-
-    this.emit({
-      type: "complete",
-      content: this.streamingContent,
+    this.emitComplete(
       conversationId,
-      messageId: assistantMessage.id,
-      title,
-      metrics,
-      job_id: jobId,
-    });
+      assistantMessage.id,
+      jobId,
+      totalMs,
+      usage,
+    );
   }
 
   /**
@@ -767,7 +596,6 @@ export class ChatSession {
   async loadConversation(id: string): Promise<void> {
     this.conversationId = id;
     this.resetStreamingState();
-    this.blockBuilder.reset();
     this.messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
@@ -776,7 +604,6 @@ export class ChatSession {
   /**
    * Reconnect to a running job's SSE stream (e.g. after page reload).
    * Replays all events from the beginning and continues live.
-   * Does NOT reset BlockBuilder — caller controls reset.
    */
   async reconnectToJob(jobId: string): Promise<void> {
     if (this.isStreaming) return;
@@ -793,8 +620,6 @@ export class ChatSession {
         this.lastSeq,
         this.abortController?.signal,
       );
-
-      // completeStream is called inside consumeEventStream on message_stop
       await this.consumeEventStream(
         stream,
         this.conversationId ?? "",
@@ -808,22 +633,16 @@ export class ChatSession {
       });
     } finally {
       this.isStreaming = false;
-      this.executingTool = null;
       this.abortController = null;
     }
   }
 
-  /** Detach from the SSE stream without cancelling the job.
-   *  The backend job keeps running — caller can reconnect later. */
+  /** Detach from the SSE stream without cancelling the job. */
   detach(): void {
     this.abortController?.abort();
     this.abortController = null;
     this.isStreaming = false;
-    this.streamingContent = "";
-    this.executingTool = null;
-    // Reset block builder to prevent stale blocks from leaking
-    // into the next conversation's render
-    this.blockBuilder.reset();
+    this.resetStreamingState();
     this.emit({ type: "disconnected" });
   }
 
@@ -845,14 +664,12 @@ export class ChatSession {
     this.conversations.unshift(conversation);
     this.conversationId = id;
     this.messages = [];
-    this.streamingContent = "";
     return id;
   }
 
   async switchConversation(id: string, jobId?: string): Promise<void> {
     this.conversationId = id;
     this.resetStreamingState();
-    this.blockBuilder.reset();
 
     const [messagesResult, eventsResult] = await Promise.allSettled([
       this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
@@ -862,10 +679,21 @@ export class ChatSession {
     this.messages =
       messagesResult.status === "fulfilled" ? messagesResult.value : [];
 
-    // Replay ALL stored events through the same handlers as live streaming
+    // Replay stored events via the same dispatch path. The consumer
+    // rebuilds its block state from the replayed events.
     if (eventsResult.status === "fulfilled") {
       for (const ev of eventsResult.value) {
-        this.applyEvent({ type: ev.event, ...ev.data } as SSEEvent);
+        const wire = { type: ev.event, ...ev.data } as unknown as WireEvent;
+        try {
+          await this.dispatchWireEvent(
+            wire,
+            id,
+            "",
+            false, // don't execute client tools on replay
+          );
+        } catch {
+          // Skip malformed replay events
+        }
       }
     }
   }
@@ -891,5 +719,36 @@ export class ChatSession {
     }
     this.enabledClientTools.add(name);
     return true;
+  }
+}
+
+// =============================================================================
+// Wire → ChatEvent delta translator
+// =============================================================================
+
+function translateDelta(wire: WireBlockDeltaPayload): BlockDeltaPayload {
+  switch (wire.channel) {
+    case "text":
+      return { channel: "text", text: wire.text };
+    case "thinking":
+      return { channel: "thinking", text: wire.text };
+    case "signature":
+      return { channel: "signature", signature: wire.signature };
+    case "input":
+      return { channel: "input", partialJson: wire.partial_json };
+    case "input_arg":
+      return {
+        channel: "inputArg",
+        argName: wire.arg_name,
+        text: wire.text,
+      };
+    case "output":
+      return { channel: "output", stream: wire.stream, chunk: wire.chunk };
+    case "status":
+      return {
+        channel: "status",
+        status: wire.status,
+        note: wire.note,
+      };
   }
 }

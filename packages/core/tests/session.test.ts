@@ -46,17 +46,20 @@ describe("ChatSession", () => {
     expect(events.some((e) => e.type === "connected")).toBe(true);
   });
 
-  it("send creates a job and streams events", async () => {
+  it("send creates a job and streams block events", async () => {
+    // New wire protocol: message_start → block_start(text) → block_delta(text) × 2 → block_stop → message_stop
     const sseData = [
-      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","model_display_name":"GPT-4o","seq":0}\n',
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"claude-opus-4","job_id":"job-1","seq":0,"ts":0}\n',
       "",
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"},"seq":1}\n',
+      'event: block_start\ndata: {"type":"block_start","turn_id":"t1","job_id":"job-1","path":[0],"kind":"text","metadata":{},"seq":1,"ts":0}\n',
       "",
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"},"seq":2}\n',
+      'event: block_delta\ndata: {"type":"block_delta","turn_id":"t1","job_id":"job-1","path":[0],"delta":{"channel":"text","text":"Hello"},"seq":2,"ts":0}\n',
       "",
-      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","title":"Greeting","seq":3}\n',
+      'event: block_delta\ndata: {"type":"block_delta","turn_id":"t1","job_id":"job-1","path":[0],"delta":{"channel":"text","text":" world"},"seq":3,"ts":0}\n',
       "",
-      'event: done\ndata: {"data":"[DONE]","seq":4}\n',
+      'event: block_stop\ndata: {"type":"block_stop","turn_id":"t1","job_id":"job-1","path":[0],"status":"ok","final":{"text":"Hello world"},"seq":4,"ts":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":2},"ttfb_ms":40,"total_ms":1000,"stall_count":0,"seq":5,"ts":0}\n',
       "",
       "data: [DONE]\n",
       "",
@@ -86,15 +89,35 @@ describe("ChatSession", () => {
 
     await session.send("Hi");
 
-    const chunks = events.filter((e) => e.type === "chunk");
-    expect(chunks).toHaveLength(2);
+    // New protocol emits typed block events
+    const blockStarts = events.filter((e) => e.type === "block_start");
+    expect(blockStarts).toHaveLength(1);
 
+    const blockDeltas = events.filter((e) => e.type === "block_delta");
+    expect(blockDeltas).toHaveLength(2);
+    if (blockDeltas[0]?.type === "block_delta") {
+      expect(blockDeltas[0].delta.channel).toBe("text");
+      if (blockDeltas[0].delta.channel === "text") {
+        expect(blockDeltas[0].delta.text).toBe("Hello");
+      }
+    }
+
+    const blockStops = events.filter((e) => e.type === "block_stop");
+    expect(blockStops).toHaveLength(1);
+
+    const messageStop = events.find((e) => e.type === "message_stop");
+    expect(messageStop).toBeDefined();
+    if (messageStop?.type === "message_stop") {
+      expect(messageStop.stopReason).toBe("end_turn");
+      expect(messageStop.usage.inputTokens).toBe(10);
+      expect(messageStop.usage.outputTokens).toBe(2);
+      expect(messageStop.ttfbMs).toBe(40);
+    }
+
+    // Session synthesizes ``complete`` after message_stop so legacy
+    // consumers continue working.
     const complete = events.find((e) => e.type === "complete");
     expect(complete).toBeDefined();
-    if (complete?.type === "complete") {
-      expect(complete.content).toBe("Hello world");
-      expect(complete.title).toBe("Greeting");
-    }
 
     expect(session.messages).toHaveLength(2); // user + assistant
     expect(session.conversationId).toBe("c1");
@@ -119,9 +142,9 @@ describe("ChatSession", () => {
   it("send passes uploadIds to the request", async () => {
     let capturedBody: string | undefined;
     const sseData = [
-      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","seq":0}\n',
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"m","job_id":"job-1","seq":0,"ts":0}\n',
       "",
-      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","seq":1}\n',
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{},"total_ms":50,"stall_count":0,"seq":1,"ts":0}\n',
       "",
       "data: [DONE]\n",
       "",
@@ -143,7 +166,6 @@ describe("ChatSession", () => {
       "/v1/conversations": [],
     });
 
-    // Wrap to capture the /v1/jobs POST body
     const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url.includes("/v1/jobs") && !url.includes("/events")) {
@@ -192,56 +214,9 @@ describe("ChatSession", () => {
     expect(events.some((e) => e.type === "disconnected")).toBe(true);
   });
 
-  it("asset_created event emits camelCase fields", async () => {
-    const sseData = [
-      'event: message_start\ndata: {"type":"message_start","message_id":"m1","conversation_id":"c1","seq":0}\n',
-      "",
-      'event: asset_created\ndata: {"type":"asset_created","asset_id":"abc123","name":"report.pdf","url":"https://cdn.example.com/report.pdf","media_type":"application/pdf","size_bytes":5000,"seq":1}\n',
-      "",
-      'event: message_stop\ndata: {"type":"message_stop","stop_reason":"end_turn","seq":2}\n',
-      "",
-      "data: [DONE]\n",
-      "",
-    ].join("\n");
-
-    const mockFetch = createSessionMockFetch({
-      "/v1/jobs/job-1/events": sseData,
-      "/v1/jobs": {
-        job_id: "job-1",
-        conversation_id: "c1",
-        message_id: "m1",
-        status: "queued",
-      },
-      "/v1/project/status": {
-        is_ready: true,
-        llm_configured: true,
-        message: "Ready",
-      },
-      "/v1/conversations": [],
-    });
-
-    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
-    await session.connect();
-
-    const events: ChatEvent[] = [];
-    session.on((e) => events.push(e));
-
-    await session.send("Generate a PDF");
-
-    const assetEvent = events.find((e) => e.type === "asset_created");
-    expect(assetEvent).toBeDefined();
-    if (assetEvent?.type === "asset_created") {
-      expect(assetEvent.assetId).toBe("abc123");
-      expect(assetEvent.name).toBe("report.pdf");
-      expect(assetEvent.url).toBe("https://cdn.example.com/report.pdf");
-      expect(assetEvent.mediaType).toBe("application/pdf");
-      expect(assetEvent.sizeBytes).toBe(5000);
-    }
-  });
-
   it("maps SSE rate-limit errors to RateLimitError", async () => {
     const sseData = [
-      'event: error\ndata: {"type":"error","code":"rate_limit_exceeded","message":"Too many conversation turns","retry_after":25,"scope":"project","policy_id":"conversation.turn","limit":60,"remaining":0,"reset_at":1767225600,"request_id":"req_sse_123","seq":0}\n',
+      'event: error\ndata: {"type":"error","code":"rate_limit_exceeded","message":"Too many conversation turns","retry_after":25,"scope":"project","policy_id":"conversation.turn","limit":60,"remaining":0,"reset_at":1767225600,"request_id":"req_sse_123","job_id":"job-1","seq":0,"ts":0}\n',
       "",
       "data: [DONE]\n",
       "",
@@ -285,6 +260,64 @@ describe("ChatSession", () => {
       expect(rateErr.requestId).toBe("req_sse_123");
       expect(rateErr.resetAt).toBe(1767225600 * 1000);
     }
+  });
+
+  it("custom event (title_generated) updates conversation title", async () => {
+    const sseData = [
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"m","job_id":"job-1","seq":0,"ts":0}\n',
+      "",
+      'event: custom\ndata: {"type":"custom","name":"title_generated","data":{"title":"A Great Chat"},"job_id":"job-1","seq":1,"ts":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{},"total_ms":50,"stall_count":0,"seq":2,"ts":0}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/project/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [
+        {
+          id: "c1",
+          title: "Untitled",
+          message_count: 0,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    await session.connect();
+
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    // Pre-set the conversationId so the title update path is hit
+    session.conversationId = "c1";
+
+    await session.send("Start");
+
+    const titleEvent = events.find((e) => e.type === "title_generated");
+    expect(titleEvent).toBeDefined();
+    if (titleEvent?.type === "title_generated") {
+      expect(titleEvent.title).toBe("A Great Chat");
+    }
+
+    // Internal conversations array updated in place
+    const conv = session.conversations.find((c) => c.id === "c1");
+    expect(conv?.title).toBe("A Great Chat");
   });
 
   it("on returns unsubscribe function", () => {

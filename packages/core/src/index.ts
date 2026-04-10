@@ -1,25 +1,6 @@
 // Core classes
 export { AstralformClient } from "./client.js";
 export { ChatSession } from "./session.js";
-export {
-  BlockBuilder,
-  type Block,
-  type UserBlock,
-  type TextBlock,
-  type ThinkingBlock,
-  type AgentBlock,
-  type SubagentBlock,
-  type ToolBlock,
-  type CapsuleBlock,
-  type DesktopStreamBlock,
-  type AttachmentBlock,
-  type AssetBlock,
-  type TodoBlock,
-  type EditorBlock,
-  type ErrorBlock,
-  type EventHandler,
-} from "./block-builder.js";
-export { standardHandlers } from "./standard-handlers.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
 export { InMemoryStorage, type ChatStorage } from "./storage.js";
 
@@ -49,55 +30,61 @@ export type {
   StreamManagerEvent,
 } from "./stream-manager.js";
 
-// Constants
+// Event type constants
 export { ChatEventType } from "./types.js";
+export type { ChatEventTypeValue } from "./types.js";
 
-// Types
+// High-level ChatEvent (SDK → consumer)
+export type { ChatEvent, BlockDeltaPayload, TurnUsage } from "./types.js";
+
+// Wire protocol types (for consumers that want to parse the raw SSE
+// data themselves or write their own transport adapter)
+export type {
+  WireEvent,
+  WireMessageStart,
+  WireMessageStop,
+  WireBlockStart,
+  WireBlockDelta,
+  WireBlockStop,
+  WireStallWarning,
+  WireRetryEvent,
+  WireErrorEvent,
+  WireKeepalive,
+  WireCustomEvent,
+  WireBlockKind,
+  WireBlockStatus,
+  WireStopReason,
+  WireBlockDeltaPayload,
+  WireTextDelta,
+  WireThinkingDelta,
+  WireSignatureDelta,
+  WireInputDelta,
+  WireInputArgDelta,
+  WireOutputDelta,
+  WireStatusDelta,
+} from "./types.js";
+
+// Config + domain models
 export type {
   AstralformConfig,
-  MessageStartEvent,
-  ContentBlockDeltaEvent,
-  ToolUseStartEvent,
-  ToolUseEndEvent,
-  ToolExecutingEvent,
-  ToolProgressEvent,
-  AgentStartEvent,
-  AgentEndEvent,
-  SubagentStartEvent,
-  SubagentContentDeltaEvent,
-  SubagentEndEvent,
-  SubagentToolUseEvent,
-  ThinkingDeltaEvent,
-  ThinkingCompleteEvent,
-  CapsuleOutputEvent,
-  CapsuleOutputChunkEvent,
-  TodoUpdateEvent,
-  MessageStopEvent,
-  RetryEvent,
-  DesktopStreamEvent,
-  AttachmentStagedEvent,
-  WorkspaceReadyEvent,
-  SSEErrorEvent,
-  SSEEvent,
-  ChatEvent,
   Conversation,
   Message,
   ProjectStatus,
   AgentInfo,
   SkillInfo,
-  SubagentState,
-  ToolState,
-  CapsuleOutput,
-  Source,
   TodoItem,
+} from "./types.js";
+
+// Request / response types
+export type {
   ChatStreamRequest,
   ToolResultRequest,
   ToolResult,
   ToolDefinition,
   ToolCallRequest,
+  JobCreateResponse,
   ConversationAsset,
   StreamJobSSEOptions,
-  JobCreateResponse,
   ChatStreamEvent,
   ConversationEvent,
 } from "./types.js";

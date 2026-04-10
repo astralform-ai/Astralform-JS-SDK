@@ -3,17 +3,22 @@
  *
  * Sits on top of ChatSession and manages the state machine for
  * multi-conversation SSE streaming. Framework-agnostic: emits
- * callbacks instead of writing to any state management library.
+ * typed events to registered handlers. Block construction is NOT
+ * the SDK's concern — consumers build their own block tree from
+ * the forwarded ``ChatEvent`` instances.
  *
  *   import { ChatSession, StreamManager } from "@astralform/js";
  *   const session = new ChatSession({ ... });
  *   const manager = new StreamManager(session);
- *   manager.on("blocksChanged", (convId, blocks) => { ... });
+ *   manager.on((event) => {
+ *     if (event.type === "event") {
+ *       // event.event is a typed ChatEvent — dispatch to your reducer
+ *     }
+ *   });
  *   await manager.send("Hello");
  */
 
 import type { ChatEvent } from "./types.js";
-import type { Block } from "./block-builder.js";
 import { ChatEventType } from "./types.js";
 import type { ChatSession } from "./session.js";
 
@@ -31,7 +36,6 @@ export interface SendOptions {
 
 export type StreamManagerEvent =
   | { type: "stateChange"; state: StreamState; conversationId: string | null }
-  | { type: "blocksChanged"; conversationId: string; blocks: Block[] }
   | { type: "conversationChanged"; conversationId: string | null }
   | {
       type: "backgroundJobsChanged";
@@ -112,26 +116,15 @@ export class StreamManager {
   private onSessionEvent(event: ChatEvent): void {
     const convId = this.session.conversationId;
 
-    // blocks_changed: only emit during active streaming
-    if (event.type === ChatEventType.BlocksChanged) {
-      if (this._state === "streaming" && convId) {
-        this.emit({
-          type: "blocksChanged",
-          conversationId: convId,
-          blocks: (event as ChatEvent & { blocks: Block[] }).blocks,
-        });
-      }
-      return;
-    }
-
-    // Forward all other events to subscribers
+    // Forward every event to subscribers as a typed envelope
     this.emit({
       type: "event",
       conversationId: convId,
       event,
     });
 
-    // Handle completion
+    // Handle completion — the session emits ``complete`` after the
+    // final message_stop, at which point the turn is fully done.
     if (event.type === ChatEventType.Complete) {
       if (this._state === "streaming") {
         this.setState("idle");
@@ -150,7 +143,6 @@ export class StreamManager {
       this.setActiveConversation(id);
     }
 
-    this.prepareUserBlock(content);
     this.setState("streaming");
 
     try {
@@ -177,7 +169,6 @@ export class StreamManager {
     const lastUserMsg = userMsgs[userMsgs.length - 1];
     if (!lastUserMsg) return;
 
-    this.prepareUserBlock(lastUserMsg.content);
     this.setState("streaming");
 
     try {
@@ -260,15 +251,6 @@ export class StreamManager {
 
   // ── Internal: helpers ──────────────────────────────────────────
 
-  private prepareUserBlock(content: string): void {
-    this.session.blockBuilder.reset();
-    this.session.blockBuilder.addBlock({
-      type: "user",
-      id: this.session.blockBuilder.nextId(),
-      content,
-    });
-  }
-
   private finalizeStream(): void {
     if (this._state === "streaming") {
       this.setState("idle");
@@ -324,13 +306,7 @@ export class StreamManager {
           await this.session.switchConversation(conversationId, job.job_id);
         }
 
-        // Emit final blocks for the last version
         if (completedJobs.length > 0) {
-          this.emit({
-            type: "blocksChanged",
-            conversationId,
-            blocks: this.session.blockBuilder.getBlocks(),
-          });
           this.emit({
             type: "versionsReady",
             conversationId,
