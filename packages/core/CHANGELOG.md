@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### New client methods
+
+Catches up with backend endpoints that were missing from the SDK:
+
+- `client.getJob(jobId)` — fetch `JobStatus` (status, timestamps, token counts, error message) without replaying the SSE stream.
+- `client.submitFeedback(jobId, { rating, comment })` — send thumbs-up/down (`1` or `-1`) on a completed job. Returns `FeedbackResponse`.
+- `client.getActiveJob(conversationId)` — promoted from `StreamManager` internals; returns `{ jobId, status }`.
+- `client.listJobs(conversationId)` — promoted from `StreamManager` internals; returns a chronological list of `JobSummary` (includes `replacesJobId`, `metrics`, `responseContent`) for version navigation.
+
+### New typed `ChatEvent`s
+
+Five wire events that previously fell through to `{ type: "custom" }` (or were dropped entirely) are now typed:
+
+- `tool_approval_granted` — `{ toolName, callId }`. Emitted when the user approves a HITL tool call.
+- `tool_permission_denied` — `{ toolName, callId, reason, deniedBy }`. Emitted when a hook/rule/circuit-breaker denies a tool. `deniedBy` values include `"hook" | "rule" | "user" | "timeout" | "circuit_breaker"`.
+- `tool_harness_warning` — `{ toolName, callId, message, details }`. Harness-layer warnings (e.g. output truncation).
+- `user_unavailable` — `{ consecutiveTimeouts, toolName }`. Emitted when the HITL circuit breaker auto-denies after repeated approval timeouts.
+- `prompt_suggestion` — `{ suggestions: string[] }`. The backend emits this via the legacy transport path (not wrapped in a `custom` envelope); the SDK now coerces it into the typed `ChatEvent` union.
+
+Also adds matching `ChatEventType` constants and exports the new payload interfaces from `custom-events.ts`.
+
 ## 2.0.0
 
 Breaking release. The SSE surface is narrower and the typed `ChatEvent` union changes shape. Read the migration notes below before upgrading.

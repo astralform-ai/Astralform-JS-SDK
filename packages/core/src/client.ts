@@ -3,6 +3,7 @@ import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import { streamJobSSE } from "./streaming.js";
 import { sanitizeErrorText } from "./utils.js";
 import type {
+  ActiveJob,
   AgentInfo,
   AstralformConfig,
   ChatStreamEvent,
@@ -10,7 +11,11 @@ import type {
   ConversationAsset,
   ConversationEvent,
   Conversation,
+  FeedbackRequest,
+  FeedbackResponse,
   JobCreateResponse,
+  JobStatus,
+  JobSummary,
   Message,
   ProjectStatus,
   SkillInfo,
@@ -329,5 +334,83 @@ export class AstralformClient {
 
   async cancelJob(jobId: string): Promise<void> {
     await this.post(`/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+  }
+
+  async getJob(jobId: string): Promise<JobStatus> {
+    const raw = await this.get<{
+      job_id: string;
+      status: string;
+      created_at?: string | null;
+      started_at?: string | null;
+      completed_at?: string | null;
+      error_message?: string | null;
+      input_tokens?: number;
+      output_tokens?: number;
+    }>(`/v1/jobs/${encodeURIComponent(jobId)}`);
+    return {
+      jobId: raw.job_id,
+      status: raw.status,
+      createdAt: raw.created_at ?? null,
+      startedAt: raw.started_at ?? null,
+      completedAt: raw.completed_at ?? null,
+      errorMessage: raw.error_message ?? null,
+      inputTokens: raw.input_tokens ?? 0,
+      outputTokens: raw.output_tokens ?? 0,
+    };
+  }
+
+  async submitFeedback(
+    jobId: string,
+    request: FeedbackRequest,
+  ): Promise<FeedbackResponse> {
+    const raw = await this.post<{
+      id: string;
+      job_id: string;
+      rating: number;
+      comment: string | null;
+      created_at: string;
+    }>(`/v1/jobs/${encodeURIComponent(jobId)}/feedback`, {
+      rating: request.rating,
+      comment: request.comment ?? null,
+    });
+    return {
+      id: raw.id,
+      jobId: raw.job_id,
+      rating: raw.rating,
+      comment: raw.comment,
+      createdAt: raw.created_at,
+    };
+  }
+
+  async getActiveJob(conversationId: string): Promise<ActiveJob> {
+    const raw = await this.get<{
+      job_id: string | null;
+      status: string;
+    }>(`/v1/conversations/${encodeURIComponent(conversationId)}/active-job`);
+    return {
+      jobId: raw.job_id ?? null,
+      status: raw.status,
+    };
+  }
+
+  async listJobs(conversationId: string): Promise<JobSummary[]> {
+    const raw = await this.get<
+      {
+        job_id: string;
+        status: string;
+        replaces_job_id?: string | null;
+        response_content?: Record<string, unknown> | null;
+        metrics?: Record<string, unknown> | null;
+        created_at?: string | null;
+      }[]
+    >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
+    return raw.map((j) => ({
+      jobId: j.job_id,
+      status: j.status,
+      replacesJobId: j.replaces_job_id ?? null,
+      responseContent: j.response_content ?? null,
+      metrics: j.metrics ?? null,
+      createdAt: j.created_at ?? null,
+    }));
   }
 }

@@ -173,6 +173,39 @@ export function translateCustomEvent(
         riskLevel: (data.risk_level as string | null) ?? null,
         reason: (data.reason as string | null) ?? null,
       };
+    case "tool_approval_granted":
+      return {
+        type: "tool_approval_granted",
+        toolName: (data.tool_name as string) ?? "",
+        callId: (data.call_id as string) ?? "",
+      };
+    case "tool_permission_denied":
+      return {
+        type: "tool_permission_denied",
+        toolName: (data.tool_name as string) ?? "",
+        callId: (data.call_id as string) ?? "",
+        reason: (data.reason as string | null) ?? null,
+        deniedBy: (data.denied_by as string | null) ?? null,
+      };
+    case "tool_harness_warning":
+      return {
+        type: "tool_harness_warning",
+        toolName: (data.tool_name as string) ?? "",
+        callId: (data.call_id as string) ?? "",
+        message: (data.message as string | null) ?? null,
+        details: (data.details as Record<string, unknown> | null) ?? null,
+      };
+    case "user_unavailable":
+      return {
+        type: "user_unavailable",
+        consecutiveTimeouts: (data.consecutive_timeouts as number) ?? 0,
+        toolName: (data.tool_name as string | null) ?? null,
+      };
+    case "prompt_suggestion":
+      return {
+        type: "prompt_suggestion",
+        suggestions: (data.suggestions as string[]) ?? [],
+      };
     case "state_changed":
       return {
         type: "state_changed",
@@ -191,6 +224,16 @@ export function translateCustomEvent(
  * so the caller can skip it without crashing the stream.
  */
 export function translateWireEvent(wire: WireEvent): ChatEvent | null {
+  // Legacy transport: `prompt_suggestion` is emitted via the raw
+  // writer.emit() path rather than wrapped in a CustomEvent envelope,
+  // so its `type` field is the event name itself. Route it through the
+  // custom-event translator to keep the mapping in one place.
+  if ((wire as { type: string }).type === "prompt_suggestion") {
+    return translateCustomEvent(
+      "prompt_suggestion",
+      wire as unknown as Record<string, unknown>,
+    );
+  }
   switch (wire.type) {
     case "message_start":
       return {

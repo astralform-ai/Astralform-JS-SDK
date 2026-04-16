@@ -63,6 +63,11 @@ export const ChatEventType = {
   WorkspaceReady: "workspace_ready",
   AssetCreated: "asset_created",
   ToolApprovalRequested: "tool_approval_requested",
+  ToolApprovalGranted: "tool_approval_granted",
+  ToolPermissionDenied: "tool_permission_denied",
+  ToolHarnessWarning: "tool_harness_warning",
+  UserUnavailable: "user_unavailable",
+  PromptSuggestion: "prompt_suggestion",
   StateChanged: "state_changed",
 
   // Generic fallthrough for unknown custom events
@@ -429,6 +434,35 @@ export type ChatEvent =
       reason?: string | null;
     }
   | {
+      type: "tool_approval_granted";
+      toolName: string;
+      callId: string;
+    }
+  | {
+      type: "tool_permission_denied";
+      toolName: string;
+      callId: string;
+      reason?: string | null;
+      /** Known values: "hook" | "rule" | "user" | "timeout" | "circuit_breaker". */
+      deniedBy?: string | null;
+    }
+  | {
+      type: "tool_harness_warning";
+      toolName: string;
+      callId: string;
+      message?: string | null;
+      details?: Record<string, unknown> | null;
+    }
+  | {
+      type: "user_unavailable";
+      consecutiveTimeouts: number;
+      toolName?: string | null;
+    }
+  | {
+      type: "prompt_suggestion";
+      suggestions: string[];
+    }
+  | {
       type: "state_changed";
       /**
        * Job lifecycle state. Known values from the backend today include
@@ -512,6 +546,45 @@ export interface JobCreateResponse {
   conversation_id: string;
   message_id: string;
   status: string;
+}
+
+export interface JobStatus {
+  jobId: string;
+  status: string;
+  createdAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  errorMessage: string | null;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface ActiveJob {
+  jobId: string | null;
+  status: string;
+}
+
+export interface JobSummary {
+  jobId: string;
+  status: string;
+  replacesJobId: string | null;
+  responseContent: Record<string, unknown> | null;
+  metrics: Record<string, unknown> | null;
+  createdAt: string | null;
+}
+
+export interface FeedbackRequest {
+  /** 1 for thumbs up, -1 for thumbs down. */
+  rating: 1 | -1;
+  comment?: string | null;
+}
+
+export interface FeedbackResponse {
+  id: string;
+  jobId: string;
+  rating: number;
+  comment: string | null;
+  createdAt: string;
 }
 
 export interface ChatStreamRequest {

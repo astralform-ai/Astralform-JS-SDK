@@ -374,4 +374,149 @@ describe("AstralformClient", () => {
     expect(outputs[0]!.kind).toBe("output");
     expect(outputs[0]!.agentName).toBe("helper");
   });
+
+  it("getJob GETs /v1/jobs/{id} and maps snake_case to camelCase", async () => {
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      capturedUrl = typeof input === "string" ? input : (input as Request).url;
+      return new Response(
+        JSON.stringify({
+          job_id: "job-1",
+          status: "completed",
+          created_at: "2026-01-01T00:00:00Z",
+          started_at: "2026-01-01T00:00:01Z",
+          completed_at: "2026-01-01T00:00:05Z",
+          error_message: null,
+          input_tokens: 120,
+          output_tokens: 340,
+        }),
+        { status: 200 },
+      );
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const job = await client.getJob("job-1");
+
+    expect(capturedUrl).toContain("/v1/jobs/job-1");
+    expect(job.jobId).toBe("job-1");
+    expect(job.status).toBe("completed");
+    expect(job.inputTokens).toBe(120);
+    expect(job.outputTokens).toBe(340);
+    expect(job.startedAt).toBe("2026-01-01T00:00:01Z");
+  });
+
+  it("submitFeedback POSTs to /v1/jobs/{id}/feedback", async () => {
+    let capturedUrl = "";
+    let capturedBody: string | undefined;
+    const mockFetch: typeof globalThis.fetch = async (input, init) => {
+      capturedUrl = typeof input === "string" ? input : (input as Request).url;
+      capturedBody = init?.body as string;
+      return new Response(
+        JSON.stringify({
+          id: "fb-1",
+          job_id: "job-1",
+          rating: 1,
+          comment: "great",
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+        { status: 201 },
+      );
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const fb = await client.submitFeedback("job-1", {
+      rating: 1,
+      comment: "great",
+    });
+
+    expect(capturedUrl).toContain("/v1/jobs/job-1/feedback");
+    expect(JSON.parse(capturedBody!)).toEqual({ rating: 1, comment: "great" });
+    expect(fb.id).toBe("fb-1");
+    expect(fb.jobId).toBe("job-1");
+    expect(fb.rating).toBe(1);
+  });
+
+  it("submitFeedback sends null comment when omitted", async () => {
+    let capturedBody: string | undefined;
+    const mockFetch: typeof globalThis.fetch = async (_input, init) => {
+      capturedBody = init?.body as string;
+      return new Response(
+        JSON.stringify({
+          id: "fb-2",
+          job_id: "job-2",
+          rating: -1,
+          comment: null,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+        { status: 201 },
+      );
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    await client.submitFeedback("job-2", { rating: -1 });
+
+    expect(JSON.parse(capturedBody!)).toEqual({ rating: -1, comment: null });
+  });
+
+  it("getActiveJob maps null job_id", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/active-job": {
+        status: 200,
+        body: { job_id: null, status: "none" },
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const active = await client.getActiveJob("c1");
+
+    expect(active.jobId).toBeNull();
+    expect(active.status).toBe("none");
+  });
+
+  it("getActiveJob returns job id when one is active", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/active-job": {
+        status: 200,
+        body: { job_id: "job-42", status: "running" },
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const active = await client.getActiveJob("c1");
+
+    expect(active.jobId).toBe("job-42");
+    expect(active.status).toBe("running");
+  });
+
+  it("listJobs maps fields and handles missing optional keys", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/jobs": {
+        status: 200,
+        body: [
+          {
+            job_id: "job-1",
+            status: "completed",
+            replaces_job_id: null,
+            response_content: { text: "hi" },
+            metrics: { total_ms: 1234 },
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            job_id: "job-2",
+            status: "failed",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const jobs = await client.listJobs("c1");
+
+    expect(jobs).toHaveLength(2);
+    expect(jobs[0]!.jobId).toBe("job-1");
+    expect(jobs[0]!.metrics).toEqual({ total_ms: 1234 });
+    expect(jobs[1]!.replacesJobId).toBeNull();
+    expect(jobs[1]!.responseContent).toBeNull();
+    expect(jobs[1]!.createdAt).toBeNull();
+  });
 });

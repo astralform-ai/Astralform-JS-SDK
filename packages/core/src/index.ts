@@ -75,6 +75,11 @@ export type {
   WorkspaceReadyPayload,
   AssetCreatedPayload,
   ToolApprovalRequestedPayload,
+  ToolApprovalGrantedPayload,
+  ToolPermissionDeniedPayload,
+  ToolHarnessWarningPayload,
+  UserUnavailablePayload,
+  PromptSuggestionPayload,
 } from "./custom-events.js";
 
 // Wire protocol types (for consumers that want to parse the raw SSE
@@ -126,6 +131,11 @@ export type {
   ToolApprovalScope,
   ToolCallRequest,
   JobCreateResponse,
+  JobStatus,
+  JobSummary,
+  ActiveJob,
+  FeedbackRequest,
+  FeedbackResponse,
   ConversationAsset,
   StreamJobSSEOptions,
   ChatStreamEvent,

@@ -266,11 +266,8 @@ export class StreamManager {
     // Check for active job
     let activeJobId: string | null = null;
     try {
-      const res = await this.session.client.get<{
-        job_id: string | null;
-        status: string;
-      }>(`/v1/conversations/${encodeURIComponent(conversationId)}/active-job`);
-      activeJobId = res.job_id ?? null;
+      const res = await this.session.client.getActiveJob(conversationId);
+      activeJobId = res.jobId;
     } catch {
       // Network error — assume no active job
     }

@@ -119,3 +119,32 @@ export interface ToolApprovalRequestedPayload {
   riskLevel?: string | null;
   reason?: string | null;
 }
+
+export interface ToolApprovalGrantedPayload {
+  toolName: string;
+  callId: string;
+}
+
+export interface ToolPermissionDeniedPayload {
+  toolName: string;
+  callId: string;
+  reason?: string | null;
+  /** Known values: "hook" | "rule" | "user" | "timeout" | "circuit_breaker". */
+  deniedBy?: string | null;
+}
+
+export interface ToolHarnessWarningPayload {
+  toolName: string;
+  callId: string;
+  message?: string | null;
+  details?: Record<string, unknown> | null;
+}
+
+export interface UserUnavailablePayload {
+  consecutiveTimeouts: number;
+  toolName?: string | null;
+}
+
+export interface PromptSuggestionPayload {
+  suggestions: string[];
+}
