@@ -32,6 +32,7 @@ export interface SendOptions {
   enableSearch?: boolean;
   agentName?: string;
   uploadIds?: string[];
+  planMode?: boolean;
 }
 
 export type StreamManagerEvent =
@@ -123,9 +124,8 @@ export class StreamManager {
       event,
     });
 
-    // Handle completion — the session emits ``complete`` after the
-    // final message_stop, at which point the turn is fully done.
-    if (event.type === ChatEventType.Complete) {
+    // Handle completion — message_stop is the terminal turn event.
+    if (event.type === ChatEventType.MessageStop) {
       if (this._state === "streaming") {
         this.setState("idle");
       }
@@ -150,6 +150,7 @@ export class StreamManager {
         enableSearch: options?.enableSearch,
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
+        planMode: options?.planMode,
       });
     } catch {
       // AbortError from detach is expected
@@ -302,8 +303,24 @@ export class StreamManager {
           (j: { status: string }) => j.status === "completed",
         );
 
-        for (const job of completedJobs) {
-          await this.session.switchConversation(conversationId, job.job_id);
+        // User prompts aren't persisted in job_events — they live in
+        // the messages table. Pair each completed job with its user
+        // prompt by chronological index: the N-th completed job was
+        // triggered by the N-th user message. Feed the content into
+        // ``switchConversation`` so it emits a ``user_message`` event
+        // at the right boundary during replay.
+        const userMessages = this.session.messages.filter(
+          (m) => m.role === "user",
+        );
+
+        for (let i = 0; i < completedJobs.length; i++) {
+          const job = completedJobs[i]!;
+          const userContent = userMessages[i]?.content;
+          await this.session.switchConversation(
+            conversationId,
+            job.job_id,
+            userContent,
+          );
         }
 
         if (completedJobs.length > 0) {

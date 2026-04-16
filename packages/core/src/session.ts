@@ -1,12 +1,11 @@
 import { AstralformClient } from "./client.js";
-import { AstralformError, ConnectionError } from "./errors.js";
-import { createRateLimitErrorFromPayload } from "./rate-limit.js";
 import { InMemoryStorage, type ChatStorage } from "./storage.js";
 import { ToolRegistry } from "./tools.js";
+import { ProtocolRegistry } from "./protocol-registry.js";
+import { translateWireEvent } from "./translate.js";
 import type {
   AgentInfo,
   AstralformConfig,
-  BlockDeltaPayload,
   ChatEvent,
   ChatStreamRequest,
   Conversation,
@@ -14,17 +13,13 @@ import type {
   ProjectStatus,
   SendOptions,
   SkillInfo,
-  TodoItem,
   ToolCallRequest,
   ToolResult,
-  WireBlockDeltaPayload,
   WireEvent,
 } from "./types.js";
 import { generateId } from "./utils.js";
 
 type ChatEventHandler = (event: ChatEvent) => void;
-
-const RATE_LIMIT_PATTERN = /rate\s*limit/i;
 
 function pathEquals(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false;
@@ -44,6 +39,14 @@ export class ChatSession {
   readonly client: AstralformClient;
   readonly toolRegistry: ToolRegistry;
   readonly storage: ChatStorage;
+  /**
+   * Pluggable UI protocol adapters. Consumers register a framework-
+   * specific adapter (e.g. React) for each MIME type they can render,
+   * typically gated on ``session.projectStatus.uiComponents.protocol``.
+   * ``ToolBlock``-style consumers look up the adapter for an incoming
+   * embedded resource and hand off rendering.
+   */
+  readonly protocols = new ProtocolRegistry();
 
   // State
   conversationId: string | null = null;
@@ -141,6 +144,7 @@ export class ChatSession {
       upload_ids: options?.uploadIds,
       agent_name: options?.agentName,
       enable_search: options?.enableSearch,
+      plan_mode: options?.planMode,
     };
 
     await this.processStream(request);
@@ -181,7 +185,9 @@ export class ChatSession {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         this.emit({
           type: "error",
-          error: err instanceof Error ? err : new ConnectionError(String(err)),
+          code: "connection_error",
+          message: err instanceof Error ? err.message : String(err),
+          blockPath: null,
         });
       }
     } finally {
@@ -218,6 +224,13 @@ export class ChatSession {
       };
       this.conversations.unshift(conv);
       await this.storage.createConversation(conversationId, "").catch(() => {});
+    }
+    // Backfill the just-sent user message if send() ran before we knew the
+    // conversation id (first turn of an auto-created conversation).
+    const lastMsg = this.messages[this.messages.length - 1];
+    if (lastMsg?.role === "user" && !lastMsg.conversationId) {
+      lastMsg.conversationId = conversationId;
+      await this.storage.addMessage(lastMsg, conversationId).catch(() => {});
     }
     const messageId = job.message_id;
     this.lastSeq = -1;
@@ -285,243 +298,132 @@ export class ChatSession {
     messageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
+    // Side effects that depend on mutable session state must run before the
+    // ChatEvent is emitted so consumers see a consistent view.
+    this.applyWireSideEffects(wire, conversationId, messageId);
+
+    const event = translateWireEvent(wire);
+    if (event) {
+      this.emit(event);
+    }
+
+    // Client tool round-trip — deferred to block_stop with
+    // status=awaiting_client_result, where the parsed input is in final.input.
+    if (
+      executeClientTools &&
+      wire.type === "block_stop" &&
+      wire.status === "awaiting_client_result" &&
+      wire.final?.call_id
+    ) {
+      const f = wire.final;
+      const request: ToolCallRequest = {
+        callId: (f.call_id as string) ?? "",
+        toolName: (f.tool_name as string) ?? "",
+        arguments: (f.input as Record<string, unknown>) ?? {},
+        isClientTool: true,
+      };
+      const results = await this.executeClientTools([request]);
+      await this.client.submitToolResult({
+        conversation_id: conversationId,
+        message_id: messageId,
+        tool_results: results,
+      });
+    }
+  }
+
+  /**
+   * State mutations driven by wire events. Kept separate from translation so
+   * the pure wire → ChatEvent mapping can live in translate.ts and be reused
+   * by the replay path.
+   *
+   * ``messageId`` is the server-assigned assistant message id for the current
+   * turn; empty in the reconnect and conversation-switch replay paths where
+   * messages have already been loaded from REST and shouldn't be re-pushed.
+   */
+  private applyWireSideEffects(
+    wire: WireEvent,
+    conversationId: string,
+    messageId: string,
+  ): void {
     switch (wire.type) {
-      case "message_start": {
-        // Reset per-turn accumulator so multi-turn replay doesn't
-        // concatenate text from prior turns into the next complete event.
+      case "message_start":
+        // Reset per-turn accumulator so multi-turn replay doesn't concatenate
+        // text from prior turns into the next assistant message.
         this.resetStreamingState();
         if (wire.model) {
           this.modelDisplayName = wire.model;
         }
-        this.emit({
-          type: "message_start",
-          turnId: wire.turn_id,
-          model: wire.model,
-          agentName: wire.agent_name,
-          agentAvatarUrl: wire.agent_avatar_url,
-        });
         return;
-      }
 
-      case "block_start": {
-        // Track the currently open top-level text block so we can
-        // accumulate its content for the assistant Message record.
+      case "block_start":
+        // Track the currently open top-level text block so we can accumulate
+        // its content for the assistant Message record.
         if (
           wire.kind === "text" &&
           (!wire.parent_path || wire.parent_path.length === 0)
         ) {
           this.currentTextPath = wire.path;
         }
-        this.emit({
-          type: "block_start",
-          turnId: wire.turn_id,
-          path: wire.path,
-          parentPath: wire.parent_path ?? null,
-          kind: wire.kind,
-          metadata: wire.metadata,
-        });
-
-        // Client tool execution is deferred to block_stop with
-        // status=awaiting_client_result, where the parsed input is
-        // available in final.input.  See block_stop handler below.
         return;
-      }
 
-      case "block_delta": {
-        const delta = translateDelta(wire.delta);
-        // Accumulate text for the top-level assistant content record
+      case "block_delta":
         if (
-          delta.channel === "text" &&
+          wire.delta.channel === "text" &&
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
         ) {
-          this.accumulatedText += delta.text;
+          this.accumulatedText += wire.delta.text;
         }
-        this.emit({
-          type: "block_delta",
-          turnId: wire.turn_id,
-          path: wire.path,
-          delta,
-        });
         return;
-      }
 
-      case "block_stop": {
+      case "block_stop":
         if (
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
         ) {
           this.currentTextPath = null;
         }
-        this.emit({
-          type: "block_stop",
-          turnId: wire.turn_id,
-          path: wire.path,
-          status: wire.status,
-          final: wire.final,
-        });
-
-        // Client tool execution: the backend emits a block_stop with
-        // status=awaiting_client_result once the tool's input_json is
-        // fully parsed. The parsed arguments are in final.input.
-        if (
-          executeClientTools &&
-          wire.status === "awaiting_client_result" &&
-          wire.final?.call_id
-        ) {
-          const f = wire.final;
-          const request: ToolCallRequest = {
-            callId: (f.call_id as string) ?? "",
-            toolName: (f.tool_name as string) ?? "",
-            arguments: (f.input as Record<string, unknown>) ?? {},
-            isClientTool: true,
-          };
-          this.emit({ type: "tool_call", request });
-          const results = await this.executeClientTools([request]);
-          await this.client.submitToolResult({
-            conversation_id: conversationId,
-            message_id: messageId,
-            tool_results: results,
-          });
-        }
         return;
-      }
 
-      case "message_stop": {
-        const usage = {
-          inputTokens: wire.usage.input_tokens ?? 0,
-          outputTokens: wire.usage.output_tokens ?? 0,
-          cachedTokens: wire.usage.cached_tokens ?? 0,
-        };
-        this.emit({
-          type: "message_stop",
-          turnId: wire.turn_id,
-          stopReason: wire.stop_reason,
-          usage,
-          ttfbMs: wire.ttfb_ms,
-          totalMs: wire.total_ms,
-          stallCount: wire.stall_count,
-        });
-        // Only persist the assistant message during live streaming —
-        // during replay (executeClientTools=false), messages are already
-        // loaded from the backend and completeStream would duplicate them.
-        if (executeClientTools || this.isStreaming) {
-          await this.completeStream(
+      case "message_stop":
+        // Only record the assistant message when we have the server's
+        // message id. Reconnect/replay paths load messages via REST instead.
+        if (messageId) {
+          const assistantMessage: Message = {
+            id: messageId,
             conversationId,
-            messageId,
-            wire.job_id,
-            wire.total_ms,
-            usage,
-          );
-        } else {
-          this.emitComplete(
-            conversationId,
-            "",
-            wire.job_id,
-            wire.total_ms,
-            usage,
-          );
+            role: "assistant",
+            content: this.accumulatedText,
+            status: "complete",
+            createdAt: new Date().toISOString(),
+          };
+          this.messages.push(assistantMessage);
+          this.storage
+            .addMessage(assistantMessage, conversationId)
+            .catch(() => {});
         }
         this.isStreaming = false;
         this.currentJobId = null;
         return;
-      }
 
-      case "stall": {
-        this.emit({
-          type: "stall",
-          sinceLastEventMs: wire.since_last_event_ms,
-          stallCount: wire.stall_count,
-        });
-        return;
-      }
-
-      case "retry": {
-        this.emit({
-          type: "retry",
-          attempt: wire.attempt,
-          reason: wire.reason,
-          backoffMs: wire.backoff_ms,
-        });
-        return;
-      }
-
-      case "error": {
-        const isRateLimit =
-          wire.code === "rate_limit_exceeded" ||
-          RATE_LIMIT_PATTERN.test(wire.message);
-        if (isRateLimit) {
-          this.emit({
-            type: "error",
-            error: createRateLimitErrorFromPayload(
-              wire as unknown as Record<string, unknown>,
-            ),
-          });
-          return;
-        }
-        this.emit({
-          type: "error",
-          error: new AstralformError(wire.message, wire.code),
-        });
-        return;
-      }
-
-      case "keepalive": {
-        this.emit({
-          type: "keepalive",
-          sinceLastEventMs: wire.since_last_event_ms,
-        });
-        return;
-      }
-
-      case "custom": {
-        this.handleCustomEvent(wire.name, wire.data);
-        return;
-      }
-    }
-  }
-
-  private handleCustomEvent(name: string, data: Record<string, unknown>): void {
-    switch (name) {
-      case "user_message":
-        this.emit({
-          type: "user_message",
-          content: (data.content as string) ?? "",
-          createdAt: data.created_at as number | undefined,
-        });
-        return;
-      case "title_generated": {
-        const title = (data.title as string) ?? "";
-        if (this.conversationId && title) {
-          const conv = this.conversations.find(
-            (c) => c.id === this.conversationId,
-          );
-          if (conv) {
-            conv.title = title;
+      case "custom":
+        if (wire.name === "title_generated") {
+          const title = (wire.data.title as string) ?? "";
+          if (this.conversationId && title) {
+            const conv = this.conversations.find(
+              (c) => c.id === this.conversationId,
+            );
+            if (conv) {
+              conv.title = title;
+            }
+            this.storage
+              .updateConversationTitle(this.conversationId, title)
+              .catch(() => {});
           }
-          // Persist to ChatStorage so reloads don't lose the title
-          this.storage
-            .updateConversationTitle(this.conversationId, title)
-            .catch(() => {});
         }
-        this.emit({ type: "title_generated", title });
         return;
-      }
-      case "todo_update": {
-        const todos = (data.todos as TodoItem[]) ?? [];
-        this.emit({ type: "todo_update", todos });
-        return;
-      }
-      case "context_update":
-        this.emit({
-          type: "context_update",
-          context: (data.context as Record<string, unknown>) ?? {},
-          phase: data.phase as string | undefined,
-          updatedAt: data.updated_at as number | undefined,
-        });
-        return;
+
       default:
-        this.emit({ type: "custom", name, data });
         return;
     }
   }
@@ -535,58 +437,6 @@ export class ChatSession {
       results.push(result);
     }
     return results;
-  }
-
-  private emitComplete(
-    conversationId: string,
-    messageId: string,
-    jobId: string | undefined,
-    totalMs: number,
-    usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
-  ): void {
-    const convTitle = this.conversations.find(
-      (c) => c.id === conversationId,
-    )?.title;
-    this.emit({
-      type: "complete",
-      content: this.accumulatedText,
-      conversationId,
-      messageId,
-      title: convTitle || undefined,
-      metrics: {
-        total_ms: totalMs,
-        input_tokens: usage.inputTokens,
-        output_tokens: usage.outputTokens,
-      },
-      jobId,
-      job_id: jobId, // deprecated alias for backward compat
-    });
-  }
-
-  private async completeStream(
-    conversationId: string,
-    messageId: string,
-    jobId: string | undefined,
-    totalMs: number,
-    usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
-  ): Promise<void> {
-    const assistantMessage: Message = {
-      id: messageId || generateId(),
-      conversationId,
-      role: "assistant",
-      content: this.accumulatedText,
-      status: "complete",
-      createdAt: new Date().toISOString(),
-    };
-    this.messages.push(assistantMessage);
-    await this.storage.addMessage(assistantMessage, conversationId);
-    this.emitComplete(
-      conversationId,
-      assistantMessage.id,
-      jobId,
-      totalMs,
-      usage,
-    );
   }
 
   /**
@@ -629,7 +479,9 @@ export class ChatSession {
     } catch (err) {
       this.emit({
         type: "error",
-        error: err instanceof Error ? err : new ConnectionError(String(err)),
+        code: "connection_error",
+        message: err instanceof Error ? err.message : String(err),
+        blockPath: null,
       });
     } finally {
       this.isStreaming = false;
@@ -653,6 +505,8 @@ export class ChatSession {
     }
     this.detach();
     this.currentJobId = null;
+    // Drop all protocol adapters — lifecycle tied to the session.
+    this.protocols.clear();
   }
 
   async createNewConversation(): Promise<string> {
@@ -667,7 +521,18 @@ export class ChatSession {
     return id;
   }
 
-  async switchConversation(id: string, jobId?: string): Promise<void> {
+  async switchConversation(
+    id: string,
+    jobId?: string,
+    /**
+     * User prompt that triggered this job, if known. Emitted as a
+     * synthetic ``user_message`` ChatEvent right before the first
+     * ``message_start`` of the replay. User messages aren't persisted
+     * in ``job_events``, so without this the restored conversation
+     * would show the agent response with no visible prompt above it.
+     */
+    userMessageContent?: string,
+  ): Promise<void> {
     this.conversationId = id;
     this.resetStreamingState();
 
@@ -680,10 +545,27 @@ export class ChatSession {
       messagesResult.status === "fulfilled" ? messagesResult.value : [];
 
     // Replay stored events via the same dispatch path. The consumer
-    // rebuilds its block state from the replayed events.
+    // rebuilds its block state from the replayed events. The data payload
+    // is authoritative for `type` (matches how replay.ts#mapSseToChat reads
+    // it) with the SSE event name as a fallback for pre-v2 rows.
     if (eventsResult.status === "fulfilled") {
+      let userMessageEmitted = !userMessageContent;
       for (const ev of eventsResult.value) {
-        const wire = { type: ev.event, ...ev.data } as unknown as WireEvent;
+        const type = (ev.data.type as string) || ev.event;
+        if (!type || type === "done") continue;
+
+        // Inject the user prompt at the turn boundary — right before
+        // the first ``message_start`` — so the consumer can insert a
+        // user block above the agent response.
+        if (!userMessageEmitted && type === "message_start") {
+          this.emit({
+            type: "user_message",
+            content: userMessageContent!,
+          });
+          userMessageEmitted = true;
+        }
+
+        const wire = { ...ev.data, type } as unknown as WireEvent;
         try {
           await this.dispatchWireEvent(
             wire,
@@ -719,36 +601,5 @@ export class ChatSession {
     }
     this.enabledClientTools.add(name);
     return true;
-  }
-}
-
-// =============================================================================
-// Wire → ChatEvent delta translator
-// =============================================================================
-
-function translateDelta(wire: WireBlockDeltaPayload): BlockDeltaPayload {
-  switch (wire.channel) {
-    case "text":
-      return { channel: "text", text: wire.text };
-    case "thinking":
-      return { channel: "thinking", text: wire.text };
-    case "signature":
-      return { channel: "signature", signature: wire.signature };
-    case "input":
-      return { channel: "input", partialJson: wire.partial_json };
-    case "input_arg":
-      return {
-        channel: "inputArg",
-        argName: wire.arg_name,
-        text: wire.text,
-      };
-    case "output":
-      return { channel: "output", stream: wire.stream, chunk: wire.chunk };
-    case "status":
-      return {
-        channel: "status",
-        status: wire.status,
-        note: wire.note,
-      };
   }
 }

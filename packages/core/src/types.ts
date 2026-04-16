@@ -1,13 +1,17 @@
 // =============================================================================
-// Astralform SDK type definitions
+// Astralform SDK v2 type definitions
 // =============================================================================
 //
 // Wire protocol types mirror the Pydantic models in
-// `backend/src/stream/protocol.py`. The SDK forwards typed events to the
-// consumer; block construction happens on the consumer side.
+// `backend/src/stream/protocol.py` 1:1. The SDK forwards typed events to
+// the consumer; block construction happens on the consumer side.
 //
-// See `docs/refactor/sse-stream-v2-plan.md` in the main backend repo for the
-// full protocol spec.
+// Custom event payloads live in `custom-events.ts`.
+
+import type { AgentIdentity, MemoryRecord, TodoItem } from "./custom-events.js";
+
+// Re-export so consumers can import from types.ts or custom-events.ts
+export type { AgentIdentity, MemoryRecord, TodoItem };
 
 // --- Configuration ---
 
@@ -44,21 +48,25 @@ export const ChatEventType = {
   Error: "error",
   Keepalive: "keepalive",
 
-  // Conversation-level (opaque pass-through via CustomEvent)
+  // Conversation-level (typed custom events)
   UserMessage: "user_message",
   TitleGenerated: "title_generated",
   TodoUpdate: "todo_update",
   ContextUpdate: "context_update",
+  SubagentStart: "subagent_start",
+  SubagentStop: "subagent_stop",
+  ContextWarning: "context_warning",
+  MemoryRecall: "memory_recall",
+  MemoryUpdate: "memory_update",
+  DesktopStream: "desktop_stream",
+  AttachmentStaged: "attachment_staged",
+  WorkspaceReady: "workspace_ready",
+  AssetCreated: "asset_created",
+  ToolApprovalRequested: "tool_approval_requested",
+  StateChanged: "state_changed",
+
+  // Generic fallthrough for unknown custom events
   Custom: "custom",
-
-  // Completion (synthesized by the session from message_stop for
-  // backward compatibility with existing consumers)
-  Complete: "complete",
-
-  // Tool call request (synthesized from block_start with
-  // kind=tool_use and execution=client, so consumers can execute
-  // client-side MCP tools)
-  ToolCall: "tool_call",
 } as const;
 
 export type ChatEventTypeValue =
@@ -121,7 +129,11 @@ export interface WireOutputDelta {
 
 export interface WireStatusDelta {
   channel: "status";
-  status: "executing" | "awaiting_client_result" | "denied";
+  status:
+    | "executing"
+    | "awaiting_client_result"
+    | "awaiting_approval"
+    | "denied";
   note?: string;
 }
 
@@ -147,6 +159,7 @@ export interface WireMessageStart extends WireEnvelope {
   turn_id: string;
   model: string;
   agent_name?: string | null;
+  agent_display_name?: string | null;
   agent_avatar_url?: string | null;
 }
 
@@ -199,6 +212,9 @@ export interface WireRetryEvent extends WireEnvelope {
   attempt: number;
   reason: string;
   backoff_ms: number;
+  strategy?: string | null;
+  max_attempts?: number | null;
+  context_recovery?: Record<string, unknown> | null;
 }
 
 export interface WireErrorEvent extends WireEnvelope {
@@ -263,7 +279,11 @@ export type BlockDeltaPayload =
     }
   | {
       channel: "status";
-      status: "executing" | "awaiting_client_result" | "denied";
+      status:
+        | "executing"
+        | "awaiting_client_result"
+        | "awaiting_approval"
+        | "denied";
       note?: string;
     };
 
@@ -278,11 +298,13 @@ export type ChatEvent =
       turnId: string;
       model: string;
       agentName?: string | null;
+      agentDisplayName?: string | null;
       agentAvatarUrl?: string | null;
     }
   | {
       type: "message_stop";
       turnId: string;
+      jobId: string;
       stopReason: WireStopReason;
       usage: TurnUsage;
       ttfbMs?: number | null;
@@ -324,53 +346,103 @@ export type ChatEvent =
       attempt: number;
       reason: string;
       backoffMs: number;
+      strategy?: string | null;
+      maxAttempts?: number | null;
+      contextRecovery?: Record<string, unknown> | null;
     }
   | {
       type: "error";
-      error: Error;
+      code: string;
+      message: string;
+      blockPath: number[] | null;
     }
   | {
       type: "keepalive";
       sinceLastEventMs: number;
     }
 
-  // Conversation-level (forwarded from CustomEvent)
+  // Conversation-level — typed custom events
   | { type: "user_message"; content: string; createdAt?: number }
   | { type: "title_generated"; title: string }
   | { type: "todo_update"; todos: TodoItem[] }
   | {
       type: "context_update";
       context: Record<string, unknown>;
-      phase?: string;
-      updatedAt?: number;
+      phase?: string | null;
+      updatedAt?: number | null;
     }
+  | {
+      type: "subagent_start";
+      agent: AgentIdentity;
+      taskCallId?: string | null;
+    }
+  | {
+      type: "subagent_stop";
+      agent: AgentIdentity;
+      taskCallId?: string | null;
+    }
+  | {
+      type: "context_warning";
+      /** Known values: "info" | "warning" | "critical". Typed as string for forward compat. */
+      severity: string;
+      utilizationPct: number;
+      remainingTokens: number;
+      windowTokens: number;
+      inputTokens: number;
+      message: string;
+    }
+  | { type: "memory_recall"; memories: MemoryRecord[] }
+  | {
+      type: "memory_update";
+      /** Known values: "created" | "updated" | "deleted". */
+      action: string;
+      memoryId?: string | null;
+      key?: string | null;
+      namespace?: string | null;
+    }
+  | { type: "desktop_stream"; url: string; sandboxId?: string | null }
+  | {
+      type: "attachment_staged";
+      attachmentId: string;
+      filename: string;
+      contentType?: string | null;
+      sizeBytes?: number | null;
+    }
+  | {
+      type: "workspace_ready";
+      sandboxId: string;
+      workspacePath?: string | null;
+    }
+  | {
+      type: "asset_created";
+      assetId: string;
+      filename: string;
+      url?: string | null;
+      contentType?: string | null;
+    }
+  | {
+      type: "tool_approval_requested";
+      toolName: string;
+      callId: string;
+      arguments: Record<string, unknown>;
+      riskLevel?: string | null;
+      reason?: string | null;
+    }
+  | {
+      type: "state_changed";
+      /**
+       * Job lifecycle state. Known values from the backend today include
+       * "queued" | "running" | "waiting_for_tool" | "completed" | "failed".
+       * Typed as string for forward compat.
+       */
+      state: string;
+    }
+
+  // Generic fallthrough for unknown custom events
   | {
       type: "custom";
       name: string;
       data: Record<string, unknown>;
-    }
-
-  // Synthesized from message_stop for legacy completion handling.
-  // Preserves the old complete payload shape for backward compat:
-  // content, title, conversationId, messageId, metrics, jobId.
-  | {
-      type: "complete";
-      content: string;
-      conversationId: string;
-      messageId: string;
-      title?: string;
-      metrics: Record<string, unknown>;
-      jobId?: string;
-      /** @deprecated Use jobId (camelCase). Kept for backward compat. */
-      job_id?: string;
-    }
-
-  // Synthesized from block_start(tool_use) with execution=client so
-  // consumers can run client-side MCP tools. The SDK still handles the
-  // round-trip via ToolRegistry.
-  | {
-      type: "tool_call";
-      request: ToolCallRequest;
     };
 
 // =============================================================================
@@ -396,12 +468,21 @@ export interface Message {
   toolCalls?: ToolCallRequest[];
 }
 
+export interface UIComponentsConfig {
+  enabled: boolean;
+  /** Protocol slug (e.g. "a2ui"). Null when disabled. */
+  protocol: string | null;
+  /** MIME type to match against embedded resources (e.g. "application/json+a2ui"). */
+  mimeType: string | null;
+}
+
 export interface ProjectStatus {
   isReady: boolean;
   llmConfigured: boolean;
   llmProvider?: string;
   llmModel?: string;
   message: string;
+  uiComponents: UIComponentsConfig;
 }
 
 export interface AgentInfo {
@@ -420,11 +501,7 @@ export interface SkillInfo {
   isEnabled: boolean;
 }
 
-export interface TodoItem {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  id?: string;
-}
+// TodoItem is imported from custom-events.ts and re-exported above.
 
 // =============================================================================
 // Job and request types
@@ -447,6 +524,7 @@ export interface ChatStreamRequest {
   upload_ids?: string[];
   agent_name?: string;
   enable_search?: boolean;
+  plan_mode?: boolean;
 }
 
 export interface ToolResultRequest {
@@ -460,6 +538,16 @@ export interface ToolResult {
   tool_name: string;
   result: string;
   is_error: boolean;
+}
+
+export type ToolApprovalDecision = "allow" | "deny";
+export type ToolApprovalScope = "once" | "conversation" | "always";
+
+export interface ToolApprovalRequest {
+  job_id: string;
+  call_id: string;
+  decision: ToolApprovalDecision;
+  scope: ToolApprovalScope;
 }
 
 export interface ToolDefinition {
@@ -511,6 +599,7 @@ export interface SendOptions {
   uploadIds?: string[];
   agentName?: string;
   enableSearch?: boolean;
+  planMode?: boolean;
 }
 
 // =============================================================================

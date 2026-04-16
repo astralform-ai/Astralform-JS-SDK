@@ -6,27 +6,28 @@ const session = new ChatSession({
   // baseURL: "http://localhost:8000", // for local development
 });
 
-// Subscribe to events
 session.on((event) => {
   switch (event.type) {
     case "connected":
       console.log("Connected to Astralform");
       break;
-    case "chunk":
-      process.stdout.write(event.text);
+    case "block_delta":
+      if (event.delta.channel === "text") {
+        process.stdout.write(event.delta.text);
+      }
       break;
-    case "complete":
-      console.log("\n\nDone! Conversation:", event.conversationId);
+    case "message_stop":
+      console.log(
+        `\n\nDone — ${event.usage.outputTokens} output tokens in ${event.totalMs}ms`,
+      );
       break;
     case "error":
-      console.error("Error:", event.error.message);
+      console.error(`Error (${event.code}): ${event.message}`);
       break;
   }
 });
 
-// Connect and send a message
 await session.connect();
 await session.send("What is the capital of France?");
 
-// Clean up
 session.disconnect();

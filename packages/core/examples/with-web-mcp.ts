@@ -1,22 +1,16 @@
 import { ChatSession } from "@astralform/js";
 
-// WebMCP example - runs in Chrome 146+ with WebMCP support
-// Browser-registered tools are automatically discovered and connected
+// Browser example — register DOM-backed tools the LLM can invoke.
+// The SDK has no built-in WebMCP discovery; register tools explicitly
+// via session.toolRegistry (names must start with "mcp_").
 
 const session = new ChatSession({
   apiKey: "your-api-key",
   userId: "user-123",
 });
 
-// Connect - automatically discovers WebMCP tools from navigator.modelContext
-await session.connect();
-
-console.log("WebMCP available:", session.webMCP.isAvailable());
-
-// You can also manually register tools that appear in both
-// WebMCP (for other AI agents) and Astralform (for your backend agent)
-session.webMCP.registerTool(
-  "page_content",
+session.toolRegistry.registerTool(
+  "mcp_page_content",
   "Get the current page content",
   {
     type: "object",
@@ -34,14 +28,15 @@ session.webMCP.registerTool(
   },
 );
 
-// All registered tools (including WebMCP-discovered ones)
-// are automatically included in the mcp_manifest sent to the backend
+await session.connect();
+
+const output = document.getElementById("output")!;
+
 session.on((event) => {
-  if (event.type === "chunk") {
-    // Append to your UI
-    document.getElementById("output")!.textContent += event.text;
+  if (event.type === "block_delta" && event.delta.channel === "text") {
+    output.textContent += event.delta.text;
   }
-  if (event.type === "complete") {
+  if (event.type === "message_stop") {
     console.log("Response complete");
   }
 });

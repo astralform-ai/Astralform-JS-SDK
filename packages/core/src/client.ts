@@ -14,6 +14,7 @@ import type {
   Message,
   ProjectStatus,
   SkillInfo,
+  ToolApprovalRequest,
   ToolResultRequest,
 } from "./types.js";
 
@@ -125,13 +126,24 @@ export class AstralformClient {
       llm_provider?: string;
       llm_model?: string;
       message: string;
+      ui_components?: {
+        enabled?: boolean;
+        protocol?: string | null;
+        mime_type?: string | null;
+      };
     }>("/v1/project/status");
+    const ui = raw.ui_components ?? {};
     return {
       isReady: raw.is_ready,
       llmConfigured: raw.llm_configured,
       llmProvider: raw.llm_provider,
       llmModel: raw.llm_model,
       message: raw.message,
+      uiComponents: {
+        enabled: Boolean(ui.enabled),
+        protocol: ui.protocol ?? null,
+        mimeType: ui.mime_type ?? null,
+      },
     };
   }
 
@@ -231,6 +243,10 @@ export class AstralformClient {
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {
     await this.post("/v1/tool-result", request);
+  }
+
+  async submitToolApproval(request: ToolApprovalRequest): Promise<void> {
+    await this.post("/v1/tool-approval", request);
   }
 
   // --- Conversation Assets ---

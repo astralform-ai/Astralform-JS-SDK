@@ -35,6 +35,11 @@ describe("AstralformClient", () => {
           llm_provider: "openai",
           llm_model: "gpt-4o",
           message: "Ready",
+          ui_components: {
+            enabled: true,
+            protocol: "a2ui",
+            mime_type: "application/json+a2ui",
+          },
         },
       },
     });
@@ -46,6 +51,66 @@ describe("AstralformClient", () => {
     expect(status.llmConfigured).toBe(true);
     expect(status.llmProvider).toBe("openai");
     expect(status.llmModel).toBe("gpt-4o");
+    expect(status.uiComponents).toEqual({
+      enabled: true,
+      protocol: "a2ui",
+      mimeType: "application/json+a2ui",
+    });
+  });
+
+  it("getProjectStatus defaults uiComponents when backend omits the field", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/project/status": {
+        status: 200,
+        body: {
+          is_ready: true,
+          llm_configured: false,
+          message: "Missing LLM",
+        },
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const status = await client.getProjectStatus();
+
+    expect(status.uiComponents).toEqual({
+      enabled: false,
+      protocol: null,
+      mimeType: null,
+    });
+  });
+
+  it("submitToolApproval POSTs to /v1/tool-approval with the request body", async () => {
+    let capturedUrl: string | undefined;
+    let capturedBody: string | undefined;
+    let capturedMethod: string | undefined;
+
+    const mockFetch: typeof globalThis.fetch = async (input, init) => {
+      capturedUrl = typeof input === "string" ? input : (input as Request).url;
+      capturedBody = init?.body as string | undefined;
+      capturedMethod = init?.method;
+      return new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    await client.submitToolApproval({
+      job_id: "job-1",
+      call_id: "call-42",
+      decision: "allow",
+      scope: "once",
+    });
+
+    expect(capturedMethod).toBe("POST");
+    expect(capturedUrl).toContain("/v1/tool-approval");
+    expect(JSON.parse(capturedBody!)).toEqual({
+      job_id: "job-1",
+      call_id: "call-42",
+      decision: "allow",
+      scope: "once",
+    });
   });
 
   it("getConversations returns mapped conversations", async () => {

@@ -1,0 +1,81 @@
+# Changelog
+
+## 2.0.0
+
+Breaking release. The SSE surface is narrower and the typed `ChatEvent` union changes shape. Read the migration notes below before upgrading.
+
+### Removed `ChatEvent` types
+
+- **`complete`** — the SDK no longer synthesises a completion event. `message_stop` is the terminal turn event. Field map:
+  - `complete.content` → accumulate `block_delta(channel="text")` yourself (or read `session.messages` after `message_stop`).
+  - `complete.conversationId` → `session.conversationId`.
+  - `complete.title` → the `title_generated` custom event.
+  - `complete.metrics` → `message_stop.usage` + `message_stop.totalMs` + `message_stop.ttfbMs`.
+  - `complete.jobId` → `message_stop.jobId` (now required, camelCase only — the `job_id` alias is gone).
+- **`tool_call`** — removed. The SDK still handles the client-tool round-trip internally; observers should watch the wire events:
+  - Tool requested: `block_start` with `kind: "tool_use"`.
+  - Tool ready to execute: `block_stop` with `status: "awaiting_client_result"`. Payload is on `block_stop.final` (`call_id`, `tool_name`, `input`).
+  - Approval required: `tool_approval_requested` custom event.
+
+### Changed `error` event shape
+
+Before: `{ type: "error"; error: Error }` (could be `RateLimitError` when the backend sent a rate-limit SSE error).
+
+After: `{ type: "error"; code: string; message: string; blockPath: number[] | null }`.
+
+`RateLimitError` / `AuthenticationError` / `ServerError` are still thrown from HTTP calls (`connect()`, `submitToolResult`, `submitToolApproval`, etc.). They are no longer wrapped in an SSE `error` event — consumers that did `event.error instanceof RateLimitError` should instead check `event.code === "rate_limit_exceeded"`.
+
+### Reshaped `TodoItem`
+
+```ts
+// Before
+interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  id?: string;
+}
+
+// After
+interface TodoItem {
+  id: number; // required, numeric
+  subject: string; // renamed from `content`
+  status: "pending" | "in_progress" | "completed" | "deleted";
+  description?: string | null;
+  activeForm?: string | null;
+  owner?: string | null;
+  blockedBy?: number[] | null;
+  blocks?: number[] | null;
+  priority?: number | null;
+}
+```
+
+Rename `content` → `subject` and treat `id` as a required number when reading `todo_update.todos`.
+
+### New required field on `ProjectStatus`
+
+`ProjectStatus.uiComponents: { enabled: boolean; protocol: string | null; mimeType: string | null }` — populated from the backend's `ui_components` block. Defaults to `{ enabled: false, protocol: null, mimeType: null }` when the backend omits it.
+
+### New typed custom events
+
+The `custom` passthrough is still emitted for unknown names, but these ten now have first-class typed variants on `ChatEvent`:
+
+`subagent_start`, `subagent_stop`, `context_warning`, `memory_recall`, `memory_update`, `desktop_stream`, `attachment_staged`, `workspace_ready`, `asset_created`, `tool_approval_requested`, `state_changed`.
+
+### New public APIs
+
+- `session.protocols` — a `ProtocolRegistry` for registering framework-specific renderers keyed by MIME type. Lifecycle is tied to the session (cleared on `disconnect()`). Gate registration on `session.projectStatus?.uiComponents.protocol`.
+- `parseEmbeddedResource(value)` / `isEmbeddedResource(value)` — detect MCP-style embedded resources in tool output.
+- `client.submitToolApproval({ job_id, call_id, decision, scope })` — respond to `tool_approval_requested` events.
+- `session.send(msg, { planMode: true })` — new request option.
+- `translateDelta`, `mapSseToChat`, `replayEvents`, `RawSseEvent` — now exported from the package root for consumers that replay persisted `job_events`.
+
+### New wire event fields
+
+- `message_start`: `agent_display_name`.
+- `message_stop`: `job_id` (was optional; now required on the `ChatEvent` as `jobId: string`).
+- `retry`: `strategy`, `max_attempts`, `context_recovery`.
+- `block_delta(status)`: new status value `"awaiting_approval"`.
+
+### Minimum runtime
+
+Node 18+, ES2022 target. No change from 1.x.

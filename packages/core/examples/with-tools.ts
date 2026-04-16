@@ -5,8 +5,8 @@ const session = new ChatSession({
   userId: "user-123",
 });
 
-// Register a client-side tool
-// The name MUST start with "mcp_" so the backend routes it to the client
+// Register a client-side tool.
+// The name MUST start with "mcp_" so the backend routes it to the client.
 session.toolRegistry.registerTool(
   "mcp_get_current_time",
   "Get the current date and time",
@@ -25,30 +25,45 @@ session.toolRegistry.registerTool(
   },
 );
 
-// Subscribe to tool execution events
+// v2 emits typed wire events. There is no synthesised `tool_call` — observe
+// the block lifecycle directly: the SDK still POSTs the result for you.
 session.on((event) => {
   switch (event.type) {
-    case "chunk":
-      process.stdout.write(event.text);
+    case "block_start":
+      if (event.kind === "tool_use") {
+        const fn = event.metadata.function as { name?: string } | undefined;
+        console.log(`\n[tool requested] ${fn?.name ?? "(unknown)"}`);
+      }
       break;
-    case "tool_call":
-      console.log(`\nTool called: ${event.request.toolName}`);
+
+    case "block_delta":
+      if (event.delta.channel === "text") {
+        process.stdout.write(event.delta.text);
+      }
       break;
-    case "tool_executing":
-      console.log(`Executing: ${event.name}...`);
+
+    case "block_stop":
+      if (event.status === "awaiting_client_result") {
+        const toolName = event.final.tool_name as string | undefined;
+        console.log(`[tool executing] ${toolName ?? "(unknown)"}`);
+      }
       break;
-    case "tool_completed":
-      console.log(`Result: ${event.result}`);
+
+    case "tool_approval_requested":
+      // For risky tools, the backend asks for approval before execution.
+      // Respond via `client.submitToolApproval({ ... })`.
+      console.log(
+        `[approval needed] ${event.toolName} (risk=${event.riskLevel})`,
+      );
       break;
-    case "complete":
-      console.log("\n\nDone!");
+
+    case "message_stop":
+      console.log(`\n[done] ${event.stopReason}`);
       break;
   }
 });
 
 await session.connect();
-
-// The LLM can now call mcp_get_current_time when needed
 await session.send("What time is it in Tokyo?");
 
 session.disconnect();
