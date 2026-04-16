@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { AstralformClient } from "../src/client.js";
-import { AuthenticationError, RateLimitError } from "../src/errors.js";
+import {
+  AuthenticationError,
+  RateLimitError,
+  ServerError,
+} from "../src/errors.js";
 import { createMockFetch } from "./helpers.js";
 
 describe("AstralformClient", () => {
@@ -436,7 +440,7 @@ describe("AstralformClient", () => {
     expect(fb.rating).toBe(1);
   });
 
-  it("submitFeedback sends null comment when omitted", async () => {
+  it("submitFeedback omits the comment key entirely when not provided", async () => {
     let capturedBody: string | undefined;
     const mockFetch: typeof globalThis.fetch = async (_input, init) => {
       capturedBody = init?.body as string;
@@ -455,7 +459,9 @@ describe("AstralformClient", () => {
     const client = new AstralformClient({ ...config, fetch: mockFetch });
     await client.submitFeedback("job-2", { rating: -1 });
 
-    expect(JSON.parse(capturedBody!)).toEqual({ rating: -1, comment: null });
+    const parsed = JSON.parse(capturedBody!);
+    expect(parsed).toEqual({ rating: -1 });
+    expect("comment" in parsed).toBe(false);
   });
 
   it("getActiveJob maps null job_id", async () => {
@@ -518,5 +524,44 @@ describe("AstralformClient", () => {
     expect(jobs[1]!.replacesJobId).toBeNull();
     expect(jobs[1]!.responseContent).toBeNull();
     expect(jobs[1]!.createdAt).toBeNull();
+  });
+
+  it("getJob throws ServerError on 404", async () => {
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response(JSON.stringify({ detail: "Job not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    await expect(client.getJob("missing")).rejects.toThrow(ServerError);
+  });
+
+  it("submitFeedback throws ServerError on 409 conflict", async () => {
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({ detail: "Feedback already submitted for this job" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    await expect(client.submitFeedback("job-1", { rating: 1 })).rejects.toThrow(
+      ServerError,
+    );
+  });
+
+  it("submitFeedback throws ServerError on 422 invalid rating", async () => {
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response(JSON.stringify({ detail: "rating must be -1 or 1" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    // Type-level check blocks this at compile time, but the wire still
+    // enforces the rule — pin the runtime behavior.
+    await expect(
+      client.submitFeedback("job-1", { rating: 2 as unknown as 1 }),
+    ).rejects.toThrow(ServerError);
   });
 });

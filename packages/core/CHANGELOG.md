@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
+
+Breaking release. The SSE surface is narrower and the typed `ChatEvent` union changes shape. Read the migration notes below before upgrading.
 
 ### New client methods
 
@@ -22,10 +24,6 @@ Five wire events that previously fell through to `{ type: "custom" }` (or were d
 - `prompt_suggestion` — `{ suggestions: string[] }`. The backend emits this via the legacy transport path (not wrapped in a `custom` envelope); the SDK now coerces it into the typed `ChatEvent` union.
 
 Also adds matching `ChatEventType` constants and exports the new payload interfaces from `custom-events.ts`.
-
-## 2.0.0
-
-Breaking release. The SSE surface is narrower and the typed `ChatEvent` union changes shape. Read the migration notes below before upgrading.
 
 ### Removed `ChatEvent` types
 

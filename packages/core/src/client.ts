@@ -363,16 +363,17 @@ export class AstralformClient {
     jobId: string,
     request: FeedbackRequest,
   ): Promise<FeedbackResponse> {
+    const body: { rating: 1 | -1; comment?: string } = {
+      rating: request.rating,
+    };
+    if (request.comment != null) body.comment = request.comment;
     const raw = await this.post<{
       id: string;
       job_id: string;
       rating: number;
       comment: string | null;
       created_at: string;
-    }>(`/v1/jobs/${encodeURIComponent(jobId)}/feedback`, {
-      rating: request.rating,
-      comment: request.comment ?? null,
-    });
+    }>(`/v1/jobs/${encodeURIComponent(jobId)}/feedback`, body);
     return {
       id: raw.id,
       jobId: raw.job_id,

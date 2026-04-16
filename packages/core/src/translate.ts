@@ -219,19 +219,31 @@ export function translateCustomEvent(
 // --- Top-level wire events ---
 
 /**
+ * Legacy-transport payload extractor for events that aren't wrapped in a
+ * ``CustomEvent`` envelope. The backend's ``writer.emit(name, data)`` path
+ * spreads the payload fields at the top level of the wire object (see
+ * ``backend/src/jobs/suggestion_hook.py`` for ``prompt_suggestion``), so
+ * the wire object itself *is* the ``data`` dict for ``translateCustomEvent``.
+ * This helper isolates the unsafe cast to one place.
+ */
+function legacyCustomEventData(wire: WireEvent): Record<string, unknown> {
+  return wire as unknown as Record<string, unknown>;
+}
+
+/**
  * Translate a full WireEvent into its typed ChatEvent counterpart. Returns
  * ``null`` when the wire payload is malformed (e.g. unknown delta channel)
  * so the caller can skip it without crashing the stream.
  */
 export function translateWireEvent(wire: WireEvent): ChatEvent | null {
-  // Legacy transport: `prompt_suggestion` is emitted via the raw
-  // writer.emit() path rather than wrapped in a CustomEvent envelope,
-  // so its `type` field is the event name itself. Route it through the
+  // Legacy transport: ``prompt_suggestion`` is emitted via the raw
+  // ``writer.emit()`` path rather than wrapped in a CustomEvent envelope,
+  // so its ``type`` field is the event name itself. Route it through the
   // custom-event translator to keep the mapping in one place.
   if ((wire as { type: string }).type === "prompt_suggestion") {
     return translateCustomEvent(
       "prompt_suggestion",
-      wire as unknown as Record<string, unknown>,
+      legacyCustomEventData(wire),
     );
   }
   switch (wire.type) {
