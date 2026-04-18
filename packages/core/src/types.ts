@@ -14,13 +14,73 @@ import type { AgentIdentity, MemoryRecord, TodoItem } from "./custom-events.js";
 export type { AgentIdentity, MemoryRecord, TodoItem };
 
 // --- Configuration ---
+//
+// The SDK supports two authentication modes. TypeScript narrows the union by
+// property presence, so consumers can write:
+//
+//   new AstralformClient({ apiKey, userId })           // API-key mode
+//   new AstralformClient({ accessToken, projectId })   // user-token mode
+//
+// Pick based on who the caller represents:
+//
+// * API-key mode  — A customer's backend (B2B2C). Project scoping is baked
+//   into the key; the end user is named per request via `X-End-User-ID`.
+//
+// * User-token mode — An app acting on behalf of an Astralform account
+//   holder (AstralChat, future 3rd-party integrations). The OIDC access
+//   token is issued by the Astralform Identity Provider (Supabase OAuth 2.1
+//   Server); project scoping comes from the `X-Project-ID` header.
 
-export interface AstralformConfig {
-  apiKey: string;
+interface AstralformBaseConfig {
+  /** Override the default API origin. Defaults to https://api.astralform.ai. */
   baseURL?: string;
-  userId: string;
+  /** Supply a custom fetch (SSR, testing, custom interceptors). */
   fetch?: typeof globalThis.fetch;
 }
+
+export interface AstralformApiKeyConfig extends AstralformBaseConfig {
+  /** Project API key (`sk_live_...` or `sk_test_...`). */
+  apiKey: string;
+  /**
+   * The customer's own identifier for the end user making this call.
+   * Sent as the `X-End-User-ID` header. Required in API-key mode.
+   */
+  userId: string;
+}
+
+export interface AstralformUserTokenConfig extends AstralformBaseConfig {
+  /**
+   * OIDC access token issued by the Astralform Identity Provider.
+   * Expect this to be short-lived; use `client.updateAccessToken()` after
+   * refreshing to hot-swap without re-instantiating the client.
+   */
+  accessToken: string;
+  /**
+   * Active project context. Sent as the `X-Project-ID` header. The backend
+   * verifies the token's developer has access to this project on every
+   * request; switching projects is a local `updateProjectId()` call.
+   *
+   * Optional so a pre-pick client (right after login, before the user has
+   * chosen a team/project) can still call account-scoped discovery routes
+   * like `listTeams()` / `listProjects(teamId)`. Project-scoped calls
+   * (conversations, messages, chat) will error out until one is set.
+   */
+  projectId?: string;
+  /**
+   * Optional end-user override — lets a developer acting under a user
+   * token impersonate a downstream end-user identity for testing
+   * purposes. When set, sent alongside `X-Project-ID` as `X-End-User-ID`
+   * so memory, rate limits, and conversations scope to the specified
+   * end-user rather than the developer themselves.
+   *
+   * Use `client.updateEndUserId()` to rotate at runtime.
+   */
+  endUserId?: string;
+}
+
+export type AstralformConfig =
+  | AstralformApiKeyConfig
+  | AstralformUserTokenConfig;
 
 // --- Event type constants (SDK public) ---
 //
@@ -526,6 +586,25 @@ export interface AgentInfo {
   isOrchestrator: boolean;
   isEnabled: boolean;
   avatarUrl?: string;
+}
+
+// --- Team / Project discovery (OIDC user-token surface) ---
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  slug: string;
+  isDefault: boolean;
+  /** Caller's role in this team (e.g. "owner", "admin", "member"). */
+  role: string;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  teamId: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SkillInfo {

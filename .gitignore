@@ -9,3 +9,6 @@ dist/
 coverage/
 .claude/
 test-*.mjs
+# We use pnpm workspaces — npm/yarn lockfiles shouldn't land here
+package-lock.json
+yarn.lock

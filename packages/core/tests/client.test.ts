@@ -565,3 +565,229 @@ describe("AstralformClient", () => {
     ).rejects.toThrow(ServerError);
   });
 });
+
+/**
+ * v1.0.0 added a user-token auth mode for apps acting on behalf of an
+ * Astralform account holder (AstralChat, future 3rd-party integrations).
+ * The API-key mode above stays 100% unchanged; these tests cover the new
+ * surface: discriminated config, per-mode headers, and hot-swap methods.
+ */
+describe("AstralformClient - user-token mode", () => {
+  function captureHeaders() {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchFn: typeof globalThis.fetch = async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = typeof input === "string" ? input : input.toString();
+      calls.push({
+        url,
+        headers: (init?.headers ?? {}) as Record<string, string>,
+      });
+      return new Response(JSON.stringify({ status: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    return { fetchFn, calls };
+  }
+
+  it("authMode reports the construction mode", () => {
+    const apiKeyClient = new AstralformClient({
+      apiKey: "sk_test",
+      userId: "u1",
+    });
+    const userClient = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      projectId: "p1",
+    });
+    expect(apiKeyClient.authMode).toBe("api_key");
+    expect(userClient.authMode).toBe("user_token");
+  });
+
+  it("rejects missing accessToken in user-token mode", () => {
+    expect(
+      () =>
+        new AstralformClient({
+          accessToken: "",
+          projectId: "p1",
+        } as never),
+    ).toThrow(/accessToken/);
+  });
+
+  it("allows pre-pick user-token client without projectId (for discovery routes)", () => {
+    // Right after OIDC login the caller has a token but hasn't picked a
+    // team/project yet. The client must construct successfully so it can
+    // hit account-scoped routes like listTeams() / listProjects(). Project-
+    // scoped routes will 4xx until updateProjectId() is called.
+    expect(
+      () => new AstralformClient({ accessToken: "eyJ.jwt" } as never),
+    ).not.toThrow();
+  });
+
+  it("rejects missing userId in API-key mode", () => {
+    expect(() => new AstralformClient({ apiKey: "sk_test" } as never)).toThrow(
+      /userId/,
+    );
+  });
+
+  it("sends Bearer JWT and X-Project-ID headers (no X-End-User-ID)", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt.here",
+      projectId: "proj-abc",
+      fetch: fetchFn,
+    });
+    await client.getHealth();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.headers.Authorization).toBe("Bearer eyJ.jwt.here");
+    expect(calls[0]!.headers["X-Project-ID"]).toBe("proj-abc");
+    expect(calls[0]!.headers["X-End-User-ID"]).toBeUndefined();
+  });
+
+  it("updateAccessToken hot-swaps between requests", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "first",
+      projectId: "p1",
+      fetch: fetchFn,
+    });
+    await client.getHealth();
+    client.updateAccessToken("second");
+    await client.getHealth();
+
+    expect(calls[0]!.headers.Authorization).toBe("Bearer first");
+    expect(calls[1]!.headers.Authorization).toBe("Bearer second");
+  });
+
+  it("updateProjectId swaps X-Project-ID between requests", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "proj-1",
+      fetch: fetchFn,
+    });
+    await client.getHealth();
+    client.updateProjectId("proj-2");
+    await client.getHealth();
+
+    expect(calls[0]!.headers["X-Project-ID"]).toBe("proj-1");
+    expect(calls[1]!.headers["X-Project-ID"]).toBe("proj-2");
+  });
+
+  it("updateAccessToken/updateProjectId are not allowed in API-key mode", () => {
+    const client = new AstralformClient({
+      apiKey: "sk_test",
+      userId: "u1",
+    });
+    expect(() => client.updateAccessToken("x")).toThrow(/user-token mode/);
+    expect(() => client.updateProjectId("p")).toThrow(/user-token mode/);
+  });
+
+  it("omits X-End-User-ID when endUserId is unset", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "p1",
+      fetch: fetchFn,
+    });
+    await client.getHealth();
+
+    expect(calls[0]!.headers["X-End-User-ID"]).toBeUndefined();
+    expect(client.endUserId).toBeNull();
+  });
+
+  it("sends X-End-User-ID when endUserId is provided at construction", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "p1",
+      endUserId: "customer-42",
+      fetch: fetchFn,
+    });
+    await client.getHealth();
+
+    expect(calls[0]!.headers["X-End-User-ID"]).toBe("customer-42");
+    expect(client.endUserId).toBe("customer-42");
+  });
+
+  it("updateEndUserId sets and clears the override between requests", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "p1",
+      fetch: fetchFn,
+    });
+
+    await client.getHealth(); // no override
+    client.updateEndUserId("customer-99");
+    await client.getHealth(); // with override
+    client.updateEndUserId(null);
+    await client.getHealth(); // cleared
+
+    expect(calls[0]!.headers["X-End-User-ID"]).toBeUndefined();
+    expect(calls[1]!.headers["X-End-User-ID"]).toBe("customer-99");
+    expect(calls[2]!.headers["X-End-User-ID"]).toBeUndefined();
+  });
+
+  it("updateEndUserId treats empty string as clear", async () => {
+    const { fetchFn, calls } = captureHeaders();
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "p1",
+      endUserId: "start",
+      fetch: fetchFn,
+    });
+    client.updateEndUserId("");
+    await client.getHealth();
+
+    expect(calls[0]!.headers["X-End-User-ID"]).toBeUndefined();
+    expect(client.endUserId).toBeNull();
+  });
+
+  it("updateEndUserId is not allowed in API-key mode", () => {
+    const client = new AstralformClient({
+      apiKey: "sk_test",
+      userId: "u1",
+    });
+    expect(() => client.updateEndUserId("x")).toThrow(/user-token mode/);
+  });
+
+  it("rejects empty updateAccessToken/updateProjectId values", () => {
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "p1",
+    });
+    expect(() => client.updateAccessToken("")).toThrow(/non-empty/);
+    expect(() => client.updateProjectId("")).toThrow(/non-empty/);
+  });
+
+  it("uploadFile forwards user-token auth headers without Content-Type", async () => {
+    let capturedHeaders: Record<string, string> = {};
+    const mockFetch: typeof globalThis.fetch = async (_input, init) => {
+      capturedHeaders = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(
+        JSON.stringify({
+          id: "u1",
+          kind: "upload",
+          original_name: "a.txt",
+          media_type: "text/plain",
+          size_bytes: 1,
+          created_at: "2026-01-01T00:00:00Z",
+        }),
+        { status: 200 },
+      );
+    };
+    const client = new AstralformClient({
+      accessToken: "tok",
+      projectId: "p1",
+      fetch: mockFetch,
+    });
+    await client.uploadFile("c1", new Blob(["x"]), "a.txt");
+
+    expect(capturedHeaders.Authorization).toBe("Bearer tok");
+    expect(capturedHeaders["X-Project-ID"]).toBe("p1");
+    expect(capturedHeaders["Content-Type"]).toBeUndefined();
+  });
+});

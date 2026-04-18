@@ -1,8 +1,43 @@
 # Changelog
 
-## 2.0.0
+## 1.0.0
 
-Breaking release. The SSE surface is narrower and the typed `ChatEvent` union changes shape. Read the migration notes below before upgrading.
+First stable release. Promotes the 0.2.x preview surface to a stable v1 contract: typed wire protocol, typed `ChatEvent` union, and a user-token auth mode for apps that act on behalf of an Astralform account holder (AstralChat and future 3rd-party integrations).
+
+Because the 0.2.x line exposed an unstable preview, this version does include breaking shape changes relative to 0.2.3. Read the migration notes below before upgrading from 0.2.x.
+
+**Note on scope.** This SDK is a product client, not an auth orchestrator. It accepts pre-obtained tokens (API keys or OIDC access tokens) and sends them with requests — it does not generate authorization URLs, handle OAuth redirect callbacks, or manage PKCE. Apps that want to drive the Astralform Identity Provider's authorization-code flow (e.g., AstralChat) own that code in their own codebase. If a consumer needs to obtain a token, they redirect users to `auth.astralform.ai/login` themselves.
+
+### Two authentication modes
+
+`AstralformConfig` is now a discriminated union — pick the mode that matches the caller:
+
+```ts
+// API-key mode (customer backends, B2B2C — unchanged behavior):
+new AstralformClient({ apiKey: "sk_live_...", userId: "<end-user-id>" });
+
+// User-token mode (apps acting on behalf of an Astralform account holder):
+new AstralformClient({ accessToken: "<OIDC access token>", projectId: "<project>" });
+```
+
+Header shape per mode:
+
+| Mode | `Authorization` | Identity header |
+|------|-----------------|-----------------|
+| API-key | `Bearer sk_...` | `X-End-User-ID` |
+| User-token | `Bearer <JWT>` | `X-Project-ID` |
+
+New instance methods on user-token clients:
+
+- `client.updateAccessToken(token)` — hot-swap after a refresh, no reconstruction needed.
+- `client.updateProjectId(projectId)` — switch project context; backend re-verifies access on the next request.
+- `client.updateEndUserId(id)` — set or clear an optional end-user override (sent as `X-End-User-ID`). Lets a developer acting under a user token impersonate a downstream end-user for testing — memory, rate limits, and conversations scope against the specified end-user rather than the developer themselves. Pass `null` or an empty string to clear.
+- `client.endUserId` — read the current override (`null` when unset).
+- `client.authMode` — `"api_key" | "user_token"` introspection.
+
+New `AstralformUserTokenConfig.endUserId?: string` — optional constructor-time override for the same behavior.
+
+New type exports: `AstralformApiKeyConfig`, `AstralformUserTokenConfig`.
 
 ### New client methods
 

@@ -112,12 +112,16 @@ export type {
 // Config + domain models
 export type {
   AstralformConfig,
+  AstralformApiKeyConfig,
+  AstralformUserTokenConfig,
   Conversation,
   Message,
   ProjectStatus,
   UIComponentsConfig,
   AgentInfo,
   SkillInfo,
+  TeamSummary,
+  ProjectSummary,
 } from "./types.js";
 
 // Request / response types

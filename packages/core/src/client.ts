@@ -5,6 +5,7 @@ import { sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
   AgentInfo,
+  AstralformApiKeyConfig,
   AstralformConfig,
   ChatStreamEvent,
   ChatStreamRequest,
@@ -18,7 +19,9 @@ import type {
   JobSummary,
   Message,
   ProjectStatus,
+  ProjectSummary,
   SkillInfo,
+  TeamSummary,
   ToolApprovalRequest,
   ToolResultRequest,
 } from "./types.js";
@@ -43,26 +46,169 @@ function validateBaseURL(url: string): string {
   }
 }
 
+function isApiKeyConfig(
+  config: AstralformConfig,
+): config is AstralformApiKeyConfig {
+  return "apiKey" in config;
+}
+
+/** Discriminates between the two auth modes the client supports. */
+type AuthMode =
+  | { kind: "api_key"; apiKey: string; userId: string }
+  | {
+      kind: "user_token";
+      accessToken: string;
+      /** Null until the user picks a project; account-scoped calls still work. */
+      projectId: string | null;
+      /** Optional end-user override. When present, sent as X-End-User-ID. */
+      endUserId: string | null;
+    };
+
 export class AstralformClient {
-  private readonly apiKey: string;
   private readonly baseURL: string;
-  private readonly userId: string;
   private readonly fetchFn: typeof globalThis.fetch;
+  /**
+   * Auth state is mutable so callers can rotate access tokens or switch
+   * project context without re-instantiating the client. API-key mode is
+   * effectively immutable in practice but uses the same shape for uniformity.
+   */
+  private auth: AuthMode;
 
   constructor(config: AstralformConfig) {
-    if (!config.apiKey || typeof config.apiKey !== "string") {
-      throw new Error("apiKey is required and must be a non-empty string");
+    if (isApiKeyConfig(config)) {
+      if (!config.apiKey || typeof config.apiKey !== "string") {
+        throw new Error("apiKey is required and must be a non-empty string");
+      }
+      if (!config.userId || typeof config.userId !== "string") {
+        throw new Error("userId is required in API-key mode");
+      }
+      this.auth = {
+        kind: "api_key",
+        apiKey: config.apiKey,
+        userId: config.userId,
+      };
+    } else {
+      if (!config.accessToken || typeof config.accessToken !== "string") {
+        throw new Error(
+          "accessToken is required and must be a non-empty string in user-token mode",
+        );
+      }
+      // projectId is optional — a pre-pick client (right after login) can
+      // still hit account-scoped routes like listTeams(). Project-scoped
+      // routes will 4xx until one is set via updateProjectId().
+      const projectId =
+        typeof config.projectId === "string" && config.projectId.length > 0
+          ? config.projectId
+          : null;
+      this.auth = {
+        kind: "user_token",
+        accessToken: config.accessToken,
+        projectId,
+        endUserId:
+          typeof config.endUserId === "string" && config.endUserId.length > 0
+            ? config.endUserId
+            : null,
+      };
     }
-    this.apiKey = config.apiKey;
+
     this.baseURL = validateBaseURL(config.baseURL ?? DEFAULT_BASE_URL);
-    this.userId = config.userId;
     this.fetchFn = config.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /**
+   * Replace the current OIDC access token without reconstructing the client.
+   * Use after refreshing via the host's token manager (e.g., Supabase JS SDK).
+   * Throws if the client was created in API-key mode.
+   */
+  updateAccessToken(accessToken: string): void {
+    if (this.auth.kind !== "user_token") {
+      throw new Error("updateAccessToken is only valid in user-token mode");
+    }
+    if (!accessToken || typeof accessToken !== "string") {
+      throw new Error("accessToken must be a non-empty string");
+    }
+    this.auth = { ...this.auth, accessToken };
+  }
+
+  /**
+   * Swap the active project for a user-token client. The backend verifies the
+   * current developer has access to the new project; a 403 comes back if not.
+   */
+  updateProjectId(projectId: string): void {
+    if (this.auth.kind !== "user_token") {
+      throw new Error("updateProjectId is only valid in user-token mode");
+    }
+    if (!projectId || typeof projectId !== "string") {
+      throw new Error("projectId must be a non-empty string");
+    }
+    this.auth = { ...this.auth, projectId };
+  }
+
+  /**
+   * Set (or clear) the end-user override for user-token mode.
+   *
+   * Pass `null` or an empty string to clear — subsequent requests go
+   * back to scoping against the developer's own identity. Throws if
+   * called in API-key mode, where end-user context already travels via
+   * the constructor's `userId` field.
+   */
+  updateEndUserId(endUserId: string | null): void {
+    if (this.auth.kind !== "user_token") {
+      throw new Error("updateEndUserId is only valid in user-token mode");
+    }
+    const normalized =
+      typeof endUserId === "string" && endUserId.length > 0 ? endUserId : null;
+    this.auth = { ...this.auth, endUserId: normalized };
+  }
+
+  /** Current end-user override in user-token mode, or `null` if unset. */
+  get endUserId(): string | null {
+    return this.auth.kind === "user_token" ? this.auth.endUserId : null;
+  }
+
+  /**
+   * Active project for user-token mode, or `null` if pre-pick (client
+   * was constructed without one). For API-key mode the project is baked
+   * into the key, so this getter returns `null` there too — use
+   * `authMode` to disambiguate.
+   */
+  get projectId(): string | null {
+    return this.auth.kind === "user_token" ? this.auth.projectId : null;
+  }
+
+  /** Which auth mode this client was constructed with. */
+  get authMode(): "api_key" | "user_token" {
+    return this.auth.kind;
+  }
+
+  /**
+   * Authorization + identity headers for the current auth mode, without
+   * `Content-Type`. Suitable for JSON requests (paired with the JSON header
+   * in the `headers` getter) and for multipart uploads where the browser
+   * must set its own `Content-Type` boundary.
+   */
+  private get authHeaders(): Record<string, string> {
+    if (this.auth.kind === "api_key") {
+      return {
+        Authorization: `Bearer ${this.auth.apiKey}`,
+        "X-End-User-ID": this.auth.userId,
+      };
+    }
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.auth.accessToken}`,
+    };
+    if (this.auth.projectId) {
+      headers["X-Project-ID"] = this.auth.projectId;
+    }
+    if (this.auth.endUserId) {
+      headers["X-End-User-ID"] = this.auth.endUserId;
+    }
+    return headers;
   }
 
   private get headers(): Record<string, string> {
     return {
-      Authorization: `Bearer ${this.apiKey}`,
-      "X-End-User-ID": this.userId,
+      ...this.authHeaders,
       "Content-Type": "application/json",
     };
   }
@@ -282,10 +428,7 @@ export class AstralformClient {
       `${this.baseURL}/v1/conversations/${encodeURIComponent(conversationId)}/uploads`,
       {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "X-End-User-ID": this.userId,
-        },
+        headers: this.authHeaders,
         body: formData,
       },
     ).catch((err) => {
@@ -310,6 +453,50 @@ export class AstralformClient {
       `/v1/conversations/${encodeURIComponent(conversationId)}/outputs`,
     );
     return raw.map((r) => this.mapAsset(r));
+  }
+
+  // --- Account-scoped discovery (user-token mode) ---
+  //
+  // Lets a signed-in user pick which team/project they want to act on.
+  // Backend gates these on OIDC user context (no X-Project-ID required) —
+  // sending them in API-key mode yields 401.
+
+  async listTeams(): Promise<TeamSummary[]> {
+    const raw = await this.get<
+      Array<{
+        id: string;
+        name: string;
+        slug: string;
+        is_default: boolean;
+        role: string;
+      }>
+    >("/v1/teams");
+    return raw.map((t) => ({
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      isDefault: t.is_default,
+      role: t.role,
+    }));
+  }
+
+  async listProjects(teamId: string): Promise<ProjectSummary[]> {
+    const raw = await this.get<
+      Array<{
+        id: string;
+        name: string;
+        team_id: string;
+        created_at: string;
+        updated_at: string;
+      }>
+    >(`/v1/teams/${encodeURIComponent(teamId)}/projects`);
+    return raw.map((p) => ({
+      id: p.id,
+      name: p.name,
+      teamId: p.team_id,
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+    }));
   }
 
   // --- Jobs API ---
