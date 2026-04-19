@@ -47,6 +47,8 @@ Catches up with backend endpoints that were missing from the SDK:
 - `client.submitFeedback(jobId, { rating, comment })` — send thumbs-up/down (`1` or `-1`) on a completed job. Returns `FeedbackResponse`.
 - `client.getActiveJob(conversationId)` — promoted from `StreamManager` internals; returns `{ jobId, status }`.
 - `client.listJobs(conversationId)` — promoted from `StreamManager` internals; returns a chronological list of `JobSummary` (includes `replacesJobId`, `metrics`, `responseContent`) for version navigation.
+- `client.listTeams()` — account-scoped discovery route for user-token mode. Returns `TeamSummary[]` (id, name, slug, isDefault, role). Works without a `projectId` set; callers use this after OIDC login before the user has picked a team.
+- `client.listProjects(teamId)` — list the caller's projects within a given team. Returns `ProjectSummary[]`. Same "pre-pick" mode semantics as `listTeams()`.
 
 ### New typed `ChatEvent`s
 
