@@ -14,6 +14,13 @@ on:
   pull_request_review:
     types: [submitted]
 
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
 jobs:
   claude:
     uses: astralform-ai/.github/.github/workflows/claude.yml@main
