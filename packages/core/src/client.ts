@@ -20,6 +20,7 @@ import type {
   Message,
   ProjectStatus,
   ProjectSummary,
+  MyToolGrantsPage,
   SkillInfo,
   TeamSummary,
   ToolApprovalRequest,
@@ -398,6 +399,58 @@ export class AstralformClient {
 
   async submitToolApproval(request: ToolApprovalRequest): Promise<void> {
     await this.post("/v1/tool-approval", request);
+  }
+
+  // --- End-user tool-permission self-service ---
+
+  /**
+   * List the current end user's own remembered tool-permission grants.
+   * Only `conversation`/`always` grants exist (`once` is never persisted).
+   * Paginated via `limit` (default 100, max 200) / `offset`; `total` lets you
+   * page through all of them.
+   */
+  async getMyToolPermissions(options?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<MyToolGrantsPage> {
+    const params = new URLSearchParams();
+    if (options?.limit != null) params.set("limit", String(options.limit));
+    if (options?.offset != null) params.set("offset", String(options.offset));
+    const qs = params.toString();
+    const raw = await this.get<{
+      grants: {
+        id: string;
+        tool_name: string;
+        decision: "allow" | "deny";
+        scope: "conversation" | "always";
+        conversation_id: string | null;
+        created_at: string;
+      }[];
+      total: number;
+      limit: number;
+      offset: number;
+    }>(`/v1/me/tool-permissions${qs ? `?${qs}` : ""}`);
+    return {
+      grants: raw.grants.map((g) => ({
+        id: g.id,
+        toolName: g.tool_name,
+        decision: g.decision,
+        scope: g.scope,
+        conversationId: g.conversation_id,
+        createdAt: g.created_at,
+      })),
+      total: raw.total,
+      limit: raw.limit,
+      offset: raw.offset,
+    };
+  }
+
+  /**
+   * Revoke one of the current end user's remembered grants by id. The agent
+   * will ask again the next time that tool is used.
+   */
+  async revokeToolPermission(id: string): Promise<void> {
+    await this.del(`/v1/me/tool-permissions/${encodeURIComponent(id)}`);
   }
 
   // --- Conversation Assets ---
