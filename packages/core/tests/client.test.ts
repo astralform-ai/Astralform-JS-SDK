@@ -870,6 +870,33 @@ describe("AstralformClient - user-token mode", () => {
     expect(page.grants).toEqual([]);
   });
 
+  it("getMyToolPermissions clamps out-of-range pagination", async () => {
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      capturedUrl =
+        input instanceof URL
+          ? input.href
+          : typeof input === "string"
+            ? input
+            : input.url;
+      return new Response(
+        JSON.stringify({ grants: [], total: 0, limit: 200, offset: 0 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const client = new AstralformClient({
+      apiKey: "test-key",
+      baseURL: "http://localhost:8000",
+      userId: "user-1",
+      fetch: mockFetch,
+    });
+    await client.getMyToolPermissions({ limit: 99999, offset: -5 });
+
+    expect(capturedUrl).toContain("limit=200");
+    expect(capturedUrl).toContain("offset=0");
+  });
+
   it("revokeToolPermission issues a DELETE to the encoded id", async () => {
     let method = "";
     let capturedUrl = "";

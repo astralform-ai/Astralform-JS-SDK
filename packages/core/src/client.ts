@@ -18,9 +18,9 @@ import type {
   JobStatus,
   JobSummary,
   Message,
+  MyToolGrantsPage,
   ProjectStatus,
   ProjectSummary,
-  MyToolGrantsPage,
   SkillInfo,
   TeamSummary,
   ToolApprovalRequest,
@@ -414,8 +414,17 @@ export class AstralformClient {
     offset?: number;
   }): Promise<MyToolGrantsPage> {
     const params = new URLSearchParams();
-    if (options?.limit != null) params.set("limit", String(options.limit));
-    if (options?.offset != null) params.set("offset", String(options.offset));
+    if (options?.limit != null) {
+      const safeLimit = Math.max(
+        1,
+        Math.min(200, Math.floor(Number(options.limit))),
+      );
+      params.set("limit", String(safeLimit));
+    }
+    if (options?.offset != null) {
+      const safeOffset = Math.max(0, Math.floor(Number(options.offset)));
+      params.set("offset", String(safeOffset));
+    }
     const qs = params.toString();
     const raw = await this.get<{
       grants: {
