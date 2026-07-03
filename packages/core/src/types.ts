@@ -702,6 +702,29 @@ export interface ToolApprovalRequest {
   scope: ToolApprovalScope;
 }
 
+/**
+ * A remembered tool-permission grant belonging to the current end user.
+ * Only `conversation`/`always` grants are ever stored (`once` is consumed at
+ * approval time and never persisted).
+ */
+export interface ToolGrant {
+  id: string;
+  toolName: string;
+  decision: ToolApprovalDecision;
+  scope: Exclude<ToolApprovalScope, "once">;
+  /** Set for `conversation`-scoped grants; `null` for `always`. */
+  conversationId: string | null;
+  createdAt: string;
+}
+
+/** A page of the current end user's own tool grants. */
+export interface MyToolGrantsPage {
+  grants: ToolGrant[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;

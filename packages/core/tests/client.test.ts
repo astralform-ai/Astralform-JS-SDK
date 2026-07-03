@@ -790,4 +790,136 @@ describe("AstralformClient - user-token mode", () => {
     expect(capturedHeaders["X-Project-ID"]).toBe("p1");
     expect(capturedHeaders["Content-Type"]).toBeUndefined();
   });
+
+  it("getMyToolPermissions maps grants and passes pagination", async () => {
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      capturedUrl =
+        input instanceof URL
+          ? input.href
+          : typeof input === "string"
+            ? input
+            : input.url;
+      return new Response(
+        JSON.stringify({
+          grants: [
+            {
+              id: "g1",
+              tool_name: "capsule_exec",
+              decision: "allow",
+              scope: "conversation",
+              conversation_id: "conv-9",
+              created_at: "2026-07-03T00:00:00Z",
+            },
+          ],
+          total: 1,
+          limit: 50,
+          offset: 10,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const client = new AstralformClient({
+      apiKey: "test-key",
+      baseURL: "http://localhost:8000",
+      userId: "user-1",
+      fetch: mockFetch,
+    });
+    const page = await client.getMyToolPermissions({ limit: 50, offset: 10 });
+
+    expect(capturedUrl).toContain("/v1/me/tool-permissions");
+    expect(capturedUrl).toContain("limit=50");
+    expect(capturedUrl).toContain("offset=10");
+    expect(page.total).toBe(1);
+    expect(page.grants[0]).toEqual({
+      id: "g1",
+      toolName: "capsule_exec",
+      decision: "allow",
+      scope: "conversation",
+      conversationId: "conv-9",
+      createdAt: "2026-07-03T00:00:00Z",
+    });
+  });
+
+  it("getMyToolPermissions omits the query string when no options given", async () => {
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      capturedUrl =
+        input instanceof URL
+          ? input.href
+          : typeof input === "string"
+            ? input
+            : input.url;
+      return new Response(
+        JSON.stringify({ grants: [], total: 0, limit: 100, offset: 0 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const client = new AstralformClient({
+      apiKey: "test-key",
+      baseURL: "http://localhost:8000",
+      userId: "user-1",
+      fetch: mockFetch,
+    });
+    const page = await client.getMyToolPermissions();
+
+    expect(capturedUrl).toContain("/v1/me/tool-permissions");
+    expect(capturedUrl).not.toContain("?");
+    expect(page.grants).toEqual([]);
+  });
+
+  it("getMyToolPermissions clamps out-of-range pagination", async () => {
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      capturedUrl =
+        input instanceof URL
+          ? input.href
+          : typeof input === "string"
+            ? input
+            : input.url;
+      return new Response(
+        JSON.stringify({ grants: [], total: 0, limit: 200, offset: 0 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const client = new AstralformClient({
+      apiKey: "test-key",
+      baseURL: "http://localhost:8000",
+      userId: "user-1",
+      fetch: mockFetch,
+    });
+    await client.getMyToolPermissions({ limit: 99999, offset: -5 });
+
+    expect(capturedUrl).toContain("limit=200");
+    expect(capturedUrl).toContain("offset=0");
+  });
+
+  it("revokeToolPermission issues a DELETE to the encoded id", async () => {
+    let method = "";
+    let capturedUrl = "";
+    const mockFetch: typeof globalThis.fetch = async (input, init) => {
+      method = init?.method ?? "";
+      capturedUrl =
+        input instanceof URL
+          ? input.href
+          : typeof input === "string"
+            ? input
+            : input.url;
+      return new Response(null, { status: 204 });
+    };
+
+    const client = new AstralformClient({
+      apiKey: "test-key",
+      baseURL: "http://localhost:8000",
+      userId: "user-1",
+      fetch: mockFetch,
+    });
+    await client.revokeToolPermission("a b/c");
+
+    expect(method).toBe("DELETE");
+    expect(capturedUrl).toContain("/v1/me/tool-permissions/a%20b%2Fc");
+  });
 });

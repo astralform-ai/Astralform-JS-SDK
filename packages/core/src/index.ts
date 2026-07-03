@@ -133,6 +133,8 @@ export type {
   ToolApprovalRequest,
   ToolApprovalDecision,
   ToolApprovalScope,
+  ToolGrant,
+  MyToolGrantsPage,
   ToolCallRequest,
   JobCreateResponse,
   JobStatus,
