@@ -18,8 +18,32 @@ import type {
   WireEvent,
 } from "./types.js";
 import { generateId } from "./utils.js";
+import {
+  AuthenticationError,
+  ConnectionError,
+  RateLimitError,
+} from "./errors.js";
 
 type ChatEventHandler = (event: ChatEvent) => void;
+
+/**
+ * Bounded auto-reconnect for a live SSE stream that drops mid-turn (worker
+ * restart, network blip). We resume from ``lastSeq`` — the backend replays
+ * missed events (``?after=seq``) and, for a job that already died, back-fills a
+ * terminal event — so the UI recovers without a manual page refresh. Backoff is
+ * exponential and capped; total window (~17s over 6 tries) comfortably covers a
+ * server restart without spinning forever if the job is genuinely gone.
+ */
+const SSE_MAX_RECONNECTS = 6;
+
+// Retries for the client-tool result POST itself, independent of the SSE
+// reconnect loop — reconnecting the *stream* can't recover a failed *result
+// submission*, and retrying the POST avoids re-executing a client tool.
+const TOOL_RESULT_MAX_RETRIES = 3;
+
+function sseReconnectDelayMs(attempt: number): number {
+  return Math.min(500 * 2 ** (attempt - 1), 5000);
+}
 
 function pathEquals(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false;
@@ -199,6 +223,14 @@ export class ChatSession {
   /** Last received sequence number for resumable reconnection */
   private lastSeq = -1;
 
+  /**
+   * Client-tool call_ids whose result was already submitted this turn. On a
+   * reconnect the resumed stream can replay a tool request we already handled;
+   * this dedups so each is executed + submitted at most once (but a request we
+   * never submitted still runs). Cleared at the start of each turn.
+   */
+  private submittedToolCallIds = new Set<string>();
+
   /** Current job ID for cancellation */
   currentJobId: string | null = null;
 
@@ -234,15 +266,10 @@ export class ChatSession {
     }
     const messageId = job.message_id;
     this.lastSeq = -1;
-
-    const stream = this.client.streamJobEvents(
-      job.job_id,
-      this.lastSeq,
-      this.abortController?.signal,
-    );
+    this.submittedToolCallIds.clear();
 
     await this.consumeEventStream(
-      stream,
+      job.job_id,
       conversationId,
       messageId,
       true, // executeClientTools
@@ -254,11 +281,74 @@ export class ChatSession {
    * minimal session state, and emits typed ChatEvents to consumers.
    */
   private async consumeEventStream(
-    stream: AsyncGenerator<{ data: string }>,
+    jobId: string,
     conversationId: string,
     messageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
+    // Capture the signal ONCE. detach()/disconnect() abort the controller and
+    // then null it out synchronously, so re-reading this.abortController later
+    // would lose the aborted state (?. → undefined → falsy) and the loop would
+    // reconnect an unstoppable, signal-less stream. The AbortSignal stays valid
+    // (and stays aborted) even after the controller is gone.
+    const signal = this.abortController?.signal;
+
+    for (let attempt = 0; ; attempt++) {
+      const stream = this.client.streamJobEvents(jobId, this.lastSeq, signal);
+      // Client tools stay enabled across reconnects; re-seen tool requests are
+      // deduped by submitted call_id in dispatchWireEvent, so a tool whose
+      // result we never posted (drop before submit) still runs on resume.
+      let sawTerminal: boolean;
+      try {
+        sawTerminal = await this.pumpStream(
+          stream,
+          conversationId,
+          messageId,
+          executeClientTools,
+        );
+      } catch (err) {
+        if (signal?.aborted) return; // user cancelled / detached
+        // Auth failures and rate limits can't be fixed by reconnecting (and
+        // hammering a 429 is harmful) — surface them immediately. Genuine
+        // connectivity failures (incl. a 5xx from a restarting server) retry.
+        if (
+          err instanceof AuthenticationError ||
+          err instanceof RateLimitError
+        ) {
+          throw err;
+        }
+        if (attempt >= SSE_MAX_RECONNECTS) throw err;
+        await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1), signal);
+        continue; // resume from lastSeq
+      }
+
+      // A terminal event (message_stop / error) ends the turn — including the
+      // backend's back-filled terminal for a job that died mid-stream.
+      if (sawTerminal || signal?.aborted) return;
+
+      // Stream ended WITHOUT a terminal event: the worker/connection dropped
+      // mid-turn. Resume from lastSeq so the backend can replay missed events
+      // (and back-fill a terminal for a dead job) rather than leave the UI
+      // hanging on "working".
+      if (attempt >= SSE_MAX_RECONNECTS) {
+        throw new ConnectionError("Lost connection to the response stream.");
+      }
+      await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1), signal);
+    }
+  }
+
+  /**
+   * Consume a single SSE stream to exhaustion. Returns whether a terminal
+   * event (``message_stop`` / ``error``) was seen, so the caller can decide
+   * whether an ended stream means "turn done" vs "dropped, reconnect".
+   */
+  private async pumpStream(
+    stream: AsyncGenerator<{ data: string }>,
+    conversationId: string,
+    messageId: string,
+    executeClientTools: boolean,
+  ): Promise<boolean> {
+    let sawTerminal = false;
     for await (const raw of stream) {
       let parsed: WireEvent;
       try {
@@ -283,12 +373,56 @@ export class ChatSession {
         continue;
       }
 
+      if (parsed.type === "message_stop" || parsed.type === "error") {
+        sawTerminal = true;
+      }
+
       await this.dispatchWireEvent(
         parsed,
         conversationId,
         messageId,
         executeClientTools,
       );
+    }
+    return sawTerminal;
+  }
+
+  /** Sleep for ``ms``, resolving early if the turn is aborted mid-backoff. */
+  private sleepUnlessAborted(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal?.aborted) return resolve();
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /** POST a client-tool result, retrying transient failures a few times. */
+  private async submitToolResultWithRetry(
+    payload: Parameters<AstralformClient["submitToolResult"]>[0],
+  ): Promise<void> {
+    const signal = this.abortController?.signal;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.client.submitToolResult(payload);
+        return;
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        if (
+          err instanceof AuthenticationError ||
+          err instanceof RateLimitError
+        ) {
+          throw err;
+        }
+        if (attempt >= TOOL_RESULT_MAX_RETRIES) throw err;
+        await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1), signal);
+      }
     }
   }
 
@@ -316,18 +450,30 @@ export class ChatSession {
       wire.final?.call_id
     ) {
       const f = wire.final;
-      const request: ToolCallRequest = {
-        callId: (f.call_id as string) ?? "",
-        toolName: (f.tool_name as string) ?? "",
-        arguments: (f.input as Record<string, unknown>) ?? {},
-        isClientTool: true,
-      };
-      const results = await this.executeClientTools([request]);
-      await this.client.submitToolResult({
-        conversation_id: conversationId,
-        message_id: messageId,
-        tool_results: results,
-      });
+      const callId = (f.call_id as string) ?? "";
+      // Dedup across reconnects: a resumed stream can replay a tool request we
+      // already handled. Execute + submit each call_id at most once — but DO
+      // run requests not yet submitted (e.g. the drop happened before we could
+      // post the result), rather than skipping client tools wholesale.
+      if (callId && !this.submittedToolCallIds.has(callId)) {
+        const request: ToolCallRequest = {
+          callId,
+          toolName: (f.tool_name as string) ?? "",
+          arguments: (f.input as Record<string, unknown>) ?? {},
+          isClientTool: true,
+        };
+        const results = await this.executeClientTools([request]);
+        // Retry the POST itself before giving up: reconnecting the SSE stream
+        // can't recover a failed result submission, and retrying here avoids
+        // re-executing the tool on a transient network blip.
+        await this.submitToolResultWithRetry({
+          conversation_id: conversationId,
+          message_id: messageId,
+          tool_results: results,
+        });
+        // Marked only after a successful submit, so a drop mid-POST re-runs it.
+        this.submittedToolCallIds.add(callId);
+      }
     }
   }
 
@@ -461,17 +607,13 @@ export class ChatSession {
     this.isStreaming = true;
     this.currentJobId = jobId;
     this.lastSeq = -1;
+    this.submittedToolCallIds.clear();
     this.resetStreamingState();
     this.abortController = new AbortController();
 
     try {
-      const stream = this.client.streamJobEvents(
-        jobId,
-        this.lastSeq,
-        this.abortController?.signal,
-      );
       await this.consumeEventStream(
-        stream,
+        jobId,
         this.conversationId ?? "",
         "",
         false, // don't execute client tools on reconnect
