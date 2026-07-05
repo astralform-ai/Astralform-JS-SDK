@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write # OIDC identity for npm trusted publishing
     steps:
       - uses: actions/checkout@v4
 
@@ -19,9 +19,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22 # current LTS (Node 20 reached EOL 2026-04)
           registry-url: https://registry.npmjs.org
           cache: pnpm
+
+      # Trusted publishing (OIDC) requires npm CLI >= 11.5.1; Node 22 ships ~10.x.
+      # Pinned for reproducibility — bump deliberately.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@11.18.0
 
       - name: Verify tag matches package version
         run: |
@@ -33,11 +38,13 @@ jobs:
           fi
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
       - run: pnpm test
 
+      # Authenticates via the GitHub OIDC token against the trusted publisher
+      # configured on npmjs.com (astralform-ai/Astralform-JS-SDK -> release.yml).
+      # No NODE_AUTH_TOKEN; provenance is generated automatically. The package's
+      # `prepublishOnly` builds dist just before upload (no separate build step
+      # needed — avoids a redundant double build).
       - name: Publish @astralform/js
-        run: pnpm publish --no-git-checks --access public --provenance
+        run: npm publish --access public
         working-directory: packages/core
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
