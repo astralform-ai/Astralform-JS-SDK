@@ -19,11 +19,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22 # current LTS (Node 20 reached EOL 2026-04)
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
-      # Trusted publishing (OIDC) requires npm CLI >= 11.5.1; Node 20 ships ~10.x.
+      # Trusted publishing (OIDC) requires npm CLI >= 11.5.1; Node 22 ships ~10.x.
       # Pinned for reproducibility — bump deliberately.
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@11.18.0
