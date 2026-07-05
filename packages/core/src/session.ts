@@ -18,8 +18,23 @@ import type {
   WireEvent,
 } from "./types.js";
 import { generateId } from "./utils.js";
+import { ConnectionError } from "./errors.js";
 
 type ChatEventHandler = (event: ChatEvent) => void;
+
+/**
+ * Bounded auto-reconnect for a live SSE stream that drops mid-turn (worker
+ * restart, network blip). We resume from ``lastSeq`` — the backend replays
+ * missed events (``?after=seq``) and, for a job that already died, back-fills a
+ * terminal event — so the UI recovers without a manual page refresh. Backoff is
+ * exponential and capped; total window (~17s over 6 tries) comfortably covers a
+ * server restart without spinning forever if the job is genuinely gone.
+ */
+const SSE_MAX_RECONNECTS = 6;
+
+function sseReconnectDelayMs(attempt: number): number {
+  return Math.min(500 * 2 ** (attempt - 1), 5000);
+}
 
 function pathEquals(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false;
@@ -235,14 +250,8 @@ export class ChatSession {
     const messageId = job.message_id;
     this.lastSeq = -1;
 
-    const stream = this.client.streamJobEvents(
-      job.job_id,
-      this.lastSeq,
-      this.abortController?.signal,
-    );
-
     await this.consumeEventStream(
-      stream,
+      job.job_id,
       conversationId,
       messageId,
       true, // executeClientTools
@@ -254,11 +263,64 @@ export class ChatSession {
    * minimal session state, and emits typed ChatEvents to consumers.
    */
   private async consumeEventStream(
-    stream: AsyncGenerator<{ data: string }>,
+    jobId: string,
     conversationId: string,
     messageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      const stream = this.client.streamJobEvents(
+        jobId,
+        this.lastSeq,
+        this.abortController?.signal,
+      );
+      // Client tools run only on the first connection; a resumed stream must
+      // not re-execute a tool the backend already holds a result for.
+      const execTools = attempt === 0 ? executeClientTools : false;
+
+      let sawTerminal: boolean;
+      try {
+        sawTerminal = await this.pumpStream(
+          stream,
+          conversationId,
+          messageId,
+          execTools,
+        );
+      } catch (err) {
+        // User cancelled / detached — stop, don't reconnect.
+        if (this.abortController?.signal.aborted) return;
+        if (attempt >= SSE_MAX_RECONNECTS) throw err;
+        await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1));
+        continue; // resume from lastSeq
+      }
+
+      // A terminal event (message_stop / error) ends the turn — including the
+      // backend's back-filled terminal for a job that died mid-stream.
+      if (sawTerminal || this.abortController?.signal.aborted) return;
+
+      // Stream ended WITHOUT a terminal event: the worker/connection dropped
+      // mid-turn. Resume from lastSeq so the backend can replay missed events
+      // (and back-fill a terminal for a dead job) rather than leave the UI
+      // hanging on "working".
+      if (attempt >= SSE_MAX_RECONNECTS) {
+        throw new ConnectionError("Lost connection to the response stream.");
+      }
+      await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1));
+    }
+  }
+
+  /**
+   * Consume a single SSE stream to exhaustion. Returns whether a terminal
+   * event (``message_stop`` / ``error``) was seen, so the caller can decide
+   * whether an ended stream means "turn done" vs "dropped, reconnect".
+   */
+  private async pumpStream(
+    stream: AsyncGenerator<{ data: string }>,
+    conversationId: string,
+    messageId: string,
+    executeClientTools: boolean,
+  ): Promise<boolean> {
+    let sawTerminal = false;
     for await (const raw of stream) {
       let parsed: WireEvent;
       try {
@@ -283,6 +345,10 @@ export class ChatSession {
         continue;
       }
 
+      if (parsed.type === "message_stop" || parsed.type === "error") {
+        sawTerminal = true;
+      }
+
       await this.dispatchWireEvent(
         parsed,
         conversationId,
@@ -290,6 +356,24 @@ export class ChatSession {
         executeClientTools,
       );
     }
+    return sawTerminal;
+  }
+
+  /** Sleep for ``ms``, resolving early if the turn is aborted mid-backoff. */
+  private sleepUnlessAborted(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const signal = this.abortController?.signal;
+      if (signal?.aborted) return resolve();
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   private async dispatchWireEvent(
@@ -465,13 +549,8 @@ export class ChatSession {
     this.abortController = new AbortController();
 
     try {
-      const stream = this.client.streamJobEvents(
-        jobId,
-        this.lastSeq,
-        this.abortController?.signal,
-      );
       await this.consumeEventStream(
-        stream,
+        jobId,
         this.conversationId ?? "",
         "",
         false, // don't execute client tools on reconnect
