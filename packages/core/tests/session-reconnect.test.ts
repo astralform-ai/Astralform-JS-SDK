@@ -213,4 +213,71 @@ describe("ChatSession auto-reconnect", () => {
     ).toBe(true);
     expect(urls).toHaveLength(MAX_EVENTS_CALLS); // initial + 6 reconnects, then stop
   });
+
+  it("surfaces an auth error immediately without retrying", async () => {
+    const urls: string[] = [];
+    const fetch = (async (input: unknown, init?: { method?: string }) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : (input as Request).url;
+      if (url.includes("/events")) {
+        urls.push(url);
+        return new Response("unauthorized", { status: 401 });
+      }
+      if (url.includes("/v1/jobs") && init?.method === "POST") {
+        return jsonResponse(
+          {
+            job_id: "job-1",
+            conversation_id: "c1",
+            message_id: "m1",
+            status: "queued",
+          },
+          201,
+        );
+      }
+      if (url.includes("/v1/project/status")) {
+        return jsonResponse({
+          is_ready: true,
+          llm_configured: true,
+          message: "Ready",
+        });
+      }
+      return jsonResponse([]);
+    }) as unknown as typeof globalThis.fetch;
+
+    const session = new ChatSession({ ...baseConfig, fetch });
+    await session.connect();
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await session.send("Hi"); // no back-off — an auth error can't be retried away
+
+    expect(events.some((e) => e.type === "error")).toBe(true);
+    expect(urls).toHaveLength(1); // surfaced immediately, no reconnect attempts
+  });
+
+  it("detach during backoff stops the reconnect loop (no unstoppable stream)", async () => {
+    const partial = msgStart(0) + blockStart(1); // never terminal → would retry
+    const urls: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: reconnectFetch([partial], urls),
+    });
+    await session.connect();
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    await vi.advanceTimersByTimeAsync(50); // first pump done, now in backoff
+    session.detach(); // aborts + nulls the controller
+    await vi.advanceTimersByTimeAsync(60_000);
+    await p;
+    vi.useRealTimers();
+
+    // Without the captured-signal fix, detach() nulls the controller and the
+    // aborted check silently fails, so the loop reconnects to exhaustion.
+    expect(urls.length).toBeLessThan(MAX_EVENTS_CALLS);
+  });
 });
