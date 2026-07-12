@@ -194,6 +194,61 @@ describe("ChatSession", () => {
     expect(body.plan_mode).toBe(true);
   });
 
+  it("send passes the per-request model choice to the request", async () => {
+    let capturedBody: string | undefined;
+    const sseData = [
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"m","job_id":"job-1","seq":0,"ts":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{},"total_ms":50,"stall_count":0,"seq":1,"ts":0}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/agent/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [],
+    });
+
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs") && !url.includes("/events")) {
+        capturedBody = init?.body as string;
+      }
+      return mockFetch(input, init);
+    };
+
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: wrappedFetch,
+    });
+    await session.connect();
+    await session.send("Hi", {
+      provider: "anthropic",
+      model: "claude-opus-4-8",
+      reasoningEffort: "high",
+      temperature: 0.4,
+    });
+
+    expect(capturedBody).toBeDefined();
+    const body = JSON.parse(capturedBody!);
+    expect(body.provider).toBe("anthropic");
+    expect(body.model).toBe("claude-opus-4-8");
+    expect(body.reasoning_effort).toBe("high");
+    expect(body.temperature).toBe(0.4);
+  });
+
   it("createNewConversation creates and switches", async () => {
     const session = new ChatSession({
       ...baseConfig,

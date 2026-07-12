@@ -220,6 +220,35 @@ describe("AstralformClient", () => {
     expect(agents[0]!.isOrchestrator).toBe(true);
   });
 
+  it("getModels maps snake_case fields to camelCase", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/models": {
+        status: 200,
+        body: [
+          {
+            provider: "anthropic",
+            provider_display: "Anthropic",
+            model: "claude-opus-4-8",
+            thinking: true,
+            tools: true,
+            vision: true,
+            thinking_mode: "controllable",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const models = await client.getModels();
+
+    expect(models).toHaveLength(1);
+    expect(models[0]!.provider).toBe("anthropic");
+    expect(models[0]!.providerDisplay).toBe("Anthropic");
+    expect(models[0]!.model).toBe("claude-opus-4-8");
+    expect(models[0]!.thinkingMode).toBe("controllable");
+    expect(models[0]!.tools).toBe(true);
+  });
+
   it("submitToolResult posts to /v1/tool-result", async () => {
     let capturedBody: string | undefined;
     const mockFetch: typeof globalThis.fetch = async (_input, init) => {
@@ -1011,8 +1040,6 @@ describe("team/agent discovery (user-token mode)", () => {
 
     await client.listAgents("team/1 x");
 
-    expect(calls[0]).toBe(
-      "http://localhost:8000/v1/teams/team%2F1%20x/agents",
-    );
+    expect(calls[0]).toBe("http://localhost:8000/v1/teams/team%2F1%20x/agents");
   });
 });

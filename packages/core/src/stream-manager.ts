@@ -18,7 +18,7 @@
  *   await manager.send("Hello");
  */
 
-import type { ChatEvent } from "./types.js";
+import type { ChatEvent, ReasoningEffort } from "./types.js";
 import { ChatEventType } from "./types.js";
 import type { ChatSession } from "./session.js";
 
@@ -33,6 +33,11 @@ export interface SendOptions {
   agentName?: string;
   uploadIds?: string[];
   planMode?: boolean;
+  /** Per-request model choice (client-side model selection). */
+  provider?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  temperature?: number;
 }
 
 export type StreamManagerEvent =
@@ -151,6 +156,10 @@ export class StreamManager {
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,
+        provider: options?.provider,
+        model: options?.model,
+        reasoningEffort: options?.reasoningEffort,
+        temperature: options?.temperature,
       });
     } catch {
       // AbortError from detach is expected

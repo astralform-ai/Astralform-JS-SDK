@@ -18,6 +18,7 @@ import type {
   JobStatus,
   JobSummary,
   Message,
+  ModelOption,
   MyToolGrantsPage,
   AgentStatus,
   TeamAgentSummary,
@@ -371,6 +372,35 @@ export class AstralformClient {
       isOrchestrator: a.is_orchestrator,
       isEnabled: a.is_enabled,
       avatarUrl: a.avatar_url,
+    }));
+  }
+
+  /**
+   * List the models the caller may pick this turn — expanded from the curated
+   * catalog of the providers the team has connected (client-side model
+   * selection). Backs the composer's model picker. Scoped to the active agent
+   * via X-Agent-ID, same as {@link getAgentStatus}.
+   */
+  async getModels(): Promise<ModelOption[]> {
+    const raw = await this.get<
+      {
+        provider: string;
+        provider_display: string;
+        model: string;
+        thinking: boolean;
+        tools: boolean;
+        vision: boolean;
+        thinking_mode: string;
+      }[]
+    >("/v1/models");
+    return raw.map((m) => ({
+      provider: m.provider,
+      providerDisplay: m.provider_display,
+      model: m.model,
+      thinking: m.thinking,
+      tools: m.tools,
+      vision: m.vision,
+      thinkingMode: m.thinking_mode,
     }));
   }
 

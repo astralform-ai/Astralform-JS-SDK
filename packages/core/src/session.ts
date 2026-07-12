@@ -169,6 +169,11 @@ export class ChatSession {
       agent_name: options?.agentName,
       enable_search: options?.enableSearch,
       plan_mode: options?.planMode,
+      // Per-request model choice (client-side model selection).
+      provider: options?.provider,
+      model: options?.model,
+      reasoning_effort: options?.reasoningEffort,
+      temperature: options?.temperature,
     };
 
     await this.processStream(request);

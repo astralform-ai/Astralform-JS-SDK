@@ -79,8 +79,7 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
 }
 
 export type AstralformConfig =
-  | AstralformApiKeyConfig
-  | AstralformUserTokenConfig;
+  AstralformApiKeyConfig | AstralformUserTokenConfig;
 
 // --- Event type constants (SDK public) ---
 //
@@ -152,11 +151,7 @@ export type WireBlockStatus =
   | "cancelled";
 
 export type WireStopReason =
-  | "end_turn"
-  | "tool_use"
-  | "max_tokens"
-  | "context_overflow"
-  | "error";
+  "end_turn" | "tool_use" | "max_tokens" | "context_overflow" | "error";
 
 // --- BlockDelta payloads (discriminated on `channel`) ---
 
@@ -195,10 +190,7 @@ export interface WireOutputDelta {
 export interface WireStatusDelta {
   channel: "status";
   status:
-    | "executing"
-    | "awaiting_client_result"
-    | "awaiting_approval"
-    | "denied";
+    "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
   note?: string;
 }
 
@@ -345,10 +337,7 @@ export type BlockDeltaPayload =
   | {
       channel: "status";
       status:
-        | "executing"
-        | "awaiting_client_result"
-        | "awaiting_approval"
-        | "denied";
+        "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
       note?: string;
     };
 
@@ -671,6 +660,9 @@ export interface FeedbackResponse {
   createdAt: string;
 }
 
+/** Reasoning effort a caller may request for a turn (client-side model selection). */
+export type ReasoningEffort = "low" | "medium" | "high";
+
 export interface ChatStreamRequest {
   message?: string;
   conversation_id?: string;
@@ -682,6 +674,15 @@ export interface ChatStreamRequest {
   agent_name?: string;
   enable_search?: boolean;
   plan_mode?: boolean;
+  /**
+   * Per-request model choice (client-side model selection). `provider` and
+   * `model` are paired — send both or neither. When omitted, the server reuses
+   * the conversation's last model or a connected-provider default.
+   */
+  provider?: string;
+  model?: string;
+  reasoning_effort?: ReasoningEffort;
+  temperature?: number;
 }
 
 export interface ToolResultRequest {
@@ -780,6 +781,25 @@ export interface SendOptions {
   agentName?: string;
   enableSearch?: boolean;
   planMode?: boolean;
+  /** Per-request model choice (client-side model selection). */
+  provider?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  temperature?: number;
+}
+
+/**
+ * A selectable model for one of the team's connected providers, from
+ * `GET /v1/models`. Backs the client-side model picker.
+ */
+export interface ModelOption {
+  provider: string;
+  providerDisplay: string;
+  model: string;
+  thinking: boolean;
+  tools: boolean;
+  vision: boolean;
+  thinkingMode: string;
 }
 
 // =============================================================================
