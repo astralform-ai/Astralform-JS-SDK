@@ -10,7 +10,7 @@ describe("ChatSession", () => {
     userId: "user-1",
   };
 
-  it("connect fetches project status and agents", async () => {
+  it("connect fetches agent status and agents", async () => {
     const mockFetch = createSessionMockFetch({
       "/v1/project/status": {
         is_ready: true,
@@ -39,8 +39,8 @@ describe("ChatSession", () => {
 
     await session.connect();
 
-    expect(session.projectStatus).not.toBeNull();
-    expect(session.projectStatus!.isReady).toBe(true);
+    expect(session.agentStatus).not.toBeNull();
+    expect(session.agentStatus!.isReady).toBe(true);
     expect(session.agents).toHaveLength(1);
     expect(events.some((e) => e.type === "connected")).toBe(true);
   });

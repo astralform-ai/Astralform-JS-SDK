@@ -19,17 +19,17 @@ export type { AgentIdentity, MemoryRecord, TodoItem };
 // property presence, so consumers can write:
 //
 //   new AstralformClient({ apiKey, userId })           // API-key mode
-//   new AstralformClient({ accessToken, projectId })   // user-token mode
+//   new AstralformClient({ accessToken, agentId })     // user-token mode
 //
 // Pick based on who the caller represents:
 //
-// * API-key mode  — A customer's backend (B2B2C). Project scoping is baked
+// * API-key mode  — A customer's backend (B2B2C). Agent scoping is baked
 //   into the key; the end user is named per request via `X-End-User-ID`.
 //
 // * User-token mode — An app acting on behalf of an Astralform account
 //   holder (AstralChat, future 3rd-party integrations). The OIDC access
 //   token is issued by the Astralform Identity Provider (Supabase OAuth 2.1
-//   Server); project scoping comes from the `X-Project-ID` header.
+//   Server); agent scoping comes from the `X-Project-ID` header (legacy wire name).
 
 interface AstralformBaseConfig {
   /** Override the default API origin. Defaults to https://api.astralform.ai. */
@@ -39,7 +39,7 @@ interface AstralformBaseConfig {
 }
 
 export interface AstralformApiKeyConfig extends AstralformBaseConfig {
-  /** Project API key (`sk_live_...` or `sk_test_...`). */
+  /** Agent API key (`sk_live_...` or `sk_test_...`). */
   apiKey: string;
   /**
    * The customer's own identifier for the end user making this call.
@@ -56,16 +56,16 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
    */
   accessToken: string;
   /**
-   * Active project context. Sent as the `X-Project-ID` header. The backend
-   * verifies the token's developer has access to this project on every
-   * request; switching projects is a local `updateProjectId()` call.
+   * Active agent context. Sent as the `X-Project-ID` header (legacy wire name). The backend
+   * verifies the token's developer has access to this agent on every
+   * request; switching agents is a local `updateAgentId()` call.
    *
    * Optional so a pre-pick client (right after login, before the user has
-   * chosen a team/project) can still call account-scoped discovery routes
-   * like `listTeams()` / `listProjects(teamId)`. Project-scoped calls
+   * chosen a team/agent) can still call account-scoped discovery routes
+   * like `listTeams()` / `listAgents(teamId)`. Agent-scoped calls
    * (conversations, messages, chat) will error out until one is set.
    */
-  projectId?: string;
+  agentId?: string;
   /**
    * Optional end-user override — lets a developer acting under a user
    * token impersonate a downstream end-user identity for testing
@@ -570,7 +570,7 @@ export interface UIComponentsConfig {
   mimeType: string | null;
 }
 
-export interface ProjectStatus {
+export interface AgentStatus {
   isReady: boolean;
   llmConfigured: boolean;
   llmProvider?: string;
@@ -588,7 +588,7 @@ export interface AgentInfo {
   avatarUrl?: string;
 }
 
-// --- Team / Project discovery (OIDC user-token surface) ---
+// --- Team / Agent discovery (OIDC user-token surface) ---
 
 export interface TeamSummary {
   id: string;
@@ -599,7 +599,12 @@ export interface TeamSummary {
   role: string;
 }
 
-export interface ProjectSummary {
+/**
+ * A team-level agent (formerly "project") — the workspace a user opens to
+ * chat. Distinct from `AgentInfo`, which describes the AI personas available
+ * INSIDE an agent workspace (orchestrator + specialists).
+ */
+export interface TeamAgentSummary {
   id: string;
   name: string;
   teamId: string;

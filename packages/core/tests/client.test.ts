@@ -29,7 +29,7 @@ describe("AstralformClient", () => {
     expect(capturedHeaders["X-End-User-ID"]).toBe("user-1");
   });
 
-  it("getProjectStatus maps snake_case to camelCase", async () => {
+  it("getAgentStatus maps snake_case to camelCase", async () => {
     const mockFetch = createMockFetch({
       "/v1/project/status": {
         status: 200,
@@ -49,7 +49,7 @@ describe("AstralformClient", () => {
     });
 
     const client = new AstralformClient({ ...config, fetch: mockFetch });
-    const status = await client.getProjectStatus();
+    const status = await client.getAgentStatus();
 
     expect(status.isReady).toBe(true);
     expect(status.llmConfigured).toBe(true);
@@ -62,7 +62,7 @@ describe("AstralformClient", () => {
     });
   });
 
-  it("getProjectStatus defaults uiComponents when backend omits the field", async () => {
+  it("getAgentStatus defaults uiComponents when backend omits the field", async () => {
     const mockFetch = createMockFetch({
       "/v1/project/status": {
         status: 200,
@@ -75,7 +75,7 @@ describe("AstralformClient", () => {
     });
 
     const client = new AstralformClient({ ...config, fetch: mockFetch });
-    const status = await client.getProjectStatus();
+    const status = await client.getAgentStatus();
 
     expect(status.uiComponents).toEqual({
       enabled: false,
@@ -599,7 +599,7 @@ describe("AstralformClient - user-token mode", () => {
     });
     const userClient = new AstralformClient({
       accessToken: "eyJ.jwt",
-      projectId: "p1",
+      agentId: "p1",
     });
     expect(apiKeyClient.authMode).toBe("api_key");
     expect(userClient.authMode).toBe("user_token");
@@ -610,16 +610,16 @@ describe("AstralformClient - user-token mode", () => {
       () =>
         new AstralformClient({
           accessToken: "",
-          projectId: "p1",
+          agentId: "p1",
         } as never),
     ).toThrow(/accessToken/);
   });
 
-  it("allows pre-pick user-token client without projectId (for discovery routes)", () => {
+  it("allows pre-pick user-token client without agentId (for discovery routes)", () => {
     // Right after OIDC login the caller has a token but hasn't picked a
-    // team/project yet. The client must construct successfully so it can
-    // hit account-scoped routes like listTeams() / listProjects(). Project-
-    // scoped routes will 4xx until updateProjectId() is called.
+    // team/agent yet. The client must construct successfully so it can
+    // hit account-scoped routes like listTeams() / listAgents(). Agent-
+    // scoped routes will 4xx until updateAgentId() is called.
     expect(
       () => new AstralformClient({ accessToken: "eyJ.jwt" } as never),
     ).not.toThrow();
@@ -635,7 +635,7 @@ describe("AstralformClient - user-token mode", () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "eyJ.jwt.here",
-      projectId: "proj-abc",
+      agentId: "proj-abc",
       fetch: fetchFn,
     });
     await client.getHealth();
@@ -650,7 +650,7 @@ describe("AstralformClient - user-token mode", () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "first",
-      projectId: "p1",
+      agentId: "p1",
       fetch: fetchFn,
     });
     await client.getHealth();
@@ -661,35 +661,35 @@ describe("AstralformClient - user-token mode", () => {
     expect(calls[1]!.headers.Authorization).toBe("Bearer second");
   });
 
-  it("updateProjectId swaps X-Project-ID between requests", async () => {
+  it("updateAgentId swaps X-Project-ID between requests", async () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "proj-1",
+      agentId: "proj-1",
       fetch: fetchFn,
     });
     await client.getHealth();
-    client.updateProjectId("proj-2");
+    client.updateAgentId("proj-2");
     await client.getHealth();
 
     expect(calls[0]!.headers["X-Project-ID"]).toBe("proj-1");
     expect(calls[1]!.headers["X-Project-ID"]).toBe("proj-2");
   });
 
-  it("updateAccessToken/updateProjectId are not allowed in API-key mode", () => {
+  it("updateAccessToken/updateAgentId are not allowed in API-key mode", () => {
     const client = new AstralformClient({
       apiKey: "sk_test",
       userId: "u1",
     });
     expect(() => client.updateAccessToken("x")).toThrow(/user-token mode/);
-    expect(() => client.updateProjectId("p")).toThrow(/user-token mode/);
+    expect(() => client.updateAgentId("p")).toThrow(/user-token mode/);
   });
 
   it("omits X-End-User-ID when endUserId is unset", async () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "p1",
+      agentId: "p1",
       fetch: fetchFn,
     });
     await client.getHealth();
@@ -702,7 +702,7 @@ describe("AstralformClient - user-token mode", () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "p1",
+      agentId: "p1",
       endUserId: "customer-42",
       fetch: fetchFn,
     });
@@ -716,7 +716,7 @@ describe("AstralformClient - user-token mode", () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "p1",
+      agentId: "p1",
       fetch: fetchFn,
     });
 
@@ -735,7 +735,7 @@ describe("AstralformClient - user-token mode", () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "p1",
+      agentId: "p1",
       endUserId: "start",
       fetch: fetchFn,
     });
@@ -754,13 +754,13 @@ describe("AstralformClient - user-token mode", () => {
     expect(() => client.updateEndUserId("x")).toThrow(/user-token mode/);
   });
 
-  it("rejects empty updateAccessToken/updateProjectId values", () => {
+  it("rejects empty updateAccessToken/updateAgentId values", () => {
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "p1",
+      agentId: "p1",
     });
     expect(() => client.updateAccessToken("")).toThrow(/non-empty/);
-    expect(() => client.updateProjectId("")).toThrow(/non-empty/);
+    expect(() => client.updateAgentId("")).toThrow(/non-empty/);
   });
 
   it("uploadFile forwards user-token auth headers without Content-Type", async () => {
@@ -781,7 +781,7 @@ describe("AstralformClient - user-token mode", () => {
     };
     const client = new AstralformClient({
       accessToken: "tok",
-      projectId: "p1",
+      agentId: "p1",
       fetch: mockFetch,
     });
     await client.uploadFile("c1", new Blob(["x"]), "a.txt");
@@ -921,5 +921,98 @@ describe("AstralformClient - user-token mode", () => {
 
     expect(method).toBe("DELETE");
     expect(capturedUrl).toContain("/v1/me/tool-permissions/a%20b%2Fc");
+  });
+});
+
+describe("team/agent discovery (user-token mode)", () => {
+  function jsonFetch(payload: unknown) {
+    const calls: string[] = [];
+    const fetchFn: typeof globalThis.fetch = async (
+      input: RequestInfo | URL,
+    ) => {
+      calls.push(typeof input === "string" ? input : input.toString());
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    return { fetchFn, calls };
+  }
+
+  it("listTeams hits /v1/teams and maps snake_case", async () => {
+    const { fetchFn, calls } = jsonFetch([
+      {
+        id: "team-1",
+        name: "Tony's Team",
+        slug: "tonys-team",
+        is_default: true,
+        role: "owner",
+      },
+    ]);
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      baseURL: "http://localhost:8000",
+      fetch: fetchFn,
+    });
+
+    const teams = await client.listTeams();
+
+    expect(calls[0]).toBe("http://localhost:8000/v1/teams");
+    expect(teams).toEqual([
+      {
+        id: "team-1",
+        name: "Tony's Team",
+        slug: "tonys-team",
+        isDefault: true,
+        role: "owner",
+      },
+    ]);
+  });
+
+  it("listAgents hits /v1/teams/{id}/agents and maps snake_case", async () => {
+    // Regression pin: 1.x called the pre-rename /projects path, which 404s
+    // against backends >= 0.14.0 (the "Couldn't load projects." picker break).
+    const { fetchFn, calls } = jsonFetch([
+      {
+        id: "agent-1",
+        name: "Astralform",
+        team_id: "team-1",
+        created_at: "2026-07-01T00:00:00Z",
+        updated_at: "2026-07-02T00:00:00Z",
+      },
+    ]);
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      baseURL: "http://localhost:8000",
+      fetch: fetchFn,
+    });
+
+    const agents = await client.listAgents("team-1");
+
+    expect(calls[0]).toBe("http://localhost:8000/v1/teams/team-1/agents");
+    expect(agents).toEqual([
+      {
+        id: "agent-1",
+        name: "Astralform",
+        teamId: "team-1",
+        createdAt: "2026-07-01T00:00:00Z",
+        updatedAt: "2026-07-02T00:00:00Z",
+      },
+    ]);
+  });
+
+  it("listAgents URI-encodes the team id", async () => {
+    const { fetchFn, calls } = jsonFetch([]);
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      baseURL: "http://localhost:8000",
+      fetch: fetchFn,
+    });
+
+    await client.listAgents("team/1 x");
+
+    expect(calls[0]).toBe(
+      "http://localhost:8000/v1/teams/team%2F1%20x/agents",
+    );
   });
 });

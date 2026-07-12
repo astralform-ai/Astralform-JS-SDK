@@ -1,14 +1,14 @@
 /**
  * Multi-Agent Demo — Node.js CLI
  *
- * Connects to a multi-agent Astralform project and logs the v2 event
+ * Connects to a multi-agent Astralform agent workspace and logs the v2 event
  * surface with formatted output.
  *
  * Usage:
  *   npx tsx with-agents.ts
  *
  * Environment:
- *   ASTRALFORM_API_KEY — Your project API key
+ *   ASTRALFORM_API_KEY — Your agent API key
  *   ASTRALFORM_BASE_URL — (optional) API endpoint, defaults to https://api.astralform.ai
  */
 
