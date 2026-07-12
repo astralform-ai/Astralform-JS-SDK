@@ -31,7 +31,7 @@ describe("AstralformClient", () => {
 
   it("getAgentStatus maps snake_case to camelCase", async () => {
     const mockFetch = createMockFetch({
-      "/v1/project/status": {
+      "/v1/agent/status": {
         status: 200,
         body: {
           is_ready: true,
@@ -64,7 +64,7 @@ describe("AstralformClient", () => {
 
   it("getAgentStatus defaults uiComponents when backend omits the field", async () => {
     const mockFetch = createMockFetch({
-      "/v1/project/status": {
+      "/v1/agent/status": {
         status: 200,
         body: {
           is_ready: true,
@@ -631,7 +631,7 @@ describe("AstralformClient - user-token mode", () => {
     );
   });
 
-  it("sends Bearer JWT and X-Project-ID headers (no X-End-User-ID)", async () => {
+  it("sends Bearer JWT and X-Agent-ID headers (no X-End-User-ID)", async () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "eyJ.jwt.here",
@@ -642,7 +642,7 @@ describe("AstralformClient - user-token mode", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.headers.Authorization).toBe("Bearer eyJ.jwt.here");
-    expect(calls[0]!.headers["X-Project-ID"]).toBe("proj-abc");
+    expect(calls[0]!.headers["X-Agent-ID"]).toBe("proj-abc");
     expect(calls[0]!.headers["X-End-User-ID"]).toBeUndefined();
   });
 
@@ -661,7 +661,7 @@ describe("AstralformClient - user-token mode", () => {
     expect(calls[1]!.headers.Authorization).toBe("Bearer second");
   });
 
-  it("updateAgentId swaps X-Project-ID between requests", async () => {
+  it("updateAgentId swaps X-Agent-ID between requests", async () => {
     const { fetchFn, calls } = captureHeaders();
     const client = new AstralformClient({
       accessToken: "tok",
@@ -672,8 +672,8 @@ describe("AstralformClient - user-token mode", () => {
     client.updateAgentId("proj-2");
     await client.getHealth();
 
-    expect(calls[0]!.headers["X-Project-ID"]).toBe("proj-1");
-    expect(calls[1]!.headers["X-Project-ID"]).toBe("proj-2");
+    expect(calls[0]!.headers["X-Agent-ID"]).toBe("proj-1");
+    expect(calls[1]!.headers["X-Agent-ID"]).toBe("proj-2");
   });
 
   it("updateAccessToken/updateAgentId are not allowed in API-key mode", () => {
@@ -787,7 +787,7 @@ describe("AstralformClient - user-token mode", () => {
     await client.uploadFile("c1", new Blob(["x"]), "a.txt");
 
     expect(capturedHeaders.Authorization).toBe("Bearer tok");
-    expect(capturedHeaders["X-Project-ID"]).toBe("p1");
+    expect(capturedHeaders["X-Agent-ID"]).toBe("p1");
     expect(capturedHeaders["Content-Type"]).toBeUndefined();
   });
 

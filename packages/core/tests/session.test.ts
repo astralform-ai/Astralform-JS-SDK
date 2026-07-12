@@ -12,7 +12,7 @@ describe("ChatSession", () => {
 
   it("connect fetches agent status and agents", async () => {
     const mockFetch = createSessionMockFetch({
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         llm_provider: "openai",
@@ -71,7 +71,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -162,7 +162,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -238,7 +238,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -290,7 +290,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -369,7 +369,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -425,7 +425,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -468,7 +468,7 @@ describe("ChatSession", () => {
         message_id: "m1",
         status: "queued",
       },
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",
@@ -511,7 +511,7 @@ describe("ChatSession", () => {
 
     const mockFetch = createSessionMockFetch({
       "/v1/jobs/job-1/events": sseData,
-      "/v1/project/status": {
+      "/v1/agent/status": {
         is_ready: true,
         llm_configured: true,
         message: "Ready",

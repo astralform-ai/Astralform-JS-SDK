@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.0
+
+**Wire rename — requires backend >= 0.16.0.** The remaining legacy wire names from the project → agent rename are cut:
+
+- Agent scoping header: `X-Project-ID` → `X-Agent-ID`
+- Readiness route: `getAgentStatus()` now calls `/v1/agent/status` (was `/v1/project/status`)
+
+No JS API changes. 2.0.x continues to work only against backends that still serve the old wire names (< 0.16.0); the hosted platform cut over with backend 0.16.0.
+
 ## 2.0.0
 
 **Breaking: project → agent rename.** Astralform no longer has a project level — the hierarchy is account → team → **agents**. The SDK surface renames accordingly, with no deprecated aliases (clean cut, matching backend `0.14.0+` which serves `GET /v1/teams/{team_id}/agents` only):
