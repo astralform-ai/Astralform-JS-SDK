@@ -57,7 +57,7 @@ session.disconnect();
 import { ChatSession } from "@astralform/js";
 
 const session = new ChatSession({
-  apiKey: "your-api-key",   // Required — Astralform project API key
+  apiKey: "your-api-key",   // Required — Astralform agent API key
   userId: "user-123",       // Required — identifies the end user
   baseURL: "http://localhost:8000", // Optional — defaults to https://api.astralform.ai
   fetch: customFetch,       // Optional — custom fetch implementation
@@ -72,7 +72,7 @@ Subscribe to events with `.on()`, which returns an unsubscribe function. The SDK
 const unsubscribe = session.on((event) => {
   switch (event.type) {
     case "connected":
-      // Session connected, project status and tools loaded
+      // Session connected, agent status and tools loaded
       break;
 
     // --- Turn lifecycle ---
@@ -212,10 +212,10 @@ import { ChatSession, parseEmbeddedResource } from "@astralform/js";
 
 await session.connect();
 
-// Gate registration on the project's configured protocol.
-if (session.projectStatus?.uiComponents.enabled) {
+// Gate registration on the agent's configured protocol.
+if (session.agentStatus?.uiComponents.enabled) {
   session.protocols.register({
-    mimeType: session.projectStatus.uiComponents.mimeType!,
+    mimeType: session.agentStatus.uiComponents.mimeType!,
     render: (payload) => {
       /* framework-specific render */
     },
@@ -305,7 +305,7 @@ const client = new AstralformClient({
 });
 
 // REST endpoints
-const status = await client.getProjectStatus();
+const status = await client.getAgentStatus();
 const conversations = await client.getConversations();
 const messages = await client.getMessages("conversation-id");
 const agents = await client.getAgents();

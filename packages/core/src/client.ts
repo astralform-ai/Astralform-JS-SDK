@@ -19,8 +19,8 @@ import type {
   JobSummary,
   Message,
   MyToolGrantsPage,
-  ProjectStatus,
-  ProjectSummary,
+  AgentStatus,
+  AgentSummary,
   SkillInfo,
   TeamSummary,
   ToolApprovalRequest,
@@ -59,8 +59,8 @@ type AuthMode =
   | {
       kind: "user_token";
       accessToken: string;
-      /** Null until the user picks a project; account-scoped calls still work. */
-      projectId: string | null;
+      /** Null until the user picks an agent; account-scoped calls still work. */
+      agentId: string | null;
       /** Optional end-user override. When present, sent as X-End-User-ID. */
       endUserId: string | null;
     };
@@ -70,7 +70,7 @@ export class AstralformClient {
   private readonly fetchFn: typeof globalThis.fetch;
   /**
    * Auth state is mutable so callers can rotate access tokens or switch
-   * project context without re-instantiating the client. API-key mode is
+   * agent context without re-instantiating the client. API-key mode is
    * effectively immutable in practice but uses the same shape for uniformity.
    */
   private auth: AuthMode;
@@ -94,17 +94,17 @@ export class AstralformClient {
           "accessToken is required and must be a non-empty string in user-token mode",
         );
       }
-      // projectId is optional — a pre-pick client (right after login) can
-      // still hit account-scoped routes like listTeams(). Project-scoped
-      // routes will 4xx until one is set via updateProjectId().
-      const projectId =
-        typeof config.projectId === "string" && config.projectId.length > 0
-          ? config.projectId
+      // agentId is optional — a pre-pick client (right after login) can
+      // still hit account-scoped routes like listTeams(). Agent-scoped
+      // routes will 4xx until one is set via updateAgentId().
+      const agentId =
+        typeof config.agentId === "string" && config.agentId.length > 0
+          ? config.agentId
           : null;
       this.auth = {
         kind: "user_token",
         accessToken: config.accessToken,
-        projectId,
+        agentId,
         endUserId:
           typeof config.endUserId === "string" && config.endUserId.length > 0
             ? config.endUserId
@@ -132,17 +132,17 @@ export class AstralformClient {
   }
 
   /**
-   * Swap the active project for a user-token client. The backend verifies the
-   * current developer has access to the new project; a 403 comes back if not.
+   * Swap the active agent for a user-token client. The backend verifies the
+   * current developer has access to the new agent; a 403 comes back if not.
    */
-  updateProjectId(projectId: string): void {
+  updateAgentId(agentId: string): void {
     if (this.auth.kind !== "user_token") {
-      throw new Error("updateProjectId is only valid in user-token mode");
+      throw new Error("updateAgentId is only valid in user-token mode");
     }
-    if (!projectId || typeof projectId !== "string") {
-      throw new Error("projectId must be a non-empty string");
+    if (!agentId || typeof agentId !== "string") {
+      throw new Error("agentId must be a non-empty string");
     }
-    this.auth = { ...this.auth, projectId };
+    this.auth = { ...this.auth, agentId };
   }
 
   /**
@@ -168,13 +168,13 @@ export class AstralformClient {
   }
 
   /**
-   * Active project for user-token mode, or `null` if pre-pick (client
-   * was constructed without one). For API-key mode the project is baked
+   * Active agent for user-token mode, or `null` if pre-pick (client
+   * was constructed without one). For API-key mode the agent is baked
    * into the key, so this getter returns `null` there too — use
    * `authMode` to disambiguate.
    */
-  get projectId(): string | null {
-    return this.auth.kind === "user_token" ? this.auth.projectId : null;
+  get agentId(): string | null {
+    return this.auth.kind === "user_token" ? this.auth.agentId : null;
   }
 
   /** Which auth mode this client was constructed with. */
@@ -198,8 +198,9 @@ export class AstralformClient {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.auth.accessToken}`,
     };
-    if (this.auth.projectId) {
-      headers["X-Project-ID"] = this.auth.projectId;
+    if (this.auth.agentId) {
+      // Legacy wire name — the backend still reads X-Project-ID for agent scoping.
+      headers["X-Project-ID"] = this.auth.agentId;
     }
     if (this.auth.endUserId) {
       headers["X-End-User-ID"] = this.auth.endUserId;
@@ -271,7 +272,9 @@ export class AstralformClient {
     return this.get("/v1/health");
   }
 
-  async getProjectStatus(): Promise<ProjectStatus> {
+  // Agent readiness check. The path is a legacy wire name (shared with the
+  // iOS SDK) — it scopes to the client's active agent via X-Project-ID.
+  async getAgentStatus(): Promise<AgentStatus> {
     const raw = await this.get<{
       is_ready: boolean;
       llm_configured: boolean;
@@ -519,7 +522,7 @@ export class AstralformClient {
 
   // --- Account-scoped discovery (user-token mode) ---
   //
-  // Lets a signed-in user pick which team/project they want to act on.
+  // Lets a signed-in user pick which team/agent they want to act on.
   // Backend gates these on OIDC user context (no X-Project-ID required) —
   // sending them in API-key mode yields 401.
 
@@ -542,7 +545,7 @@ export class AstralformClient {
     }));
   }
 
-  async listProjects(teamId: string): Promise<ProjectSummary[]> {
+  async listAgents(teamId: string): Promise<AgentSummary[]> {
     const raw = await this.get<
       Array<{
         id: string;
@@ -551,7 +554,7 @@ export class AstralformClient {
         created_at: string;
         updated_at: string;
       }>
-    >(`/v1/teams/${encodeURIComponent(teamId)}/projects`);
+    >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
     return raw.map((p) => ({
       id: p.id,
       name: p.name,

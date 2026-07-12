@@ -13,10 +13,10 @@
 //
 //   • `ProtocolRegistry` — a MIME-keyed map of adapters. One lives on
 //     each `ChatSession` so its lifecycle matches the session: clearing
-//     on disconnect, swapping on reconnect with a different project.
+//     on disconnect, swapping on reconnect with a different agent.
 //
 // The consumer decides _whether_ to register an adapter — typically by
-// consulting `session.projectStatus.uiComponents` after `connect()`.
+// consulting `session.agentStatus.uiComponents` after `connect()`.
 // The SDK never auto-registers anything; it just stores what it's told.
 // =============================================================================
 

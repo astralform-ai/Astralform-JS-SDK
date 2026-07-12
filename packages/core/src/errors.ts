@@ -45,7 +45,7 @@ export class RateLimitError extends AstralformError {
 }
 
 export class LLMNotConfiguredError extends AstralformError {
-  constructor(message = "LLM provider not configured for this project") {
+  constructor(message = "LLM provider not configured for this agent") {
     super(message, "llm_not_configured");
     this.name = "LLMNotConfiguredError";
   }

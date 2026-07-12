@@ -10,7 +10,7 @@ import type {
   ChatStreamRequest,
   Conversation,
   Message,
-  ProjectStatus,
+  AgentStatus,
   SendOptions,
   SkillInfo,
   ToolCallRequest,
@@ -66,7 +66,7 @@ export class ChatSession {
   /**
    * Pluggable UI protocol adapters. Consumers register a framework-
    * specific adapter (e.g. React) for each MIME type they can render,
-   * typically gated on ``session.projectStatus.uiComponents.protocol``.
+   * typically gated on ``session.agentStatus.uiComponents.protocol``.
    * ``ToolBlock``-style consumers look up the adapter for an incoming
    * embedded resource and hand off rendering.
    */
@@ -77,7 +77,7 @@ export class ChatSession {
   conversations: Conversation[] = [];
   messages: Message[] = [];
   isStreaming = false;
-  projectStatus: ProjectStatus | null = null;
+  agentStatus: AgentStatus | null = null;
   agents: AgentInfo[] = [];
   skills: SkillInfo[] = [];
   enabledClientTools = new Set<string>();
@@ -117,14 +117,14 @@ export class ChatSession {
 
   async connect(): Promise<void> {
     const [status, conversations, agents, skills] = await Promise.allSettled([
-      this.client.getProjectStatus(),
+      this.client.getAgentStatus(),
       this.client.getConversations(),
       this.client.getAgents().catch(() => [] as AgentInfo[]),
       this.client.getSkills().catch(() => [] as SkillInfo[]),
     ]);
 
     if (status.status === "fulfilled") {
-      this.projectStatus = status.value;
+      this.agentStatus = status.value;
     }
     if (conversations.status === "fulfilled") {
       this.conversations = conversations.value;

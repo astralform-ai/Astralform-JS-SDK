@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.0.0
+
+**Breaking: project → agent rename.** Astralform no longer has a project level — the hierarchy is account → team → **agents**. The SDK surface renames accordingly, with no deprecated aliases (clean cut, matching backend `0.14.0+` which serves `GET /v1/teams/{team_id}/agents` only):
+
+| 1.x | 2.0 |
+|-----|-----|
+| `listProjects(teamId)` | `listAgents(teamId)` |
+| `ProjectSummary` | `AgentSummary` |
+| `projectId` (config option + getter) | `agentId` |
+| `updateProjectId(id)` | `updateAgentId(id)` |
+| `getProjectStatus()` | `getAgentStatus()` |
+| `ProjectStatus` | `AgentStatus` |
+| `session.projectStatus` | `session.agentStatus` |
+
+Wire compatibility: the HTTP surface the SDK speaks is unchanged except discovery — `listAgents()` calls `/v1/teams/{team_id}/agents` (the 1.x `/projects` path no longer exists on the backend, which is why 1.x's picker flow 404s). `X-Project-ID` and `/v1/project/status` remain the wire names for agent scoping/readiness until a coordinated protocol rename.
+
+Migration: mechanical find/replace of the identifiers above; no behavior changes.
+
 ## 1.0.0
 
 First stable release. Promotes the 0.2.x preview surface to a stable v1 contract: typed wire protocol, typed `ChatEvent` union, and a user-token auth mode for apps that act on behalf of an Astralform account holder (AstralChat and future 3rd-party integrations).

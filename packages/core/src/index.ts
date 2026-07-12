@@ -116,12 +116,12 @@ export type {
   AstralformUserTokenConfig,
   Conversation,
   Message,
-  ProjectStatus,
+  AgentStatus,
   UIComponentsConfig,
   AgentInfo,
   SkillInfo,
   TeamSummary,
-  ProjectSummary,
+  AgentSummary,
 } from "./types.js";
 
 // Request / response types
