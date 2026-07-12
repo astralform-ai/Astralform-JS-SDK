@@ -20,7 +20,7 @@ import type {
   Message,
   MyToolGrantsPage,
   AgentStatus,
-  AgentSummary,
+  TeamAgentSummary,
   SkillInfo,
   TeamSummary,
   ToolApprovalRequest,
@@ -349,6 +349,12 @@ export class AstralformClient {
     await this.del(`/v1/conversations/${encodeURIComponent(id)}`);
   }
 
+  /**
+   * List the AI personas (sub-agents) available INSIDE the client's active
+   * agent workspace — orchestrator + specialists, addressed per message via
+   * `ChatStreamRequest.agent_name`. Not to be confused with `listAgents()`,
+   * which enumerates the team-level agents a signed-in user can open.
+   */
   async getAgents(): Promise<AgentInfo[]> {
     const raw = await this.get<
       {
@@ -545,7 +551,12 @@ export class AstralformClient {
     }));
   }
 
-  async listAgents(teamId: string): Promise<AgentSummary[]> {
+  /**
+   * List the team-level agents (formerly "projects") the signed-in user can
+   * open — the pickable workspaces under a team. Not to be confused with
+   * `getAgents()`, which lists the AI personas inside the active agent.
+   */
+  async listAgents(teamId: string): Promise<TeamAgentSummary[]> {
     const raw = await this.get<
       Array<{
         id: string;
@@ -555,12 +566,12 @@ export class AstralformClient {
         updated_at: string;
       }>
     >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
-    return raw.map((p) => ({
-      id: p.id,
-      name: p.name,
-      teamId: p.team_id,
-      createdAt: p.created_at,
-      updatedAt: p.updated_at,
+    return raw.map((a) => ({
+      id: a.id,
+      name: a.name,
+      teamId: a.team_id,
+      createdAt: a.created_at,
+      updatedAt: a.updated_at,
     }));
   }
 

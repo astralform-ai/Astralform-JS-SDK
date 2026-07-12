@@ -121,7 +121,7 @@ export type {
   AgentInfo,
   SkillInfo,
   TeamSummary,
-  AgentSummary,
+  TeamAgentSummary,
 } from "./types.js";
 
 // Request / response types

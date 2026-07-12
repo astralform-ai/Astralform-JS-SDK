@@ -19,7 +19,7 @@ export type { AgentIdentity, MemoryRecord, TodoItem };
 // property presence, so consumers can write:
 //
 //   new AstralformClient({ apiKey, userId })           // API-key mode
-//   new AstralformClient({ accessToken, agentId })   // user-token mode
+//   new AstralformClient({ accessToken, agentId })     // user-token mode
 //
 // Pick based on who the caller represents:
 //
@@ -599,7 +599,12 @@ export interface TeamSummary {
   role: string;
 }
 
-export interface AgentSummary {
+/**
+ * A team-level agent (formerly "project") — the workspace a user opens to
+ * chat. Distinct from `AgentInfo`, which describes the AI personas available
+ * INSIDE an agent workspace (orchestrator + specialists).
+ */
+export interface TeamAgentSummary {
   id: string;
   name: string;
   teamId: string;

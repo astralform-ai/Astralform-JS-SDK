@@ -7,7 +7,7 @@
 | 1.x | 2.0 |
 |-----|-----|
 | `listProjects(teamId)` | `listAgents(teamId)` |
-| `ProjectSummary` | `AgentSummary` |
+| `ProjectSummary` | `TeamAgentSummary` |
 | `projectId` (config option + getter) | `agentId` |
 | `updateProjectId(id)` | `updateAgentId(id)` |
 | `getProjectStatus()` | `getAgentStatus()` |

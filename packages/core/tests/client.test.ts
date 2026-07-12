@@ -923,3 +923,96 @@ describe("AstralformClient - user-token mode", () => {
     expect(capturedUrl).toContain("/v1/me/tool-permissions/a%20b%2Fc");
   });
 });
+
+describe("team/agent discovery (user-token mode)", () => {
+  function jsonFetch(payload: unknown) {
+    const calls: string[] = [];
+    const fetchFn: typeof globalThis.fetch = async (
+      input: RequestInfo | URL,
+    ) => {
+      calls.push(typeof input === "string" ? input : input.toString());
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    return { fetchFn, calls };
+  }
+
+  it("listTeams hits /v1/teams and maps snake_case", async () => {
+    const { fetchFn, calls } = jsonFetch([
+      {
+        id: "team-1",
+        name: "Tony's Team",
+        slug: "tonys-team",
+        is_default: true,
+        role: "owner",
+      },
+    ]);
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      baseURL: "http://localhost:8000",
+      fetch: fetchFn,
+    });
+
+    const teams = await client.listTeams();
+
+    expect(calls[0]).toBe("http://localhost:8000/v1/teams");
+    expect(teams).toEqual([
+      {
+        id: "team-1",
+        name: "Tony's Team",
+        slug: "tonys-team",
+        isDefault: true,
+        role: "owner",
+      },
+    ]);
+  });
+
+  it("listAgents hits /v1/teams/{id}/agents and maps snake_case", async () => {
+    // Regression pin: 1.x called the pre-rename /projects path, which 404s
+    // against backends >= 0.14.0 (the "Couldn't load projects." picker break).
+    const { fetchFn, calls } = jsonFetch([
+      {
+        id: "agent-1",
+        name: "Astralform",
+        team_id: "team-1",
+        created_at: "2026-07-01T00:00:00Z",
+        updated_at: "2026-07-02T00:00:00Z",
+      },
+    ]);
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      baseURL: "http://localhost:8000",
+      fetch: fetchFn,
+    });
+
+    const agents = await client.listAgents("team-1");
+
+    expect(calls[0]).toBe("http://localhost:8000/v1/teams/team-1/agents");
+    expect(agents).toEqual([
+      {
+        id: "agent-1",
+        name: "Astralform",
+        teamId: "team-1",
+        createdAt: "2026-07-01T00:00:00Z",
+        updatedAt: "2026-07-02T00:00:00Z",
+      },
+    ]);
+  });
+
+  it("listAgents URI-encodes the team id", async () => {
+    const { fetchFn, calls } = jsonFetch([]);
+    const client = new AstralformClient({
+      accessToken: "eyJ.jwt",
+      baseURL: "http://localhost:8000",
+      fetch: fetchFn,
+    });
+
+    await client.listAgents("team/1 x");
+
+    expect(calls[0]).toBe(
+      "http://localhost:8000/v1/teams/team%2F1%20x/agents",
+    );
+  });
+});
