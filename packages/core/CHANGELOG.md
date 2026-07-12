@@ -1,13 +1,13 @@
 # Changelog
 
-## 2.1.0
+## 3.0.0
 
-**Wire rename — requires backend >= 0.16.0.** The remaining legacy wire names from the project → agent rename are cut:
+**Breaking: wire rename — requires backend >= 0.16.0.** The remaining legacy wire names from the project → agent rename are cut. No JS API changes, but the wire behavior breaks against older backends, hence the major:
 
 - Agent scoping header: `X-Project-ID` → `X-Agent-ID`
 - Readiness route: `getAgentStatus()` now calls `/v1/agent/status` (was `/v1/project/status`)
 
-No JS API changes. 2.0.x continues to work only against backends that still serve the old wire names (< 0.16.0); the hosted platform cut over with backend 0.16.0.
+2.0.x continues to work only against backends that still serve the old wire names (< 0.16.0); the hosted platform cut over with backend 0.16.0.
 
 ## 2.0.0
 
