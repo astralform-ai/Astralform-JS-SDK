@@ -249,6 +249,16 @@ describe("ChatSession", () => {
     expect(body.temperature).toBe(0.4);
   });
 
+  it("send throws when only one of provider/model is set", async () => {
+    const session = new ChatSession({ ...baseConfig });
+    await expect(session.send("Hi", { provider: "anthropic" })).rejects.toThrow(
+      /supplied together/,
+    );
+    await expect(
+      session.send("Hi", { model: "claude-opus-4-8" }),
+    ).rejects.toThrow(/supplied together/);
+  });
+
   it("createNewConversation creates and switches", async () => {
     const session = new ChatSession({
       ...baseConfig,

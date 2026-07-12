@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.0
+
+**Client-side model selection.** Chat clients can now choose the model, reasoning effort, and temperature per turn. Additive — omit them and the server reuses the conversation's last model or a connected-provider default.
+
+- `ChatStreamRequest` and `SendOptions` gain `provider` / `model` / `reasoning_effort` (`reasoningEffort` on the camelCase options) / `temperature`, deduped via a shared `ModelChoiceOptions`.
+- New `client.getModels()` → `GET /v1/models`, returning `ModelOption[]` (the team's connected-provider catalog).
+- `ChatSession.send` / `StreamManager.send` throw when only one of `provider` / `model` is supplied.
+
 ## 3.0.0
 
 **Breaking: wire rename — requires backend >= 0.16.0.** The remaining legacy wire names from the project → agent rename are cut. No JS API changes, but the wire behavior breaks against older backends, hence the major:
