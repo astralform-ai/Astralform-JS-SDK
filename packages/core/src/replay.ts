@@ -51,8 +51,14 @@ export function mapSseToChat(raw: RawSseEvent): ChatEvent[] {
 
 /**
  * Replay persisted SSE events through the provided handler, interleaving
- * user messages from session.messages at the first message_start of each
- * turn (user messages aren't persisted in job_events).
+ * user messages from session.messages at the START of each turn (user
+ * messages aren't persisted in job_events).
+ *
+ * The user block leads each turn's FIRST event rather than waiting for its
+ * ``message_start`` — some events precede ``message_start`` in the persisted
+ * stream (e.g. ``memory_recall``, emitted during prompt prep), and gating on
+ * ``message_start`` would replay them above the user's own message. A turn
+ * boundary is a ``message_stop``, which re-arms the next prompt.
  */
 export function replayEvents(
   sseEvents: RawSseEvent[],
@@ -66,16 +72,9 @@ export function replayEvents(
 
   for (const raw of sseEvents) {
     const type = (raw.data.type as string) || raw.event;
+    if (!type || type === "done") continue;
 
-    if (type === "message_stop") {
-      expectingUserMessage = true;
-    }
-
-    if (
-      type === "message_start" &&
-      expectingUserMessage &&
-      userIdx < userMsgs.length
-    ) {
+    if (expectingUserMessage && userIdx < userMsgs.length) {
       const userMsg = userMsgs[userIdx]!;
       addBlock({
         type: "user",
@@ -84,6 +83,10 @@ export function replayEvents(
       });
       userIdx++;
       expectingUserMessage = false;
+    }
+
+    if (type === "message_stop") {
+      expectingUserMessage = true;
     }
 
     for (const ce of mapSseToChat(raw)) {

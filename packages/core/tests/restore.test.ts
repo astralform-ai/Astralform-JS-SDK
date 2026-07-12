@@ -171,4 +171,44 @@ describe("session.switchConversation — user_message interleaving", () => {
     const userMessages = events.filter((e) => e.type === "user_message");
     expect(userMessages).toHaveLength(1);
   });
+
+  it("emits user_message before a memory_recall that precedes message_start", async () => {
+    // Auto-recall is emitted during prompt prep, so in the persisted stream it
+    // lands BEFORE message_start (verified in job_events: seq0 memory_recall,
+    // seq2 message_start). The synthetic prompt must still lead it, or the
+    // recall chip restores above the user's own message.
+    const recallFirstEvents = [
+      {
+        seq: 0,
+        event: "custom",
+        data: {
+          type: "custom",
+          name: "memory_recall",
+          data: { memories: [{ id: "m1", content: "likes Micron" }] },
+        },
+      },
+      ...persistedEvents.map((e) => ({ ...e, seq: e.seq + 1 })),
+    ];
+
+    const mockFetch = jsonMock({
+      "/v1/conversations/c1/messages": [],
+      "/v1/conversations/c1/events": recallFirstEvents,
+    });
+
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await session.switchConversation(
+      "c1",
+      "job-1",
+      "Reply with exactly: wire cut live",
+    );
+
+    const userIdx = events.findIndex((e) => e.type === "user_message");
+    const recallIdx = events.findIndex((e) => e.type === "memory_recall");
+    expect(userIdx).toBeGreaterThanOrEqual(0);
+    expect(recallIdx).toBeGreaterThanOrEqual(0);
+    expect(userIdx).toBeLessThan(recallIdx);
+  });
 });
