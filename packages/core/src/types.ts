@@ -671,6 +671,21 @@ export interface FeedbackResponse {
   createdAt: string;
 }
 
+/** Reasoning effort a caller may request for a turn (client-side model selection). */
+export type ReasoningEffort = "low" | "medium" | "high";
+
+/**
+ * The per-request model choice (client-side model selection). `provider` and
+ * `model` are paired — send both or neither; when omitted, the server reuses the
+ * conversation's last model or a connected-provider default.
+ */
+export interface ModelChoiceOptions {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  temperature?: number;
+}
+
 export interface ChatStreamRequest {
   message?: string;
   conversation_id?: string;
@@ -682,6 +697,14 @@ export interface ChatStreamRequest {
   agent_name?: string;
   enable_search?: boolean;
   plan_mode?: boolean;
+  /**
+   * Per-request model choice (client-side model selection), wire shape.
+   * `provider` and `model` are paired; omit to reuse the thread's last model.
+   */
+  provider?: string;
+  model?: string;
+  reasoning_effort?: ReasoningEffort;
+  temperature?: number;
 }
 
 export interface ToolResultRequest {
@@ -773,13 +796,27 @@ export interface ConversationEvent {
 // Send / session options
 // =============================================================================
 
-export interface SendOptions {
+export interface SendOptions extends ModelChoiceOptions {
   conversationId?: string;
   enabledClientTools?: string[];
   uploadIds?: string[];
   agentName?: string;
   enableSearch?: boolean;
   planMode?: boolean;
+}
+
+/**
+ * A selectable model for one of the team's connected providers, from
+ * `GET /v1/models`. Backs the client-side model picker.
+ */
+export interface ModelOption {
+  provider: string;
+  providerDisplay: string;
+  model: string;
+  thinking: boolean;
+  tools: boolean;
+  vision: boolean;
+  thinkingMode: string;
 }
 
 // =============================================================================

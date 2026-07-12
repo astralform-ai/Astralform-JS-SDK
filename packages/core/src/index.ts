@@ -120,6 +120,8 @@ export type {
   UIComponentsConfig,
   AgentInfo,
   SkillInfo,
+  ModelOption,
+  ModelChoiceOptions,
   TeamSummary,
   TeamAgentSummary,
 } from "./types.js";
@@ -127,6 +129,7 @@ export type {
 // Request / response types
 export type {
   ChatStreamRequest,
+  ReasoningEffort,
   ToolResultRequest,
   ToolResult,
   ToolDefinition,
