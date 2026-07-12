@@ -54,11 +54,15 @@ export function mapSseToChat(raw: RawSseEvent): ChatEvent[] {
  * user messages from session.messages at the START of each turn (user
  * messages aren't persisted in job_events).
  *
- * The user block leads each turn's FIRST event rather than waiting for its
- * ``message_start`` — some events precede ``message_start`` in the persisted
- * stream (e.g. ``memory_recall``, emitted during prompt prep), and gating on
- * ``message_start`` would replay them above the user's own message. A turn
- * boundary is a ``message_stop``, which re-arms the next prompt.
+ * The turn boundary is a change of ``job_id``, NOT ``message_start`` or
+ * ``message_stop``. A completed job maps to exactly one user turn — but a
+ * single job can contain several ``message_start``/``message_stop`` pairs (a
+ * tool-use loop: LLM call → tool result → LLM call again), so neither event
+ * reliably delimits turns. And within a job some events precede the first
+ * ``message_start`` (e.g. ``memory_recall``, emitted during prompt prep), so
+ * gating the user block on ``message_start`` would replay them above the
+ * user's own message. Keying off ``job_id`` injects the prompt once per job,
+ * before its first event — matching ``session.ts#switchConversation``.
  */
 export function replayEvents(
   sseEvents: RawSseEvent[],
@@ -68,25 +72,26 @@ export function replayEvents(
 ): void {
   const userMsgs = userMessages.filter((m) => m.role === "user");
   let userIdx = 0;
-  let expectingUserMessage = true;
+  let currentJobId: string | null = null;
 
   for (const raw of sseEvents) {
     const type = (raw.data.type as string) || raw.event;
     if (!type || type === "done") continue;
 
-    if (expectingUserMessage && userIdx < userMsgs.length) {
-      const userMsg = userMsgs[userIdx]!;
-      addBlock({
-        type: "user",
-        id: `replay_user_${userIdx}`,
-        content: userMsg.content,
-      });
-      userIdx++;
-      expectingUserMessage = false;
-    }
-
-    if (type === "message_stop") {
-      expectingUserMessage = true;
+    // A new job_id starts a new user turn — inject its prompt before the
+    // job's first event. Events without a job_id stay within the current
+    // turn (never a boundary), so a stray untagged event can't misfire.
+    const jobId = (raw.data.job_id as string | undefined) ?? null;
+    if (jobId !== null && jobId !== currentJobId) {
+      currentJobId = jobId;
+      if (userIdx < userMsgs.length) {
+        addBlock({
+          type: "user",
+          id: `replay_user_${userIdx}`,
+          content: userMsgs[userIdx]!.content,
+        });
+        userIdx++;
+      }
     }
 
     for (const ce of mapSseToChat(raw)) {
