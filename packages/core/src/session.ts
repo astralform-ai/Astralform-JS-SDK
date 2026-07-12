@@ -668,10 +668,11 @@ export class ChatSession {
     jobId?: string,
     /**
      * User prompt that triggered this job, if known. Emitted as a
-     * synthetic ``user_message`` ChatEvent right before the first
-     * ``message_start`` of the replay. User messages aren't persisted
-     * in ``job_events``, so without this the restored conversation
-     * would show the agent response with no visible prompt above it.
+     * synthetic ``user_message`` ChatEvent at the START of the replay —
+     * a completed job maps to exactly one user turn, so every event in it
+     * belongs beneath that prompt. User messages aren't persisted in
+     * ``job_events``, so without this the restored conversation would show
+     * the agent response with no visible prompt above it.
      */
     userMessageContent?: string,
   ): Promise<void> {
@@ -691,21 +692,19 @@ export class ChatSession {
     // is authoritative for `type` (matches how replay.ts#mapSseToChat reads
     // it) with the SSE event name as a fallback for pre-v2 rows.
     if (eventsResult.status === "fulfilled") {
-      let userMessageEmitted = !userMessageContent;
+      // Inject the user prompt BEFORE any of the job's events. Every event
+      // in a completed job belongs to this one user turn, and some precede
+      // ``message_start`` in the persisted stream — e.g. ``memory_recall``,
+      // emitted during prompt prep. Gating the prompt on ``message_start``
+      // (as this once did) replayed those events above the user's own
+      // message; leading with it keeps the turn in order.
+      if (userMessageContent) {
+        this.emit({ type: "user_message", content: userMessageContent });
+      }
+
       for (const ev of eventsResult.value) {
         const type = (ev.data.type as string) || ev.event;
         if (!type || type === "done") continue;
-
-        // Inject the user prompt at the turn boundary — right before
-        // the first ``message_start`` — so the consumer can insert a
-        // user block above the agent response.
-        if (!userMessageEmitted && type === "message_start") {
-          this.emit({
-            type: "user_message",
-            content: userMessageContent!,
-          });
-          userMessageEmitted = true;
-        }
 
         const wire = { ...ev.data, type } as unknown as WireEvent;
         try {

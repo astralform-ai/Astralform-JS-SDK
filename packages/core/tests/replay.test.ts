@@ -341,4 +341,178 @@ describe("replayEvents", () => {
     expect(handledEvents).toContain("message_start");
     expect(handledEvents).toContain("message_stop");
   });
+
+  it("emits the user block before a memory_recall that precedes message_start", () => {
+    // The turn opens with a memory_recall (emitted during prompt prep, so it
+    // precedes message_start in the persisted stream). Real recall events
+    // carry the job_id, so the user block for that job must still lead it.
+    const sseEvents: RawSseEvent[] = [
+      {
+        seq: 0,
+        event: "custom",
+        data: {
+          type: "custom",
+          name: "memory_recall",
+          job_id: "j1",
+          data: { memories: [{ id: "m1", content: "x" }] },
+        },
+      },
+      {
+        seq: 1,
+        event: "message_start",
+        data: {
+          type: "message_start",
+          turn_id: "t1",
+          model: "m",
+          job_id: "j1",
+        },
+      },
+      {
+        seq: 2,
+        event: "message_stop",
+        data: {
+          type: "message_stop",
+          turn_id: "t1",
+          job_id: "j1",
+          stop_reason: "end_turn",
+          usage: {},
+          total_ms: 50,
+          stall_count: 0,
+        },
+      },
+    ];
+
+    const order: string[] = [];
+    replayEvents(
+      sseEvents,
+      [{ role: "user", content: "Hello" }],
+      (e) => order.push(e.type),
+      (b) => order.push(`user:${b.content}`),
+    );
+
+    const userPos = order.findIndex((x) => x.startsWith("user:"));
+    const recallPos = order.indexOf("memory_recall");
+    expect(userPos).toBeGreaterThanOrEqual(0);
+    expect(recallPos).toBeGreaterThanOrEqual(0);
+    expect(userPos).toBeLessThan(recallPos);
+  });
+
+  it("leads each turn (= each job) with its own user block", () => {
+    // Two separate jobs/turns; turn 2 opens with a recall chip (carrying its
+    // job_id) before its message_start. Each job's user block leads its events.
+    const start = (seq: number, job: string) => ({
+      seq,
+      event: "message_start",
+      data: {
+        type: "message_start",
+        turn_id: `t-${job}`,
+        model: "m",
+        job_id: job,
+      },
+    });
+    const stop = (seq: number, job: string) => ({
+      seq,
+      event: "message_stop",
+      data: {
+        type: "message_stop",
+        turn_id: `t-${job}`,
+        job_id: job,
+        stop_reason: "end_turn",
+        usage: {},
+        total_ms: 10,
+        stall_count: 0,
+      },
+    });
+    const sseEvents: RawSseEvent[] = [
+      start(0, "j1"),
+      stop(1, "j1"),
+      {
+        seq: 2,
+        event: "custom",
+        data: {
+          type: "custom",
+          name: "memory_recall",
+          job_id: "j2",
+          data: { memories: [{ id: "m1", content: "x" }] },
+        },
+      },
+      start(3, "j2"),
+      stop(4, "j2"),
+    ];
+
+    const order: string[] = [];
+    replayEvents(
+      sseEvents,
+      [
+        { role: "user", content: "first" },
+        { role: "user", content: "second" },
+      ],
+      (e) => order.push(e.type),
+      (b) => order.push(`user:${b.content}`),
+    );
+
+    expect(order[0]).toBe("user:first");
+    const secondUser = order.indexOf("user:second");
+    const recall = order.indexOf("memory_recall");
+    expect(secondUser).toBeGreaterThanOrEqual(0);
+    expect(secondUser).toBeLessThan(recall);
+  });
+
+  it("injects exactly one user block for a job with multiple message_start pairs (tool-use loop)", () => {
+    // A single job/turn can contain several message_start/message_stop pairs
+    // (LLM call → tool result → LLM call again). The prompt must be injected
+    // ONCE for the whole job, not re-injected at the inner message_start.
+    const job = "j1";
+    const sseEvents: RawSseEvent[] = [
+      {
+        seq: 0,
+        event: "message_start",
+        data: { type: "message_start", turn_id: "t1", model: "m", job_id: job },
+      },
+      {
+        seq: 1,
+        event: "message_stop",
+        data: {
+          type: "message_stop",
+          turn_id: "t1",
+          job_id: job,
+          stop_reason: "tool_use",
+          usage: {},
+          total_ms: 10,
+          stall_count: 0,
+        },
+      },
+      {
+        seq: 2,
+        event: "message_start",
+        data: { type: "message_start", turn_id: "t1", model: "m", job_id: job },
+      },
+      {
+        seq: 3,
+        event: "message_stop",
+        data: {
+          type: "message_stop",
+          turn_id: "t1",
+          job_id: job,
+          stop_reason: "end_turn",
+          usage: {},
+          total_ms: 10,
+          stall_count: 0,
+        },
+      },
+    ];
+
+    const users: string[] = [];
+    replayEvents(
+      sseEvents,
+      [
+        { role: "user", content: "only-one" },
+        { role: "user", content: "should-not-appear" },
+      ],
+      () => {},
+      (b) => users.push(b.content),
+    );
+
+    expect(users).toEqual(["only-one"]);
+  });
 });
