@@ -118,7 +118,7 @@ function reconnectFetch(
         201,
       );
     }
-    if (url.includes("/v1/project/status")) {
+    if (url.includes("/v1/agent/status")) {
       return jsonResponse({
         is_ready: true,
         llm_configured: true,
@@ -238,7 +238,7 @@ describe("ChatSession auto-reconnect", () => {
           201,
         );
       }
-      if (url.includes("/v1/project/status")) {
+      if (url.includes("/v1/agent/status")) {
         return jsonResponse({
           is_ready: true,
           llm_configured: true,

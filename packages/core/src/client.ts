@@ -199,8 +199,7 @@ export class AstralformClient {
       Authorization: `Bearer ${this.auth.accessToken}`,
     };
     if (this.auth.agentId) {
-      // Legacy wire name — the backend still reads X-Project-ID for agent scoping.
-      headers["X-Project-ID"] = this.auth.agentId;
+      headers["X-Agent-ID"] = this.auth.agentId;
     }
     if (this.auth.endUserId) {
       headers["X-End-User-ID"] = this.auth.endUserId;
@@ -272,8 +271,7 @@ export class AstralformClient {
     return this.get("/v1/health");
   }
 
-  // Agent readiness check. The path is a legacy wire name (shared with the
-  // iOS SDK) — it scopes to the client's active agent via X-Project-ID.
+  // Agent readiness check, scoped to the client's active agent via X-Agent-ID.
   async getAgentStatus(): Promise<AgentStatus> {
     const raw = await this.get<{
       is_ready: boolean;
@@ -286,7 +284,7 @@ export class AstralformClient {
         protocol?: string | null;
         mime_type?: string | null;
       };
-    }>("/v1/project/status");
+    }>("/v1/agent/status");
     const ui = raw.ui_components ?? {};
     return {
       isReady: raw.is_ready,
@@ -529,7 +527,7 @@ export class AstralformClient {
   // --- Account-scoped discovery (user-token mode) ---
   //
   // Lets a signed-in user pick which team/agent they want to act on.
-  // Backend gates these on OIDC user context (no X-Project-ID required) —
+  // Backend gates these on OIDC user context (no X-Agent-ID required) —
   // sending them in API-key mode yields 401.
 
   async listTeams(): Promise<TeamSummary[]> {

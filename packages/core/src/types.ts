@@ -29,7 +29,7 @@ export type { AgentIdentity, MemoryRecord, TodoItem };
 // * User-token mode — An app acting on behalf of an Astralform account
 //   holder (AstralChat, future 3rd-party integrations). The OIDC access
 //   token is issued by the Astralform Identity Provider (Supabase OAuth 2.1
-//   Server); agent scoping comes from the `X-Project-ID` header (legacy wire name).
+//   Server); agent scoping comes from the `X-Agent-ID` header.
 
 interface AstralformBaseConfig {
   /** Override the default API origin. Defaults to https://api.astralform.ai. */
@@ -56,7 +56,7 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
    */
   accessToken: string;
   /**
-   * Active agent context. Sent as the `X-Project-ID` header (legacy wire name). The backend
+   * Active agent context. Sent as the `X-Agent-ID` header. The backend
    * verifies the token's developer has access to this agent on every
    * request; switching agents is a local `updateAgentId()` call.
    *
@@ -69,7 +69,7 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
   /**
    * Optional end-user override — lets a developer acting under a user
    * token impersonate a downstream end-user identity for testing
-   * purposes. When set, sent alongside `X-Project-ID` as `X-End-User-ID`
+   * purposes. When set, sent alongside `X-Agent-ID` as `X-End-User-ID`
    * so memory, rate limits, and conversations scope to the specified
    * end-user rather than the developer themselves.
    *
