@@ -140,6 +140,11 @@ export class ChatSession {
   }
 
   async send(content: string, options?: SendOptions): Promise<void> {
+    if ((options?.provider == null) !== (options?.model == null)) {
+      throw new Error(
+        "`provider` and `model` must be supplied together (client-side model selection).",
+      );
+    }
     if (this.isStreaming) return;
 
     const conversationId =

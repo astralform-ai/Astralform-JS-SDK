@@ -121,6 +121,7 @@ export type {
   AgentInfo,
   SkillInfo,
   ModelOption,
+  ModelChoiceOptions,
   TeamSummary,
   TeamAgentSummary,
 } from "./types.js";

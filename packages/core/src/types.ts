@@ -79,7 +79,8 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
 }
 
 export type AstralformConfig =
-  AstralformApiKeyConfig | AstralformUserTokenConfig;
+  | AstralformApiKeyConfig
+  | AstralformUserTokenConfig;
 
 // --- Event type constants (SDK public) ---
 //
@@ -151,7 +152,11 @@ export type WireBlockStatus =
   | "cancelled";
 
 export type WireStopReason =
-  "end_turn" | "tool_use" | "max_tokens" | "context_overflow" | "error";
+  | "end_turn"
+  | "tool_use"
+  | "max_tokens"
+  | "context_overflow"
+  | "error";
 
 // --- BlockDelta payloads (discriminated on `channel`) ---
 
@@ -190,7 +195,10 @@ export interface WireOutputDelta {
 export interface WireStatusDelta {
   channel: "status";
   status:
-    "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
+    | "executing"
+    | "awaiting_client_result"
+    | "awaiting_approval"
+    | "denied";
   note?: string;
 }
 
@@ -337,7 +345,10 @@ export type BlockDeltaPayload =
   | {
       channel: "status";
       status:
-        "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
+        | "executing"
+        | "awaiting_client_result"
+        | "awaiting_approval"
+        | "denied";
       note?: string;
     };
 
@@ -663,6 +674,18 @@ export interface FeedbackResponse {
 /** Reasoning effort a caller may request for a turn (client-side model selection). */
 export type ReasoningEffort = "low" | "medium" | "high";
 
+/**
+ * The per-request model choice (client-side model selection). `provider` and
+ * `model` are paired — send both or neither; when omitted, the server reuses the
+ * conversation's last model or a connected-provider default.
+ */
+export interface ModelChoiceOptions {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  temperature?: number;
+}
+
 export interface ChatStreamRequest {
   message?: string;
   conversation_id?: string;
@@ -675,9 +698,8 @@ export interface ChatStreamRequest {
   enable_search?: boolean;
   plan_mode?: boolean;
   /**
-   * Per-request model choice (client-side model selection). `provider` and
-   * `model` are paired — send both or neither. When omitted, the server reuses
-   * the conversation's last model or a connected-provider default.
+   * Per-request model choice (client-side model selection), wire shape.
+   * `provider` and `model` are paired; omit to reuse the thread's last model.
    */
   provider?: string;
   model?: string;
@@ -774,18 +796,13 @@ export interface ConversationEvent {
 // Send / session options
 // =============================================================================
 
-export interface SendOptions {
+export interface SendOptions extends ModelChoiceOptions {
   conversationId?: string;
   enabledClientTools?: string[];
   uploadIds?: string[];
   agentName?: string;
   enableSearch?: boolean;
   planMode?: boolean;
-  /** Per-request model choice (client-side model selection). */
-  provider?: string;
-  model?: string;
-  reasoningEffort?: ReasoningEffort;
-  temperature?: number;
 }
 
 /**

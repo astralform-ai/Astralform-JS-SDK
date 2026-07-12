@@ -18,7 +18,7 @@
  *   await manager.send("Hello");
  */
 
-import type { ChatEvent, ReasoningEffort } from "./types.js";
+import type { ChatEvent, ModelChoiceOptions } from "./types.js";
 import { ChatEventType } from "./types.js";
 import type { ChatSession } from "./session.js";
 
@@ -28,16 +28,11 @@ import type { ChatSession } from "./session.js";
 
 export type StreamState = "idle" | "streaming" | "restoring" | "detached";
 
-export interface SendOptions {
+export interface SendOptions extends ModelChoiceOptions {
   enableSearch?: boolean;
   agentName?: string;
   uploadIds?: string[];
   planMode?: boolean;
-  /** Per-request model choice (client-side model selection). */
-  provider?: string;
-  model?: string;
-  reasoningEffort?: ReasoningEffort;
-  temperature?: number;
 }
 
 export type StreamManagerEvent =
@@ -140,6 +135,11 @@ export class StreamManager {
   // ── Send ──────────────────────────────────────────────────────
 
   async send(content: string, options?: SendOptions): Promise<void> {
+    if ((options?.provider == null) !== (options?.model == null)) {
+      throw new Error(
+        "`provider` and `model` must be supplied together (client-side model selection).",
+      );
+    }
     if (this._state === "streaming") return;
 
     // Auto-create conversation if none active

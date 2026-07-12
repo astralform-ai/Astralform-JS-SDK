@@ -1040,6 +1040,8 @@ describe("team/agent discovery (user-token mode)", () => {
 
     await client.listAgents("team/1 x");
 
-    expect(calls[0]).toBe("http://localhost:8000/v1/teams/team%2F1%20x/agents");
+    expect(calls[0]).toBe(
+      "http://localhost:8000/v1/teams/team%2F1%20x/agents",
+    );
   });
 });
