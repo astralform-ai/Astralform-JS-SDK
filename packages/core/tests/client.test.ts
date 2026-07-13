@@ -235,6 +235,16 @@ describe("AstralformClient", () => {
             thinking_mode: "controllable",
             supports_effort: true,
           },
+          {
+            // Older backend that omits supports_effort → coerced to false.
+            provider: "deepseek",
+            provider_display: "DeepSeek",
+            model: "deepseek-v4-flash",
+            thinking: false,
+            tools: true,
+            vision: false,
+            thinking_mode: "always_on",
+          },
         ],
       },
     });
@@ -242,13 +252,16 @@ describe("AstralformClient", () => {
     const client = new AstralformClient({ ...config, fetch: mockFetch });
     const models = await client.getModels();
 
-    expect(models).toHaveLength(1);
+    expect(models).toHaveLength(2);
     expect(models[0]!.provider).toBe("anthropic");
     expect(models[0]!.providerDisplay).toBe("Anthropic");
     expect(models[0]!.model).toBe("claude-opus-4-8");
     expect(models[0]!.thinkingMode).toBe("controllable");
     expect(models[0]!.tools).toBe(true);
     expect(models[0]!.supportsEffort).toBe(true);
+    // Absent supports_effort is coerced to a real boolean (false), keeping the
+    // non-optional ModelOption.supportsEffort honest against an older backend.
+    expect(models[1]!.supportsEffort).toBe(false);
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {
@@ -1042,8 +1055,6 @@ describe("team/agent discovery (user-token mode)", () => {
 
     await client.listAgents("team/1 x");
 
-    expect(calls[0]).toBe(
-      "http://localhost:8000/v1/teams/team%2F1%20x/agents",
-    );
+    expect(calls[0]).toBe("http://localhost:8000/v1/teams/team%2F1%20x/agents");
   });
 });
