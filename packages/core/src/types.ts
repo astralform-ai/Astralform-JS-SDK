@@ -817,6 +817,8 @@ export interface ModelOption {
   tools: boolean;
   vision: boolean;
   thinkingMode: string;
+  /** whether the model accepts a configurable reasoning effort (low/medium/high); false for always-on-thinking / think-tags models where effort is a no-op */
+  supportsEffort: boolean;
 }
 
 // =============================================================================

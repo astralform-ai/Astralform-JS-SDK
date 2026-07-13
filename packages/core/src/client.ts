@@ -391,6 +391,7 @@ export class AstralformClient {
         tools: boolean;
         vision: boolean;
         thinking_mode: string;
+        supports_effort: boolean;
       }[]
     >("/v1/models");
     return raw.map((m) => ({
@@ -401,6 +402,7 @@ export class AstralformClient {
       tools: m.tools,
       vision: m.vision,
       thinkingMode: m.thinking_mode,
+      supportsEffort: m.supports_effort,
     }));
   }
 

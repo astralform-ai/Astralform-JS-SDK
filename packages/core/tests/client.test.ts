@@ -233,6 +233,7 @@ describe("AstralformClient", () => {
             tools: true,
             vision: true,
             thinking_mode: "controllable",
+            supports_effort: true,
           },
         ],
       },
@@ -247,6 +248,7 @@ describe("AstralformClient", () => {
     expect(models[0]!.model).toBe("claude-opus-4-8");
     expect(models[0]!.thinkingMode).toBe("controllable");
     expect(models[0]!.tools).toBe(true);
+    expect(models[0]!.supportsEffort).toBe(true);
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {

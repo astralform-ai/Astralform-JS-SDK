@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.0
+
+- Add `ModelOption.supportsEffort` — whether the model accepts a configurable reasoning effort.
+
 ## 3.1.0
 
 **Client-side model selection.** Chat clients can now choose the model, reasoning effort, and temperature per turn. Additive — omit them and the server reuses the conversation's last model or a connected-provider default.
