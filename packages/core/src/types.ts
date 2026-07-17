@@ -79,8 +79,7 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
 }
 
 export type AstralformConfig =
-  | AstralformApiKeyConfig
-  | AstralformUserTokenConfig;
+  AstralformApiKeyConfig | AstralformUserTokenConfig;
 
 // --- Event type constants (SDK public) ---
 //
@@ -152,11 +151,7 @@ export type WireBlockStatus =
   | "cancelled";
 
 export type WireStopReason =
-  | "end_turn"
-  | "tool_use"
-  | "max_tokens"
-  | "context_overflow"
-  | "error";
+  "end_turn" | "tool_use" | "max_tokens" | "context_overflow" | "error";
 
 // --- BlockDelta payloads (discriminated on `channel`) ---
 
@@ -195,10 +190,7 @@ export interface WireOutputDelta {
 export interface WireStatusDelta {
   channel: "status";
   status:
-    | "executing"
-    | "awaiting_client_result"
-    | "awaiting_approval"
-    | "denied";
+    "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
   note?: string;
 }
 
@@ -345,10 +337,7 @@ export type BlockDeltaPayload =
   | {
       channel: "status";
       status:
-        | "executing"
-        | "awaiting_client_result"
-        | "awaiting_approval"
-        | "denied";
+        "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
       note?: string;
     };
 
@@ -695,7 +684,6 @@ export interface ChatStreamRequest {
   resend_from?: string;
   upload_ids?: string[];
   agent_name?: string;
-  enable_search?: boolean;
   plan_mode?: boolean;
   /**
    * Per-request model choice (client-side model selection), wire shape.
@@ -801,7 +789,6 @@ export interface SendOptions extends ModelChoiceOptions {
   enabledClientTools?: string[];
   uploadIds?: string[];
   agentName?: string;
-  enableSearch?: boolean;
   planMode?: boolean;
 }
 

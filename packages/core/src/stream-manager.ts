@@ -29,7 +29,6 @@ import type { ChatSession } from "./session.js";
 export type StreamState = "idle" | "streaming" | "restoring" | "detached";
 
 export interface SendOptions extends ModelChoiceOptions {
-  enableSearch?: boolean;
   agentName?: string;
   uploadIds?: string[];
   planMode?: boolean;
@@ -152,7 +151,6 @@ export class StreamManager {
 
     try {
       await this.session.send(content, {
-        enableSearch: options?.enableSearch,
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,

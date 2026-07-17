@@ -283,11 +283,10 @@ session.toggleClientTool("mcp_get_current_time"); // returns true if now enabled
 session.enabledClientTools; // Set<string>
 ```
 
-Platform-level features (web search, plan mode) are enabled per-request via the `send` options:
+Platform-level features (e.g. plan mode) are enabled per-request via the `send` options. Web search needs no option: when the agent's search feature is enabled server-side, the agent decides per-task whether to search.
 
 ```ts
 await session.send("Research the latest on WebGPU", {
-  enableSearch: true,
   planMode: true,
 });
 ```

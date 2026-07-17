@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.0.0
+
+**Breaking: `enableSearch` / `enable_search` removed — requires a backend with always-on search (Astralform >= 0.32).** Search is no longer a per-request client decision: when the agent's search feature is enabled server-side, the search tools are always available and the agent decides per-task whether to use them.
+
+- `SendOptions.enableSearch` (session and stream-manager variants) removed.
+- `ChatStreamRequest.enable_search` removed from the wire type.
+- `ChatSession.resendFromCheckpoint` no longer takes an options argument (its only option was `enableSearch`).
+
 ## 3.2.0
 
 - Add `ModelOption.supportsEffort` — whether the model accepts a configurable reasoning effort.
