@@ -695,7 +695,6 @@ export interface ChatStreamRequest {
   resend_from?: string;
   upload_ids?: string[];
   agent_name?: string;
-  enable_search?: boolean;
   plan_mode?: boolean;
   /**
    * Per-request model choice (client-side model selection), wire shape.
@@ -801,7 +800,6 @@ export interface SendOptions extends ModelChoiceOptions {
   enabledClientTools?: string[];
   uploadIds?: string[];
   agentName?: string;
-  enableSearch?: boolean;
   planMode?: boolean;
 }
 

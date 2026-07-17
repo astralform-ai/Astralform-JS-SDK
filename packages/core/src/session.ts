@@ -172,7 +172,6 @@ export class ChatSession {
       ),
       upload_ids: options?.uploadIds,
       agent_name: options?.agentName,
-      enable_search: options?.enableSearch,
       plan_mode: options?.planMode,
       // Per-request model choice (client-side model selection).
       provider: options?.provider,
@@ -187,7 +186,6 @@ export class ChatSession {
   async resendFromCheckpoint(
     messageId: string,
     newContent: string,
-    options?: { enableSearch?: boolean },
   ): Promise<void> {
     if (this.isStreaming) return;
 
@@ -197,7 +195,6 @@ export class ChatSession {
       resend_from: messageId,
       mcp_manifest: this.toolRegistry.getManifest(),
       enabled_mcp: Array.from(this.enabledClientTools),
-      enable_search: options?.enableSearch,
     };
 
     await this.processStream(request);
