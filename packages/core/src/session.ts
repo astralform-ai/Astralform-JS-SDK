@@ -728,6 +728,30 @@ export class ChatSession {
     }
   }
 
+  /**
+   * Load a conversation's messages and replay its persisted history.
+   *
+   * Convenience for plain-``ChatSession`` consumers (the documented
+   * conversation-management API). ``StreamManager`` drives restore itself —
+   * loading messages once and replaying each turn in parallel — and does NOT
+   * call this; it's kept so direct-Session usage doesn't break.
+   *
+   * Without ``jobId`` it replays the whole conversation; with one, just that
+   * job's events.
+   */
+  async switchConversation(id: string, jobId?: string): Promise<void> {
+    const [messagesResult, eventsResult] = await Promise.allSettled([
+      this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
+      this.client.getConversationEvents(id, jobId),
+    ]);
+    this.messages =
+      messagesResult.status === "fulfilled" ? messagesResult.value : [];
+    this.replayTurn(
+      id,
+      eventsResult.status === "fulfilled" ? eventsResult.value : [],
+    );
+  }
+
   async deleteConversation(id: string): Promise<void> {
     try {
       await this.client.deleteConversation(id);

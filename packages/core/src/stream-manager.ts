@@ -199,11 +199,16 @@ export class StreamManager {
    * ``opts.skipHistoryReplay`` is a fast path for consumers that CACHE a
    * restored conversation's rendered blocks: it moves the active pointer and
    * loads the message list (needed for send / regenerate context) but skips
-   * the event fetch + replay entirely, and — critically — never enters the
-   * ``restoring`` state, so a consumer that clears its block view on
-   * ``restoring`` keeps showing the cached history with no flash of a spinner.
-   * It is ignored when the target has a live background job (which must reconnect
-   * to its stream), so passing it unconditionally is safe.
+   * the expensive event fetch + replay, and never enters the ``restoring``
+   * state, so a consumer that clears its block view on ``restoring`` keeps
+   * showing the cached history with no flash of a spinner.
+   *
+   * It still confirms there is no live job before skipping: the in-memory
+   * background-job map is empty on a fresh instance (page reload) and blind to
+   * jobs started in another tab/device, so the fast path always asks the server
+   * (``getActiveJob``) and falls through to a full reconnect if one is running.
+   * That one small request is the only cost it doesn't skip, so passing the
+   * flag whenever you hold cached blocks is safe.
    */
   async switchTo(
     conversationId: string,
@@ -211,8 +216,8 @@ export class StreamManager {
   ): Promise<void> {
     if (conversationId === this._activeConversationId) return;
 
-    // Capture BEFORE the delete below: a live background job must reconnect,
-    // so it can never take the cached fast path.
+    // Capture BEFORE the delete below: a background job THIS instance detached
+    // must reconnect, so it can never take the cached fast path.
     const targetHadBackgroundJob = this._backgroundJobs.has(conversationId);
 
     // If streaming, detach (job keeps running in background)
@@ -241,12 +246,26 @@ export class StreamManager {
     this.setActiveConversation(conversationId);
 
     if (opts?.skipHistoryReplay && !targetHadBackgroundJob) {
-      // Cached: consumer already holds the rendered blocks. Load the message
-      // list so send/regenerate have their context, but don't re-fetch or
-      // replay the event history — and stay out of the ``restoring`` state.
-      await this.session.loadConversation(conversationId);
-      this.setState("idle");
-      return;
+      // Cached fast path — but a job started before this instance existed (page
+      // reload) or in another tab/device won't be in _backgroundJobs, so confirm
+      // with the server that nothing is live before skipping the reconnect.
+      let activeJobId: string | null = null;
+      try {
+        activeJobId = (await this.session.client.getActiveJob(conversationId))
+          .jobId;
+      } catch {
+        // Network error — treat as no active job (best-effort, matches restore()).
+      }
+      if (!activeJobId) {
+        // Consumer already holds the rendered blocks. Load the message list so
+        // send/regenerate have their context, but skip the fetch + replay and
+        // stay out of the ``restoring`` state.
+        await this.session.loadConversation(conversationId);
+        this.setState("idle");
+        return;
+      }
+      // A live job is running — fall through to a full restore(), which
+      // reconnects to its stream.
     }
 
     await this.restore(conversationId);

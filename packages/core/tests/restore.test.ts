@@ -177,6 +177,29 @@ describe("session.replayTurn — user_message interleaving", () => {
     expect(userIdx).toBeLessThan(recallIdx);
   });
 
+  it("switchConversation (backward-compat) loads messages and replays history", async () => {
+    // ChatSession.switchConversation is documented in the README, so it stays
+    // as a convenience for plain-Session consumers even though StreamManager
+    // drives restore itself. It must not throw and must replay the events.
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = url.includes("/events") ? persistedEvents : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await session.switchConversation("c1");
+
+    // Replayed the persisted turn (block_start → block_stop landed a text block).
+    expect(events.some((e) => e.type === "block_start")).toBe(true);
+    expect(events.some((e) => e.type === "block_stop")).toBe(true);
+  });
+
   it("replays multiple turns in order, pairing each with its own prompt", () => {
     // Two completed turns replayed back-to-back (StreamManager calls replayTurn
     // once per completed job). Each turn leads with its own user prompt.
