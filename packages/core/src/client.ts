@@ -517,7 +517,10 @@ export class AstralformClient {
       workspacePath: raw.workspace_path as string | undefined,
       sourceMessageId: raw.source_message_id as string | undefined,
       agentName: raw.agent_name as string | undefined,
-      url: raw.url as string | undefined,
+      // The API serializes an unsigned asset as `url: null`; normalize to
+      // undefined so it matches the `url?: string` type and consumers that
+      // check `!== undefined` never receive a null.
+      url: (raw.url as string | null) ?? undefined,
       createdAt: raw.created_at as string,
     };
   }
