@@ -832,5 +832,12 @@ export interface ConversationAsset {
   workspacePath?: string;
   sourceMessageId?: string;
   agentName?: string;
+  /**
+   * Freshly-signed download/preview URL. Minted per response by the backend
+   * (private `workspaces` bucket), so it reflects the current signature rather
+   * than a link baked in when the asset was created. May be absent if signing
+   * failed or the asset has no stored object.
+   */
+  url?: string;
   createdAt: string;
 }
