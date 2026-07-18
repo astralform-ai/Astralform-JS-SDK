@@ -193,8 +193,27 @@ export class StreamManager {
 
   // ── Switch conversation ───────────────────────────────────────
 
-  async switchTo(conversationId: string): Promise<void> {
+  /**
+   * Switch the active conversation.
+   *
+   * ``opts.skipHistoryReplay`` is a fast path for consumers that CACHE a
+   * restored conversation's rendered blocks: it moves the active pointer and
+   * loads the message list (needed for send / regenerate context) but skips
+   * the event fetch + replay entirely, and — critically — never enters the
+   * ``restoring`` state, so a consumer that clears its block view on
+   * ``restoring`` keeps showing the cached history with no flash of a spinner.
+   * It is ignored when the target has a live background job (which must reconnect
+   * to its stream), so passing it unconditionally is safe.
+   */
+  async switchTo(
+    conversationId: string,
+    opts?: { skipHistoryReplay?: boolean },
+  ): Promise<void> {
     if (conversationId === this._activeConversationId) return;
+
+    // Capture BEFORE the delete below: a live background job must reconnect,
+    // so it can never take the cached fast path.
+    const targetHadBackgroundJob = this._backgroundJobs.has(conversationId);
 
     // If streaming, detach (job keeps running in background)
     if (this._state === "streaming") {
@@ -220,6 +239,16 @@ export class StreamManager {
     }
 
     this.setActiveConversation(conversationId);
+
+    if (opts?.skipHistoryReplay && !targetHadBackgroundJob) {
+      // Cached: consumer already holds the rendered blocks. Load the message
+      // list so send/regenerate have their context, but don't re-fetch or
+      // replay the event history — and stay out of the ``restoring`` state.
+      await this.session.loadConversation(conversationId);
+      this.setState("idle");
+      return;
+    }
+
     await this.restore(conversationId);
   }
 
@@ -292,7 +321,7 @@ export class StreamManager {
         this.setState("idle");
       }
     } else {
-      // Completed: load messages, replay version chain
+      // Completed: load the final messages once, then replay each turn.
       await this.session.loadConversation(conversationId);
 
       try {
@@ -310,20 +339,33 @@ export class StreamManager {
         // User prompts aren't persisted in job_events — they live in
         // the messages table. Pair each completed job with its user
         // prompt by chronological index: the N-th completed job was
-        // triggered by the N-th user message. Feed the content into
-        // ``switchConversation`` so it emits a ``user_message`` event
-        // at the right boundary during replay.
+        // triggered by the N-th user message.
         const userMessages = this.session.messages.filter(
           (m) => m.role === "user",
         );
 
+        // Fetch every turn's events up front, in PARALLEL. The backend strips
+        // live-only deltas from this path, so each response is small; parallel
+        // fetch collapses N serial round-trips into one wave. We still fetch
+        // per job (not the whole conversation in one call) so superseded
+        // regeneration versions stay available for version navigation — the
+        // whole-conversation endpoint drops them.
+        const eventLists = await Promise.all(
+          completedJobs.map((job: { job_id: string }) =>
+            this.session.client
+              .getConversationEvents(conversationId, job.job_id)
+              .catch(() => []),
+          ),
+        );
+
+        // Replay every turn in one SYNCHRONOUS pass (no awaits between events
+        // or turns), so the consumer batches the whole history into a single
+        // render instead of re-typing it event by event.
         for (let i = 0; i < completedJobs.length; i++) {
-          const job = completedJobs[i]!;
-          const userContent = userMessages[i]?.content;
-          await this.session.switchConversation(
+          this.session.replayTurn(
             conversationId,
-            job.job_id,
-            userContent,
+            eventLists[i] ?? [],
+            userMessages[i]?.content,
           );
         }
 

@@ -62,7 +62,9 @@ export function mapSseToChat(raw: RawSseEvent): ChatEvent[] {
  * ``message_start`` (e.g. ``memory_recall``, emitted during prompt prep), so
  * gating the user block on ``message_start`` would replay them above the
  * user's own message. Keying off ``job_id`` injects the prompt once per job,
- * before its first event — matching ``session.ts#switchConversation``.
+ * before its first event — matching how the restore path
+ * (``stream-manager.ts#restore`` → ``session.ts#replayTurn``) leads each turn
+ * with its own prompt.
  */
 export function replayEvents(
   sseEvents: RawSseEvent[],
