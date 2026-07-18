@@ -9,6 +9,7 @@ import type {
   ChatEvent,
   ChatStreamRequest,
   Conversation,
+  ConversationEvent,
   Message,
   AgentStatus,
   SendOptions,
@@ -485,6 +486,21 @@ export class ChatSession {
   }
 
   /**
+   * Synchronous replay of a single stored wire event — the side-effect +
+   * translate + emit core of ``dispatchWireEvent`` without the (live-only)
+   * client-tool round-trip. Called in a tight synchronous loop during history
+   * restore so the consumer's per-event store writes batch into ONE render
+   * instead of re-typing the whole conversation event by event.
+   */
+  private replayWireEvent(wire: WireEvent, conversationId: string): void {
+    this.applyWireSideEffects(wire, conversationId, "");
+    const event = translateWireEvent(wire);
+    if (event) {
+      this.emit(event);
+    }
+  }
+
+  /**
    * State mutations driven by wire events. Kept separate from translation so
    * the pure wire → ChatEvent mapping can live in translate.ts and be reused
    * by the replay path.
@@ -670,62 +686,70 @@ export class ChatSession {
     return id;
   }
 
-  async switchConversation(
+  /**
+   * Replay one completed turn's already-fetched events, synchronously.
+   *
+   * Fetching is the caller's job (``StreamManager.restore`` loads every turn's
+   * events in parallel and the message list once), so this is pure replay: no
+   * awaits, so the whole restore runs in a single synchronous pass and the
+   * consumer batches it into one render.
+   *
+   * ``userMessageContent`` is the prompt that triggered this turn. It's emitted
+   * as a synthetic ``user_message`` BEFORE any of the turn's events: user
+   * prompts aren't persisted in ``job_events``, and some events precede
+   * ``message_start`` in the stream (e.g. ``memory_recall`` from prompt prep),
+   * so leading with the prompt keeps the turn in order.
+   */
+  replayTurn(
     id: string,
-    jobId?: string,
-    /**
-     * User prompt that triggered this job, if known. Emitted as a
-     * synthetic ``user_message`` ChatEvent at the START of the replay —
-     * a completed job maps to exactly one user turn, so every event in it
-     * belongs beneath that prompt. User messages aren't persisted in
-     * ``job_events``, so without this the restored conversation would show
-     * the agent response with no visible prompt above it.
-     */
+    events: ConversationEvent[],
     userMessageContent?: string,
-  ): Promise<void> {
+  ): void {
     this.conversationId = id;
     this.resetStreamingState();
 
+    if (userMessageContent) {
+      this.emit({ type: "user_message", content: userMessageContent });
+    }
+
+    // The data payload is authoritative for `type` (matching how
+    // replay.ts#mapSseToChat reads it), with the SSE event name as a fallback
+    // for pre-v2 rows.
+    for (const ev of events) {
+      const type = (ev.data.type as string) || ev.event;
+      if (!type || type === "done") continue;
+
+      const wire = { ...ev.data, type } as unknown as WireEvent;
+      try {
+        this.replayWireEvent(wire, id);
+      } catch {
+        // Skip malformed replay events
+      }
+    }
+  }
+
+  /**
+   * Load a conversation's messages and replay its persisted history.
+   *
+   * Convenience for plain-``ChatSession`` consumers (the documented
+   * conversation-management API). ``StreamManager`` drives restore itself —
+   * loading messages once and replaying each turn in parallel — and does NOT
+   * call this; it's kept so direct-Session usage doesn't break.
+   *
+   * Without ``jobId`` it replays the whole conversation; with one, just that
+   * job's events.
+   */
+  async switchConversation(id: string, jobId?: string): Promise<void> {
     const [messagesResult, eventsResult] = await Promise.allSettled([
       this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
       this.client.getConversationEvents(id, jobId),
     ]);
-
     this.messages =
       messagesResult.status === "fulfilled" ? messagesResult.value : [];
-
-    // Replay stored events via the same dispatch path. The consumer
-    // rebuilds its block state from the replayed events. The data payload
-    // is authoritative for `type` (matches how replay.ts#mapSseToChat reads
-    // it) with the SSE event name as a fallback for pre-v2 rows.
-    if (eventsResult.status === "fulfilled") {
-      // Inject the user prompt BEFORE any of the job's events. Every event
-      // in a completed job belongs to this one user turn, and some precede
-      // ``message_start`` in the persisted stream — e.g. ``memory_recall``,
-      // emitted during prompt prep. Gating the prompt on ``message_start``
-      // (as this once did) replayed those events above the user's own
-      // message; leading with it keeps the turn in order.
-      if (userMessageContent) {
-        this.emit({ type: "user_message", content: userMessageContent });
-      }
-
-      for (const ev of eventsResult.value) {
-        const type = (ev.data.type as string) || ev.event;
-        if (!type || type === "done") continue;
-
-        const wire = { ...ev.data, type } as unknown as WireEvent;
-        try {
-          await this.dispatchWireEvent(
-            wire,
-            id,
-            "",
-            false, // don't execute client tools on replay
-          );
-        } catch {
-          // Skip malformed replay events
-        }
-      }
-    }
+    this.replayTurn(
+      id,
+      eventsResult.status === "fulfilled" ? eventsResult.value : [],
+    );
   }
 
   async deleteConversation(id: string): Promise<void> {

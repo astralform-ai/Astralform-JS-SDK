@@ -1,29 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { ChatSession } from "../src/session.js";
-import type { ChatEvent } from "../src/types.js";
+import type { ChatEvent, ConversationEvent } from "../src/types.js";
 
-// Local helper: conversation events + messages endpoints return JSON arrays,
-// so we can't reuse ``createSessionMockFetch`` (which treats any ``/events``
-// URL as an SSE stream for the live-job streaming path).
-function jsonMock(responses: Record<string, unknown>): typeof globalThis.fetch {
-  return async (input) => {
-    const url = typeof input === "string" ? input : (input as Request).url;
-    for (const [pattern, body] of Object.entries(responses)) {
-      if (url.includes(pattern)) {
-        return new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-    }
-    return new Response(JSON.stringify([]), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-}
+// ``replayTurn`` replays already-fetched events for one completed turn
+// synchronously. Fetching (messages once, per-turn events in parallel) is the
+// StreamManager's job now, so these tests feed the persisted event arrays
+// directly — no fetch mock needed.
 
-describe("session.switchConversation — user_message interleaving", () => {
+describe("session.replayTurn — user_message interleaving", () => {
   const baseConfig = {
     apiKey: "test-key",
     baseURL: "http://localhost:8000",
@@ -31,7 +15,9 @@ describe("session.switchConversation — user_message interleaving", () => {
   };
 
   // Persisted events for a completed turn (what conversation_events returns).
-  const persistedEvents = [
+  // Note: block_delta rows are absent — the backend strips them from the
+  // restore path, so replay never sees them.
+  const persistedEvents: ConversationEvent[] = [
     {
       seq: 0,
       event: "message_start",
@@ -83,17 +69,12 @@ describe("session.switchConversation — user_message interleaving", () => {
     },
   ];
 
-  it("emits user_message before first message_start when content is supplied", async () => {
-    const mockFetch = jsonMock({
-      "/v1/conversations/c1/messages": [],
-      "/v1/conversations/c1/events": persistedEvents,
-    });
-
-    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+  it("emits user_message before first message_start when content is supplied", () => {
+    const session = new ChatSession(baseConfig);
     const events: ChatEvent[] = [];
     session.on((e) => events.push(e));
 
-    await session.switchConversation("c1", "job-1", "Hello Tony");
+    session.replayTurn("c1", persistedEvents, "Hello Tony");
 
     const userIdx = events.findIndex((e) => e.type === "user_message");
     const startIdx = events.findIndex((e) => e.type === "message_start");
@@ -109,28 +90,22 @@ describe("session.switchConversation — user_message interleaving", () => {
     expect(userEvent.content).toBe("Hello Tony");
   });
 
-  it("does NOT emit user_message when userMessageContent is omitted", async () => {
-    const mockFetch = jsonMock({
-      "/v1/conversations/c1/messages": [],
-      "/v1/conversations/c1/events": persistedEvents,
-    });
-
-    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+  it("does NOT emit user_message when userMessageContent is omitted", () => {
+    const session = new ChatSession(baseConfig);
     const events: ChatEvent[] = [];
     session.on((e) => events.push(e));
 
-    await session.switchConversation("c1", "job-1");
+    session.replayTurn("c1", persistedEvents);
 
     expect(events.find((e) => e.type === "user_message")).toBeUndefined();
   });
 
-  it("emits user_message exactly once even across multiple message_start events in the same job", async () => {
-    // Simulates a turn with multiple LLM calls (tool use → tool result → LLM again).
-    // Each LLM call emits its own message_start/message_stop pair, but the user
-    // prompt should only surface at the FIRST message_start of the replay.
-    const multiTurnEvents = [
+  it("emits user_message exactly once even across multiple message_start events in the same turn", () => {
+    // A turn with multiple LLM calls (tool use → tool result → LLM again) emits
+    // its own message_start/message_stop pair per call, but the user prompt
+    // surfaces only at the FIRST message_start of the replay.
+    const multiCallEvents: ConversationEvent[] = [
       ...persistedEvents,
-      // Second LLM call within the same job
       {
         seq: 4,
         event: "message_start",
@@ -157,27 +132,22 @@ describe("session.switchConversation — user_message interleaving", () => {
       },
     ];
 
-    const mockFetch = jsonMock({
-      "/v1/conversations/c1/messages": [],
-      "/v1/conversations/c1/events": multiTurnEvents,
-    });
-
-    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    const session = new ChatSession(baseConfig);
     const events: ChatEvent[] = [];
     session.on((e) => events.push(e));
 
-    await session.switchConversation("c1", "job-1", "Hi");
+    session.replayTurn("c1", multiCallEvents, "Hi");
 
     const userMessages = events.filter((e) => e.type === "user_message");
     expect(userMessages).toHaveLength(1);
   });
 
-  it("emits user_message before a memory_recall that precedes message_start", async () => {
+  it("emits user_message before a memory_recall that precedes message_start", () => {
     // Auto-recall is emitted during prompt prep, so in the persisted stream it
     // lands BEFORE message_start (verified in job_events: seq0 memory_recall,
     // seq2 message_start). The synthetic prompt must still lead it, or the
     // recall chip restores above the user's own message.
-    const recallFirstEvents = [
+    const recallFirstEvents: ConversationEvent[] = [
       {
         seq: 0,
         event: "custom",
@@ -190,18 +160,13 @@ describe("session.switchConversation — user_message interleaving", () => {
       ...persistedEvents.map((e) => ({ ...e, seq: e.seq + 1 })),
     ];
 
-    const mockFetch = jsonMock({
-      "/v1/conversations/c1/messages": [],
-      "/v1/conversations/c1/events": recallFirstEvents,
-    });
-
-    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    const session = new ChatSession(baseConfig);
     const events: ChatEvent[] = [];
     session.on((e) => events.push(e));
 
-    await session.switchConversation(
+    session.replayTurn(
       "c1",
-      "job-1",
+      recallFirstEvents,
       "Reply with exactly: wire cut live",
     );
 
@@ -210,5 +175,49 @@ describe("session.switchConversation — user_message interleaving", () => {
     expect(userIdx).toBeGreaterThanOrEqual(0);
     expect(recallIdx).toBeGreaterThanOrEqual(0);
     expect(userIdx).toBeLessThan(recallIdx);
+  });
+
+  it("switchConversation (backward-compat) loads messages and replays history", async () => {
+    // ChatSession.switchConversation is documented in the README, so it stays
+    // as a convenience for plain-Session consumers even though StreamManager
+    // drives restore itself. It must not throw and must replay the events.
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = url.includes("/events") ? persistedEvents : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await session.switchConversation("c1");
+
+    // Replayed the persisted turn (block_start → block_stop landed a text block).
+    expect(events.some((e) => e.type === "block_start")).toBe(true);
+    expect(events.some((e) => e.type === "block_stop")).toBe(true);
+  });
+
+  it("replays multiple turns in order, pairing each with its own prompt", () => {
+    // Two completed turns replayed back-to-back (StreamManager calls replayTurn
+    // once per completed job). Each turn leads with its own user prompt.
+    const turn2: ConversationEvent[] = persistedEvents.map((e) => ({
+      ...e,
+      data: { ...e.data, job_id: "job-2", turn_id: "t2" },
+    }));
+
+    const session = new ChatSession(baseConfig);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    session.replayTurn("c1", persistedEvents, "first");
+    session.replayTurn("c1", turn2, "second");
+
+    const prompts = events
+      .filter((e) => e.type === "user_message")
+      .map((e) => (e as Extract<ChatEvent, { type: "user_message" }>).content);
+    expect(prompts).toEqual(["first", "second"]);
   });
 });

@@ -8,6 +8,13 @@
 - `ChatStreamRequest.enable_search` removed from the wire type.
 - `ChatSession.resendFromCheckpoint` no longer takes an options argument (its only option was `enableSearch`).
 
+**History restore is now near-instant.** Restoring a completed conversation no longer re-types itself:
+
+- The backend restore endpoint (Astralform >= 0.32) strips live-only token deltas, so `GET /v1/conversations/{id}/events` returns the collapsed block stream (~1/45th the rows on a busy chat). Restore rebuilds each block from its `block_stop` final, which was always the reducer's source of truth.
+- `StreamManager.restore` fetches the message list **once** (was once per turn) and each turn's events **in parallel** (was serial), then replays them **synchronously** so the consumer batches the whole conversation into a single render instead of one per event.
+- `StreamManager.switchTo(id, { skipHistoryReplay })` — new opt-in fast path for consumers that cache a restored conversation's rendered blocks. It moves the active pointer and loads the message list but skips the event fetch + replay and never enters the `restoring` state, so re-opening a conversation you've already viewed is instant. It still confirms via `getActiveJob` that no job is live before skipping — so a job left running across a page reload or in another tab is still reconnected — making the flag safe to pass whenever you hold cached blocks.
+- `ChatSession.replayTurn(id, events, userMessageContent?)` — new low-level primitive that synchronously replays already-fetched events (the StreamManager uses it to replay each turn). `ChatSession.switchConversation(id, jobId?)` is retained as the documented convenience that fetches messages + events and replays.
+
 ## 3.2.0
 
 - Add `ModelOption.supportsEffort` — whether the model accepts a configurable reasoning effort.
