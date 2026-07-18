@@ -408,6 +408,7 @@ describe("AstralformClient", () => {
             media_type: "application/json",
             size_bytes: 512,
             agent_name: "helper",
+            url: "https://minio.local/workspaces/c1/outputs/result.json?sig=abc",
             created_at: "2026-01-01T00:00:00Z",
           },
         ],
@@ -421,6 +422,10 @@ describe("AstralformClient", () => {
     expect(outputs[0]!.originalName).toBe("result.json");
     expect(outputs[0]!.kind).toBe("output");
     expect(outputs[0]!.agentName).toBe("helper");
+    // The freshly-signed download URL flows through the mapper.
+    expect(outputs[0]!.url).toBe(
+      "https://minio.local/workspaces/c1/outputs/result.json?sig=abc",
+    );
   });
 
   it("getJob GETs /v1/jobs/{id} and maps snake_case to camelCase", async () => {

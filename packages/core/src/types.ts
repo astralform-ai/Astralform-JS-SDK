@@ -79,8 +79,7 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
 }
 
 export type AstralformConfig =
-  | AstralformApiKeyConfig
-  | AstralformUserTokenConfig;
+  AstralformApiKeyConfig | AstralformUserTokenConfig;
 
 // --- Event type constants (SDK public) ---
 //
@@ -152,11 +151,7 @@ export type WireBlockStatus =
   | "cancelled";
 
 export type WireStopReason =
-  | "end_turn"
-  | "tool_use"
-  | "max_tokens"
-  | "context_overflow"
-  | "error";
+  "end_turn" | "tool_use" | "max_tokens" | "context_overflow" | "error";
 
 // --- BlockDelta payloads (discriminated on `channel`) ---
 
@@ -195,10 +190,7 @@ export interface WireOutputDelta {
 export interface WireStatusDelta {
   channel: "status";
   status:
-    | "executing"
-    | "awaiting_client_result"
-    | "awaiting_approval"
-    | "denied";
+    "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
   note?: string;
 }
 
@@ -345,10 +337,7 @@ export type BlockDeltaPayload =
   | {
       channel: "status";
       status:
-        | "executing"
-        | "awaiting_client_result"
-        | "awaiting_approval"
-        | "denied";
+        "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
       note?: string;
     };
 
@@ -832,5 +821,12 @@ export interface ConversationAsset {
   workspacePath?: string;
   sourceMessageId?: string;
   agentName?: string;
+  /**
+   * Freshly-signed download/preview URL. Minted per response by the backend
+   * (private `workspaces` bucket), so it reflects the current signature rather
+   * than a link baked in when the asset was created. May be absent if signing
+   * failed or the asset has no stored object.
+   */
+  url?: string;
   createdAt: string;
 }

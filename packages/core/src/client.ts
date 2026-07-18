@@ -517,6 +517,7 @@ export class AstralformClient {
       workspacePath: raw.workspace_path as string | undefined,
       sourceMessageId: raw.source_message_id as string | undefined,
       agentName: raw.agent_name as string | undefined,
+      url: raw.url as string | undefined,
       createdAt: raw.created_at as string,
     };
   }
