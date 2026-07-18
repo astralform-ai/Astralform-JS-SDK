@@ -32,6 +32,11 @@ export interface SendOptions extends ModelChoiceOptions {
   agentName?: string;
   uploadIds?: string[];
   planMode?: boolean;
+  /**
+   * Start a durable long-horizon goal for this run (goal mode) — the text is the
+   * goal objective the backend drives to completion. Omit for a normal turn.
+   */
+  goal?: string;
 }
 
 export type StreamManagerEvent =
@@ -154,6 +159,7 @@ export class StreamManager {
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,
+        goal: options?.goal,
         provider: options?.provider,
         model: options?.model,
         reasoningEffort: options?.reasoningEffort,
