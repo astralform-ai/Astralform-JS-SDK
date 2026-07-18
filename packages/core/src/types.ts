@@ -79,8 +79,7 @@ export interface AstralformUserTokenConfig extends AstralformBaseConfig {
 }
 
 export type AstralformConfig =
-  | AstralformApiKeyConfig
-  | AstralformUserTokenConfig;
+  AstralformApiKeyConfig | AstralformUserTokenConfig;
 
 // --- Event type constants (SDK public) ---
 //
@@ -152,11 +151,7 @@ export type WireBlockStatus =
   | "cancelled";
 
 export type WireStopReason =
-  | "end_turn"
-  | "tool_use"
-  | "max_tokens"
-  | "context_overflow"
-  | "error";
+  "end_turn" | "tool_use" | "max_tokens" | "context_overflow" | "error";
 
 // --- BlockDelta payloads (discriminated on `channel`) ---
 
@@ -195,10 +190,7 @@ export interface WireOutputDelta {
 export interface WireStatusDelta {
   channel: "status";
   status:
-    | "executing"
-    | "awaiting_client_result"
-    | "awaiting_approval"
-    | "denied";
+    "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
   note?: string;
 }
 
@@ -345,10 +337,7 @@ export type BlockDeltaPayload =
   | {
       channel: "status";
       status:
-        | "executing"
-        | "awaiting_client_result"
-        | "awaiting_approval"
-        | "denied";
+        "executing" | "awaiting_client_result" | "awaiting_approval" | "denied";
       note?: string;
     };
 
@@ -697,6 +686,12 @@ export interface ChatStreamRequest {
   agent_name?: string;
   plan_mode?: boolean;
   /**
+   * Start a durable long-horizon goal for this run (goal mode). The backend mints
+   * an agent_goal from this text and drives the run under a budget until the
+   * objective is genuinely complete. A blank/omitted value runs a normal turn.
+   */
+  goal?: string;
+  /**
    * Per-request model choice (client-side model selection), wire shape.
    * `provider` and `model` are paired; omit to reuse the thread's last model.
    */
@@ -801,6 +796,12 @@ export interface SendOptions extends ModelChoiceOptions {
   uploadIds?: string[];
   agentName?: string;
   planMode?: boolean;
+  /**
+   * Start a durable long-horizon goal for this run (goal mode). The text becomes
+   * the goal's objective; the backend keeps the agent working under a budget until
+   * it's complete. Omit for a normal turn.
+   */
+  goal?: string;
 }
 
 /**
