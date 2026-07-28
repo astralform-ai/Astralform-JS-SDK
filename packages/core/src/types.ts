@@ -28,8 +28,9 @@ export type { AgentIdentity, MemoryRecord, TodoItem };
 //
 // * User-token mode — An app acting on behalf of an Astralform account
 //   holder (AstralChat, future 3rd-party integrations). The OIDC access
-//   token is issued by the Astralform Identity Provider (Supabase OAuth 2.1
-//   Server); agent scoping comes from the `X-Agent-ID` header.
+//   token is issued by the Astralform Identity Provider (our OAuth 2.1
+//   Server at auth.astralform.ai); agent scoping comes from the
+//   `X-Agent-ID` header.
 
 interface AstralformBaseConfig {
   /** Override the default API origin. Defaults to https://api.astralform.ai. */
