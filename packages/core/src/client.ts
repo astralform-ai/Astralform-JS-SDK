@@ -293,6 +293,11 @@ export class AstralformClient {
     return response;
   }
 
+  // DO NOT refactor these back into `request()` + `.json()`. Parsing the body
+  // INSIDE the raced callback is the entire fix: `json()` outside the deadline
+  // is the original bug (headers arrive, body stalls, caller hangs forever).
+  // `request()` survives for `del()`, which never reads the body.
+
   async get<T>(path: string): Promise<T> {
     return this.withDeadline(async (signal) => {
       const response = await this.send("GET", path, undefined, signal);
