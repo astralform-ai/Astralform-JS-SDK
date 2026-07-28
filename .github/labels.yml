@@ -37,11 +37,8 @@
 - name: sentry
   description: Auto-created from Sentry crash. Type set by routine; triage adds priority and area.
   color: "444444"
-- name: supabase-advisor
-  description: Auto-created from Supabase advisor. Security implied; triage adds priority.
-  color: "444444"
 
-# ---- SEVERITY axis ---- (applied by routines based on Sentry/Supabase metadata)
+# ---- SEVERITY axis ---- (applied by routines based on Sentry metadata)
 - name: severity:error
   description: Crash, exception, or hard failure.
   color: "e11d21"

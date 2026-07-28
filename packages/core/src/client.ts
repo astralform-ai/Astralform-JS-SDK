@@ -127,7 +127,7 @@ export class AstralformClient {
 
   /**
    * Replace the current OIDC access token without reconstructing the client.
-   * Use after refreshing via the host's token manager (e.g., Supabase JS SDK).
+   * Use after refreshing via the host app's own token manager.
    * Throws if the client was created in API-key mode.
    */
   updateAccessToken(accessToken: string): void {
