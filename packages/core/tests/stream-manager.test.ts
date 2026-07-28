@@ -165,4 +165,64 @@ describe("StreamManager", () => {
     expect(states).toContain("restoring");
     expect(manager.state).toBe("idle");
   });
+
+  it("replays /jobs + /events even when /messages fails", async () => {
+    // The rendered bubbles come from job_events, not from /messages — that
+    // endpoint only supplies user-prompt text for pairing. So a failing (or,
+    // before the request deadline, a stalling) /messages must not prevent the
+    // replay: the assistant side still renders, only the synthetic user
+    // bubble is skipped.
+    const calls = { jobs: 0, events: 0, messages: 0 };
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+
+      if (url.includes("/active-job")) return json({ job_id: null });
+      if (url.includes("/conversations/c1/messages")) {
+        calls.messages++;
+        return new Response(JSON.stringify({ detail: "boom" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/c1/jobs")) {
+        calls.jobs++;
+        return json([{ job_id: "job-done", status: "completed" }]);
+      }
+      if (url.includes("/conversations/c1/events")) {
+        calls.events++;
+        return json([
+          {
+            event: "message_start",
+            data: {
+              type: "message_start",
+              turn_id: "t1",
+              job_id: "job-done",
+              model: "test-model",
+              seq: 0,
+              ts: 0,
+            },
+          },
+        ]);
+      }
+      return json([]);
+    };
+
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    const manager = new StreamManager(session);
+    const events: string[] = [];
+    manager.on((e) => events.push(e.type));
+
+    await manager.switchTo("c1");
+
+    expect(calls.messages).toBe(1);
+    expect(calls.jobs).toBeGreaterThanOrEqual(1);
+    expect(calls.events).toBe(1); // the replay actually ran
+    expect(events).toContain("versionsReady");
+    expect(manager.state).toBe("idle");
+  });
 });

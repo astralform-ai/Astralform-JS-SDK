@@ -61,8 +61,14 @@ const session = new ChatSession({
   userId: "user-123",       // Required — identifies the end user
   baseURL: "http://localhost:8000", // Optional — defaults to https://api.astralform.ai
   fetch: customFetch,       // Optional — custom fetch implementation
+  timeoutMs: 30_000,        // Optional — REST request deadline, defaults to 30s
 });
 ```
+
+`timeoutMs` bounds each REST request end to end — connect, headers, and the
+body read — rejecting with `ConnectionError` when it expires. File uploads and
+the SSE stream are exempt: both are long-running by design, and the stream
+carries its own `AbortSignal`.
 
 ## Events
 

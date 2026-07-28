@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.2.0
+
+**REST requests now have a deadline.** A response whose headers arrived but whose body stalled used to hang forever: `json()` ran outside every error guard, and no request carried an `AbortSignal`. A stalled `getMessages` could park `StreamManager.restore()` before it ever fetched the `/jobs` + `/events` it renders from, leaving the conversation stuck on an empty view with no error and no retry.
+
+- New `timeoutMs` config option (default `30_000`) on both auth modes. One deadline covers connect, headers, **and** the body read; on expiry the request aborts (freeing the socket) and rejects with `ConnectionError`. The deadline is enforced by a race, so it holds even for an injected `fetch` that ignores the signal.
+- Does **not** apply to `uploadFile` (large files on slow uplinks) or to SSE streaming, which is long-lived by design and carries its own `AbortSignal`.
+
+## 4.1.0
+
+- Add `goal` to `ChatStreamRequest` for goal mode.
+
 ## 4.0.0
 
 **Breaking: `enableSearch` / `enable_search` removed — requires a backend with always-on search (Astralform >= 0.32).** Search is no longer a per-request client decision: when the agent's search feature is enabled server-side, the search tools are always available and the agent decides per-task whether to use them.

@@ -36,6 +36,13 @@ interface AstralformBaseConfig {
   baseURL?: string;
   /** Supply a custom fetch (SSR, testing, custom interceptors). */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Abort a REST request — connect, headers, AND body read — after this many
+   * milliseconds. Defaults to 30_000. Does not apply to `uploadFile` (large
+   * files on slow uplinks) or to SSE streaming, which is long-lived by design
+   * and carries its own `AbortSignal`.
+   */
+  timeoutMs?: number;
 }
 
 export interface AstralformApiKeyConfig extends AstralformBaseConfig {
