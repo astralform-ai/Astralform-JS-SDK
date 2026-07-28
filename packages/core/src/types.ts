@@ -36,6 +36,19 @@ interface AstralformBaseConfig {
   baseURL?: string;
   /** Supply a custom fetch (SSR, testing, custom interceptors). */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Abort a REST request — connect, headers, AND body read — after this many
+   * milliseconds. Defaults to 30_000. Does not apply to `uploadFile` (large
+   * files on slow uplinks) or to SSE streaming, which is long-lived by design
+   * and carries its own `AbortSignal`.
+   *
+   * Note that unlike axios and friends, `0` does NOT mean "no timeout": any
+   * non-positive or non-finite value falls back to the default. REST calls
+   * cannot opt out of the deadline — an unbounded REST request is the bug
+   * this exists to prevent, and it fails silently (a stalled body strands the
+   * caller forever with nothing to react to).
+   */
+  timeoutMs?: number;
 }
 
 export interface AstralformApiKeyConfig extends AstralformBaseConfig {

@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { AstralformClient } from "../src/client.js";
 import {
   AuthenticationError,
+  ConnectionError,
   RateLimitError,
   ServerError,
 } from "../src/errors.js";
@@ -1086,5 +1087,88 @@ describe("team/agent discovery (user-token mode)", () => {
     await client.listAgents("team/1 x");
 
     expect(calls[0]).toBe("http://localhost:8000/v1/teams/team%2F1%20x/agents");
+  });
+});
+
+describe("AstralformClient - request deadline", () => {
+  const config = {
+    apiKey: "test-key",
+    baseURL: "http://localhost:8000",
+    userId: "user-1",
+  };
+
+  it("times out when the response never arrives", async () => {
+    // A fetch that ignores the abort signal entirely — the deadline must
+    // still reject, or callers await forever.
+    const mockFetch: typeof globalThis.fetch = () => new Promise(() => {});
+
+    const client = new AstralformClient({
+      ...config,
+      fetch: mockFetch,
+      timeoutMs: 5000,
+    });
+
+    vi.useFakeTimers();
+    const p = client.getHealth();
+    // Attach the rejection handler before advancing so the rejection is
+    // never momentarily unhandled.
+    const assertion = expect(p).rejects.toThrow(ConnectionError);
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    vi.useRealTimers();
+  });
+
+  it("times out when headers arrive but the body stalls", async () => {
+    // The regression that stranded conversation restores: `json()` used to
+    // run outside every guard, so a half-delivered response hung forever
+    // even though the request itself had "succeeded".
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start() {
+            /* never enqueues, never closes */
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+
+    const client = new AstralformClient({
+      ...config,
+      fetch: mockFetch,
+      timeoutMs: 5000,
+    });
+
+    vi.useFakeTimers();
+    const p = client.getHealth();
+    const assertion = expect(p).rejects.toThrow(/timed out after 5000ms/);
+    await vi.advanceTimersByTimeAsync(5000);
+    await assertion;
+    vi.useRealTimers();
+  });
+
+  it("passes an abort signal so a real fetch can free the socket", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const mockFetch: typeof globalThis.fetch = async (_input, init) => {
+      capturedSignal = init?.signal ?? undefined;
+      return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    await client.getHealth();
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
+  it("does not time out a request that completes in time", async () => {
+    const mockFetch: typeof globalThis.fetch = async () =>
+      new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+    const client = new AstralformClient({
+      ...config,
+      fetch: mockFetch,
+      timeoutMs: 5000,
+    });
+
+    await expect(client.getHealth()).resolves.toEqual({ status: "ok" });
   });
 });

@@ -29,6 +29,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.astralform.ai";
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 function validateBaseURL(url: string): string {
   const cleaned = url.replace(/\/+$/, "");
@@ -69,6 +70,7 @@ type AuthMode =
 export class AstralformClient {
   private readonly baseURL: string;
   private readonly fetchFn: typeof globalThis.fetch;
+  private readonly timeoutMs: number;
   /**
    * Auth state is mutable so callers can rotate access tokens or switch
    * agent context without re-instantiating the client. API-key mode is
@@ -115,6 +117,12 @@ export class AstralformClient {
 
     this.baseURL = validateBaseURL(config.baseURL ?? DEFAULT_BASE_URL);
     this.fetchFn = config.fetch ?? globalThis.fetch.bind(globalThis);
+    this.timeoutMs =
+      typeof config.timeoutMs === "number" &&
+      Number.isFinite(config.timeoutMs) &&
+      config.timeoutMs > 0
+        ? config.timeoutMs
+        : DEFAULT_TIMEOUT_MS;
   }
 
   /**
@@ -215,15 +223,67 @@ export class AstralformClient {
     };
   }
 
+  /**
+   * Run one REST exchange under a single deadline covering connect, headers,
+   * AND the body read. The body read is the part that matters: `json()` used
+   * to sit outside every guard, so a response whose headers arrived but whose
+   * body stalled hung forever — silently stranding callers that await it
+   * (a stalled `getMessages` used to leave `StreamManager.restore()` parked
+   * before it ever fetched the events it renders from).
+   *
+   * The controller is created per request and is deliberately NOT the
+   * session's — that one means "the user cancelled this turn" and is null
+   * outside a live turn. Aborting frees the socket; the race guarantees a
+   * rejection even when an injected `fetch` ignores the signal.
+   */
+  private async withDeadline<T>(
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timedOut = () =>
+      new ConnectionError(`Request timed out after ${this.timeoutMs}ms`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(timedOut());
+      }, this.timeoutMs);
+    });
+    try {
+      // Promise.race subscribes to both inputs, so the loser's later
+      // rejection (the abort landing after the deadline won) counts as
+      // handled and can't surface as an unhandled rejection.
+      return await Promise.race([run(controller.signal), deadline]);
+    } catch (err) {
+      // A signal-honouring fetch rejects with AbortError before the race
+      // settles — normalize it to the same timeout error either way.
+      if (controller.signal.aborted) throw timedOut();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async request(
     method: string,
     path: string,
     body?: unknown,
   ): Promise<Response> {
+    return this.withDeadline((signal) => this.send(method, path, body, signal));
+  }
+
+  /** Fetch + status handling. Always called inside `withDeadline`. */
+  private async send(
+    method: string,
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+  ): Promise<Response> {
     const response = await this.fetchFn(`${this.baseURL}${path}`, {
       method,
       headers: this.headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
     }).catch((err) => {
       throw new ConnectionError(
         err instanceof Error ? err.message : "Failed to connect",
@@ -233,14 +293,23 @@ export class AstralformClient {
     return response;
   }
 
+  // DO NOT refactor these back into `request()` + `.json()`. Parsing the body
+  // INSIDE the raced callback is the entire fix: `json()` outside the deadline
+  // is the original bug (headers arrive, body stalls, caller hangs forever).
+  // `request()` survives for `del()`, which never reads the body.
+
   async get<T>(path: string): Promise<T> {
-    const response = await this.request("GET", path);
-    return response.json() as Promise<T>;
+    return this.withDeadline(async (signal) => {
+      const response = await this.send("GET", path, undefined, signal);
+      return (await response.json()) as T;
+    });
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await this.request("POST", path, body);
-    return response.json() as Promise<T>;
+    return this.withDeadline(async (signal) => {
+      const response = await this.send("POST", path, body, signal);
+      return (await response.json()) as T;
+    });
   }
 
   private async del(path: string): Promise<void> {
