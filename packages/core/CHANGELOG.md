@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.3.0
+
+**The conversation list can now be paged — previously it could not be, and history past the first page was unreachable.** `connect()` fetched exactly one page of 50 and nothing ever requested a second, so a user with more than 50 conversations simply could not see the older ones from the SDK's `conversations` array.
+
+- `ChatSession.loadMoreConversations()` — appends the next page and returns only what it actually added. Resolves `[]` when there is nothing more or a load is already in flight; rejects on network failure with `hasMoreConversations` left true so the caller can retry.
+- `ChatSession.hasMoreConversations` / `isLoadingConversations` — state for rendering an infinite-scroll sentinel.
+- `CONVERSATION_PAGE_SIZE` (50) exported; `connect()` and `loadMoreConversations()` share it.
+
+The offset is derived from the ids the **server** has returned, not from `conversations.length`. The array is also mutated locally — `createNewConversation` and the auto-created conversation in `consumeJobStream` both unshift — so a length-based offset would request the next page one row too far and silently drop a conversation. For the same reason `deleteConversation` now pulls the offset back one when it removes a server-sourced conversation, since deleting shifts every later page up by one. Conversations re-served in a later page (the list is `updated_at DESC`, so a bumped conversation can appear twice) are deduped rather than appended twice.
+
 ## 4.2.0
 
 **REST requests now have a deadline.** A response whose headers arrived but whose body stalled used to hang forever: `json()` ran outside every error guard, and no request carried an `AbortSignal`. A stalled `getMessages` could park `StreamManager.restore()` before it ever fetched the `/jobs` + `/events` it renders from, leaving the conversation stuck on an empty view with no error and no retry.

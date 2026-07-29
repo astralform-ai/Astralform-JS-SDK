@@ -42,6 +42,14 @@ const SSE_MAX_RECONNECTS = 6;
 // submission*, and retrying the POST avoids re-executing a client tool.
 const TOOL_RESULT_MAX_RETRIES = 3;
 
+/**
+ * Conversations fetched per page, by ``connect`` and ``loadMoreConversations``
+ * alike. The two must use the same size: the offset is derived from how many
+ * rows the server has returned so far, so a first page of a different size
+ * would leave the second page's offset pointing at the wrong row.
+ */
+export const CONVERSATION_PAGE_SIZE = 50;
+
 function sseReconnectDelayMs(attempt: number): number {
   return Math.min(500 * 2 ** (attempt - 1), 5000);
 }
@@ -76,6 +84,17 @@ export class ChatSession {
   // State
   conversationId: string | null = null;
   conversations: Conversation[] = [];
+  /**
+   * Whether another page of conversations may exist on the server.
+   *
+   * Inferred from the last page being full, since the list endpoint returns a
+   * bare array with no total. A total that happens to be an exact multiple of
+   * the page size therefore costs one extra empty request before this flips —
+   * cheaper than adding a count query to every list call.
+   */
+  hasMoreConversations = false;
+  /** True while ``loadMoreConversations`` is in flight. */
+  isLoadingConversations = false;
   messages: Message[] = [];
   isStreaming = false;
   agentStatus: AgentStatus | null = null;
@@ -83,6 +102,20 @@ export class ChatSession {
   skills: SkillInfo[] = [];
   enabledClientTools = new Set<string>();
   modelDisplayName: string | null = null;
+
+  /**
+   * Ids of conversations the SERVER has handed us, which is the paging offset.
+   *
+   * Deliberately not ``conversations.length``. That array also holds
+   * conversations created locally and unshifted on top (``createNewConversation``,
+   * and the auto-created conversation in ``consumeJobStream``), so using its
+   * length as the offset would over-count and silently skip a row of real
+   * history on the next page. Tracking ids rather than a counter also makes
+   * deletion self-correcting: removing a server-sourced conversation shifts
+   * every later page up by one, and dropping its id from this set is exactly
+   * that shift — while deleting a purely local one correctly changes nothing.
+   */
+  private serverConversationIds = new Set<string>();
 
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
@@ -119,7 +152,7 @@ export class ChatSession {
   async connect(): Promise<void> {
     const [status, conversations, agents, skills] = await Promise.allSettled([
       this.client.getAgentStatus(),
-      this.client.getConversations(),
+      this.client.getConversations(CONVERSATION_PAGE_SIZE),
       this.client.getAgents().catch(() => [] as AgentInfo[]),
       this.client.getSkills().catch(() => [] as SkillInfo[]),
     ]);
@@ -128,7 +161,14 @@ export class ChatSession {
       this.agentStatus = status.value;
     }
     if (conversations.status === "fulfilled") {
+      // Reconnect re-seeds page 1, so reset the paging state with it rather
+      // than letting a previous connection's offset carry over.
       this.conversations = conversations.value;
+      this.serverConversationIds = new Set(
+        conversations.value.map((c) => c.id),
+      );
+      this.hasMoreConversations =
+        conversations.value.length === CONVERSATION_PAGE_SIZE;
     }
     if (agents.status === "fulfilled") {
       this.agents = agents.value;
@@ -753,6 +793,41 @@ export class ChatSession {
     );
   }
 
+  /**
+   * Append the next page of conversation history to ``conversations``.
+   *
+   * The list is ordered ``updated_at DESC`` and paged by offset, so a
+   * conversation bumped to the top mid-scroll can surface again in a later
+   * page; ids already held are dropped rather than duplicated. Returns only
+   * the conversations actually appended, which may be empty even on a full
+   * page. Rejects on network failure with ``hasMoreConversations`` still true,
+   * so the caller can retry.
+   */
+  async loadMoreConversations(): Promise<Conversation[]> {
+    // Scroll handlers fire far faster than the request completes; without this
+    // guard every frame would refetch the same offset.
+    if (this.isLoadingConversations || !this.hasMoreConversations) return [];
+    this.isLoadingConversations = true;
+    try {
+      const page = await this.client.getConversations(
+        CONVERSATION_PAGE_SIZE,
+        this.serverConversationIds.size,
+      );
+      this.hasMoreConversations = page.length === CONVERSATION_PAGE_SIZE;
+      const fresh = page.filter((c) => !this.serverConversationIds.has(c.id));
+      for (const c of page) this.serverConversationIds.add(c.id);
+      // A locally-created conversation can already sit in the array from its
+      // unshift; count it toward the offset (the server did return it) but
+      // don't append a second copy.
+      const known = new Set(this.conversations.map((c) => c.id));
+      const appended = fresh.filter((c) => !known.has(c.id));
+      this.conversations.push(...appended);
+      return appended;
+    } finally {
+      this.isLoadingConversations = false;
+    }
+  }
+
   async deleteConversation(id: string): Promise<void> {
     try {
       await this.client.deleteConversation(id);
@@ -760,6 +835,11 @@ export class ChatSession {
       // May already be deleted on backend
     }
     await this.storage.deleteConversation(id);
+    // Shrinks the paging offset iff the server had handed us this one — every
+    // later page now shifts up by one, and without this the next page would
+    // skip a conversation. A purely local conversation isn't in the set, so
+    // deleting it correctly leaves the offset alone.
+    this.serverConversationIds.delete(id);
     this.conversations = this.conversations.filter((c) => c.id !== id);
     if (this.conversationId === id) {
       this.conversationId = null;
