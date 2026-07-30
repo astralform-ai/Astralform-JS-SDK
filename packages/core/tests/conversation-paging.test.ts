@@ -268,8 +268,11 @@ function mutableServer(ids: string[]) {
  * offset.
  */
 function gatedServer(total: number) {
+  const state = {
+    ids: Array.from({ length: total }, (_, i) => `c${i}`),
+  };
   const pending = new Map<number, () => void>();
-  const fetch = (async (input: RequestInfo | URL) => {
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === "string" ? input : input.toString());
     if (url.pathname === "/v1/conversations") {
       const limit = Number(url.searchParams.get("limit"));
@@ -277,21 +280,35 @@ function gatedServer(total: number) {
       if (gate.failing.has(offset)) {
         return new Response("nope", { status: 500 });
       }
-      const body = Array.from(
-        { length: Math.max(0, Math.min(limit, total - offset)) },
-        (_, i) => conv(`c${offset + i}`),
-      );
+      // Body is built when the response is SENT, not when the request arrives,
+      // so a held request models a server query that runs after whatever
+      // mutations happened in between.
       const respond = () =>
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        new Response(
+          JSON.stringify(
+            state.ids.slice(offset, offset + limit).map((id) => conv(id)),
+          ),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
       if (gate.held.has(offset)) {
         return new Promise<Response>((resolve) => {
           pending.set(offset, () => resolve(respond()));
         });
       }
       return respond();
+    }
+    // DELETE /v1/conversations/{id} — remove it from the server's list so
+    // subsequent offsets shift, exactly as the real endpoint would.
+    if (
+      init?.method === "DELETE" &&
+      url.pathname.startsWith("/v1/conversations/")
+    ) {
+      const id = decodeURIComponent(url.pathname.split("/").pop() ?? "");
+      state.ids = state.ids.filter((x) => x !== id);
+      return new Response(JSON.stringify({ id }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
     return new Response(JSON.stringify([]), {
       status: 200,
@@ -308,17 +325,20 @@ function gatedServer(total: number) {
     fail(offset: number) {
       gate.failing.add(offset);
     },
-    async release(offset: number) {
-      // Wait for the request to actually arrive before releasing it.
-      for (let i = 0; i < 100 && !pending.has(offset); i++) {
+    /** Wait for the held request to arrive, then let it answer. */
+    async arrived(offset: number) {
+      for (let i = 0; i < 200 && !pending.has(offset); i++) {
         await Promise.resolve();
       }
+    },
+    async release(offset: number) {
+      await gate.arrived(offset);
       gate.held.delete(offset);
       pending.get(offset)?.();
       pending.delete(offset);
     },
   };
-  return { fetch, gate };
+  return { fetch, gate, state };
 }
 
 describe("conversation paging — reconnect during an in-flight page", () => {
@@ -359,6 +379,55 @@ describe("conversation paging — reconnect during an in-flight page", () => {
         (_, i) => `c${CONVERSATION_PAGE_SIZE + i}`,
       ),
     );
+  });
+
+  it("discards a page in flight across a server-sourced delete", async () => {
+    // Same TOCTOU as the reconnect case, via deleteConversation: the offset was
+    // computed pre-delete, but the server evaluates the query post-delete, so
+    // the page starts one row late. The delete's own offset adjustment is
+    // correct for FUTURE requests and cannot rescue one already in flight.
+    const TOTAL = CONVERSATION_PAGE_SIZE * 3;
+    const { fetch, gate } = gatedServer(TOTAL);
+    const session = new ChatSession({ ...baseConfig, fetch });
+
+    await session.connect(); // c0..c49
+    gate.hold(CONVERSATION_PAGE_SIZE);
+    const inFlight = session.loadMoreConversations();
+    await gate.arrived(CONVERSATION_PAGE_SIZE);
+
+    // c0 removed server-side while the offset-50 query is still outstanding.
+    await session.deleteConversation("c0");
+
+    await gate.release(CONVERSATION_PAGE_SIZE);
+    expect(await inFlight).toEqual([]); // stale — dropped
+
+    // Paging resumes from the corrected offset (49) and picks up c50, which the
+    // stale response would have skipped straight past.
+    const next = await session.loadMoreConversations();
+    expect(next[0].id).toBe(`c${CONVERSATION_PAGE_SIZE}`);
+    expect(session.conversations.map((c) => c.id)).toContain(
+      `c${CONVERSATION_PAGE_SIZE}`,
+    );
+  });
+
+  it("keeps an in-flight page across a purely local delete", async () => {
+    // A local-only conversation was never in the server's list, so removing it
+    // shifts no offsets and the in-flight page is still valid.
+    const TOTAL = CONVERSATION_PAGE_SIZE * 3;
+    const { fetch, gate } = gatedServer(TOTAL);
+    const session = new ChatSession({ ...baseConfig, fetch });
+
+    await session.connect();
+    const localId = await session.createNewConversation();
+
+    gate.hold(CONVERSATION_PAGE_SIZE);
+    const inFlight = session.loadMoreConversations();
+    await gate.arrived(CONVERSATION_PAGE_SIZE);
+
+    await session.deleteConversation(localId);
+
+    await gate.release(CONVERSATION_PAGE_SIZE);
+    expect(await inFlight).toHaveLength(CONVERSATION_PAGE_SIZE);
   });
 
   it("keeps an in-flight page when connect()'s own list fetch fails", async () => {

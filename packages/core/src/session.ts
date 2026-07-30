@@ -886,7 +886,16 @@ export class ChatSession {
     // later page now shifts up by one, and without this the next page would
     // skip a conversation. A purely local conversation isn't in the set, so
     // deleting it correctly leaves the offset alone.
-    this.serverConversationIds.delete(id);
+    //
+    // ``Set.delete`` reports whether it was there, which is exactly the
+    // "was this server-sourced?" test. When it was, any page ALREADY in flight
+    // is now stale for the same reason as a reconnect: its offset was computed
+    // pre-delete but the server evaluates the query post-delete, so it starts
+    // one row late and would skip that row for good. The adjustment above fixes
+    // future requests and cannot rescue an outstanding one — so invalidate it.
+    if (this.serverConversationIds.delete(id)) {
+      this.conversationsGeneration++;
+    }
     this.conversations = this.conversations.filter((c) => c.id !== id);
     if (this.conversationId === id) {
       this.conversationId = null;
