@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.3.0
+
+**The conversation list can now be paged — previously it could not be, and history past the first page was unreachable.** `connect()` fetched exactly one page of 50 and nothing ever requested a second, so a user with more than 50 conversations simply could not see the older ones from the SDK's `conversations` array.
+
+- `ChatSession.loadMoreConversations()` — appends the next page and returns only what it actually added. Resolves `[]` when there is nothing more or a load is already in flight; rejects on network failure with `hasMoreConversations` left true so the caller can retry.
+- `ChatSession.hasMoreConversations` / `isLoadingConversations` — state for rendering an infinite-scroll sentinel.
+- `CONVERSATION_PAGE_SIZE` (50) exported; `connect()` and `loadMoreConversations()` share it.
+
+A page request in flight when the paging state changes underneath it — `connect()` re-seeding the list, or `deleteConversation` removing a server-sourced row — is discarded via a paging generation token. Applying it would append the wrong rows on top of the fresh page-1 state — leaving a page-sized hole — and leave the offset too high, so every later request re-fetched the same offset and paging never advanced again. In both cases the offset was computed before the change but the server evaluates the query after it, so the response starts at the wrong row. The invalidation is tied to the offset actually moving: a `connect()` whose own list fetch fails, or a delete of a purely local conversation, leaves it intact and the in-flight page still applies.
+
+**Known limitation:** offset paging is only stable while the already-consumed prefix is. Perturbations this session causes are corrected for, but one it never observes — a not-yet-loaded conversation bumped to the top by a routine or another device, or a conversation deleted from another tab — shifts the prefix underneath the offset and costs at most one conversation off the list until the next `connect()`, which re-seeds page 1 and recovers it. Nothing is lost server-side. Both cases are pinned by tests. Closing the gap needs keyset paging on `(updated_at, id)` server-side; tracking ids client-side cannot discover a row that moved into a region already scanned.
+
+The offset is derived from the ids the **server** has returned, not from `conversations.length`. The array is also mutated locally — `createNewConversation` and the auto-created conversation in `consumeJobStream` both unshift — so a length-based offset would request the next page one row too far and silently drop a conversation. For the same reason `deleteConversation` now pulls the offset back one when it removes a server-sourced conversation, since deleting shifts every later page up by one. Conversations re-served in a later page (the list is `updated_at DESC`, so a bumped conversation can appear twice) are deduped rather than appended twice.
+
 ## 4.2.0
 
 **REST requests now have a deadline.** A response whose headers arrived but whose body stalled used to hang forever: `json()` ran outside every error guard, and no request carried an `AbortSignal`. A stalled `getMessages` could park `StreamManager.restore()` before it ever fetched the `/jobs` + `/events` it renders from, leaving the conversation stuck on an empty view with no error and no retry.

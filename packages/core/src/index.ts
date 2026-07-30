@@ -1,6 +1,6 @@
 // Core classes
 export { AstralformClient } from "./client.js";
-export { ChatSession } from "./session.js";
+export { ChatSession, CONVERSATION_PAGE_SIZE } from "./session.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
 export { InMemoryStorage, type ChatStorage } from "./storage.js";
 
