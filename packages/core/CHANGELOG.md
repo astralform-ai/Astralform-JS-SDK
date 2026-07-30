@@ -8,6 +8,8 @@
 - `ChatSession.hasMoreConversations` / `isLoadingConversations` — state for rendering an infinite-scroll sentinel.
 - `CONVERSATION_PAGE_SIZE` (50) exported; `connect()` and `loadMoreConversations()` share it.
 
+**Known limitation:** offset paging is only stable while the already-consumed prefix is. Perturbations this session causes are corrected for, but one it never observes — a not-yet-loaded conversation bumped to the top by a routine or another device, or a conversation deleted from another tab — shifts the prefix underneath the offset and costs at most one conversation off the list until the next `connect()`, which re-seeds page 1 and recovers it. Nothing is lost server-side. Both cases are pinned by tests. Closing the gap needs keyset paging on `(updated_at, id)` server-side; tracking ids client-side cannot discover a row that moved into a region already scanned.
+
 The offset is derived from the ids the **server** has returned, not from `conversations.length`. The array is also mutated locally — `createNewConversation` and the auto-created conversation in `consumeJobStream` both unshift — so a length-based offset would request the next page one row too far and silently drop a conversation. For the same reason `deleteConversation` now pulls the offset back one when it removes a server-sourced conversation, since deleting shifts every later page up by one. Conversations re-served in a later page (the list is `updated_at DESC`, so a bumped conversation can appear twice) are deduped rather than appended twice.
 
 ## 4.2.0

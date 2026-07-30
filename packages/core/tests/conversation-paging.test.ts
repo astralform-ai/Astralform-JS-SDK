@@ -231,3 +231,87 @@ describe("conversation paging", () => {
     expect(session.conversations).toHaveLength(CONVERSATION_PAGE_SIZE * 2);
   });
 });
+
+/**
+ * A mutable server-side ordered list, sliced by limit/offset exactly like the
+ * real endpoint (`ORDER BY updated_at DESC LIMIT $n OFFSET $m`). Mutating
+ * `state.ids` between calls is how these tests stand in for another
+ * tab/device/routine changing the list mid-scroll.
+ */
+function mutableServer(ids: string[]) {
+  const state = { ids: [...ids] };
+  const fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v1/conversations") {
+      const limit = Number(url.searchParams.get("limit"));
+      const offset = Number(url.searchParams.get("offset"));
+      const body = state.ids
+        .slice(offset, offset + limit)
+        .map((id) => conv(id));
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof globalThis.fetch;
+  return { state, fetch };
+}
+
+/**
+ * Known limitations of offset paging, pinned so they stay deliberate.
+ *
+ * These assert the CURRENT behaviour, including the miss — they are
+ * documentation, not approval. Offset paging is only stable while the consumed
+ * prefix is; a perturbation this session never observes shifts it underneath us.
+ * Both cases below cost one conversation until the next `connect()`, and both
+ * would be closed by keyset paging on `(updated_at, id)` — a backend change. If
+ * that lands, these tests SHOULD fail; flip them to assert no miss.
+ */
+describe("conversation paging — known offset-drift limitations", () => {
+  const TOTAL = CONVERSATION_PAGE_SIZE * 3;
+  const allIds = Array.from({ length: TOTAL }, (_, i) => `c${i}`);
+
+  it("misses a not-yet-loaded conversation bumped into the consumed prefix", async () => {
+    const { state, fetch } = mutableServer(allIds);
+    const session = new ChatSession({ ...baseConfig, fetch });
+
+    await session.connect(); // holds c0..c49
+    // c100 was never loaded; a headless routine posts to it and it jumps to the
+    // top, pushing every row down one. Offset 50 now points at what was 49.
+    state.ids = ["c100", ...allIds.filter((id) => id !== "c100")];
+
+    await session.loadMoreConversations();
+    await session.loadMoreConversations();
+
+    const held = new Set(session.conversations.map((c) => c.id));
+    expect(held.has("c100")).toBe(false); // the documented miss
+    expect(held.size).toBe(TOTAL - 2); // c100 + the one row paging ran past
+
+    // ...and it is transient: reconnect re-seeds page 1, which now leads with c100.
+    await session.connect();
+    expect(session.conversations.map((c) => c.id)).toContain("c100");
+  });
+
+  it("skips one row when a conversation is deleted by another session", async () => {
+    const { state, fetch } = mutableServer(allIds);
+    const session = new ChatSession({ ...baseConfig, fetch });
+
+    await session.connect(); // holds c0..c49
+    // Deleted elsewhere, so this instance's deleteConversation never runs and
+    // the offset is never pulled back. The list shrinks under us.
+    state.ids = state.ids.filter((id) => id !== "c10");
+
+    await session.loadMoreConversations();
+
+    const held = new Set(session.conversations.map((c) => c.id));
+    expect(held.has("c50")).toBe(false); // offset 50 landed on c51
+    expect(held.has("c51")).toBe(true);
+
+    await session.connect();
+    expect(session.conversations.map((c) => c.id)).toContain("c50");
+  });
+});

@@ -802,6 +802,29 @@ export class ChatSession {
    * the conversations actually appended, which may be empty even on a full
    * page. Rejects on network failure with ``hasMoreConversations`` still true,
    * so the caller can retry.
+   *
+   * KNOWN LIMITATION — offset paging is only stable while the prefix already
+   * consumed stays put. The offset tracking here corrects for perturbations
+   * THIS session causes (local unshifts, ``deleteConversation``), but not for
+   * ones it never sees:
+   *
+   * - a conversation this session hasn't loaded yet is bumped to the top (a
+   *   headless routine or another device posting to it), pushing the whole
+   *   list down — it lands inside the consumed prefix, which no later offset
+   *   revisits;
+   * - a conversation is deleted from another tab/device, shrinking the list so
+   *   the next offset lands one row too far in.
+   *
+   * Each perturbation costs at most one conversation off the sidebar, and only
+   * until the next ``connect()`` — that re-seeds page 1 and resets the paging
+   * state, so a reload or reconnect always recovers it. Nothing is lost
+   * server-side. Both cases are pinned by tests in
+   * ``tests/conversation-paging.test.ts``.
+   *
+   * Closing the gap properly needs a stable server cursor (keyset paging on
+   * ``(updated_at, id)``) rather than a raw offset, which is a backend change —
+   * tracking ids client-side cannot discover a row that moved into a region
+   * already scanned.
    */
   async loadMoreConversations(): Promise<Conversation[]> {
     // Scroll handlers fire far faster than the request completes; without this
