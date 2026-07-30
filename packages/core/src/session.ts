@@ -117,6 +117,20 @@ export class ChatSession {
    */
   private serverConversationIds = new Set<string>();
 
+  /**
+   * Bumped every time ``connect()`` re-seeds the conversation list.
+   *
+   * A ``loadMoreConversations`` request issued before a re-seed describes the
+   * OLD paging state, so applying its response afterwards both appends the
+   * wrong rows and corrupts the offset. Concretely: with 100 rows held, an
+   * offset-100 response landing after a reconnect has reset to rows 0-49 would
+   * append rows 100-149 — a 50-row hole — and leave the id set at 100, so every
+   * later page re-requests offset 100 and never advances again. The generation
+   * is captured before the await and rechecked after, so a superseded response
+   * is discarded instead.
+   */
+  private conversationsGeneration = 0;
+
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
   // is tracked by the consumer's own block store.
@@ -162,7 +176,11 @@ export class ChatSession {
     }
     if (conversations.status === "fulfilled") {
       // Reconnect re-seeds page 1, so reset the paging state with it rather
-      // than letting a previous connection's offset carry over.
+      // than letting a previous connection's offset carry over. Bumping the
+      // generation here (and only here — a FAILED fetch leaves the list intact,
+      // so an in-flight page is still valid against it) invalidates any page
+      // request already in flight against the old offset.
+      this.conversationsGeneration++;
       this.conversations = conversations.value;
       this.serverConversationIds = new Set(
         conversations.value.map((c) => c.id),
@@ -831,11 +849,17 @@ export class ChatSession {
     // guard every frame would refetch the same offset.
     if (this.isLoadingConversations || !this.hasMoreConversations) return [];
     this.isLoadingConversations = true;
+    const generation = this.conversationsGeneration;
     try {
       const page = await this.client.getConversations(
         CONVERSATION_PAGE_SIZE,
         this.serverConversationIds.size,
       );
+      // A reconnect re-seeded the list while this was in flight, so this page
+      // describes a paging state that no longer exists. Drop it untouched —
+      // connect() has already set conversations/hasMore for the new state, and
+      // the caller's next call pages from there.
+      if (generation !== this.conversationsGeneration) return [];
       this.hasMoreConversations = page.length === CONVERSATION_PAGE_SIZE;
       const fresh = page.filter((c) => !this.serverConversationIds.has(c.id));
       for (const c of page) this.serverConversationIds.add(c.id);
