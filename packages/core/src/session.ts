@@ -763,12 +763,19 @@ export class ChatSession {
     id: string,
     events: ConversationEvent[],
     userMessageContent?: string,
+    userMessageId?: string,
+    isSteer = false,
   ): void {
     this.conversationId = id;
     this.resetStreamingState();
 
     if (userMessageContent) {
-      this.emit({ type: "user_message", content: userMessageContent });
+      this.emit({
+        type: "user_message",
+        content: userMessageContent,
+        ...(userMessageId ? { id: userMessageId } : {}),
+        ...(isSteer ? { steer: true } : {}),
+      });
     }
 
     // The data payload is authoritative for `type` (matching how

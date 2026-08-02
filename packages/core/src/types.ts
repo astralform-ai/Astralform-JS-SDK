@@ -430,7 +430,17 @@ export type ChatEvent =
     }
 
   // Conversation-level — typed custom events
-  | { type: "user_message"; content: string; createdAt?: number }
+  | {
+      type: "user_message";
+      content: string;
+      createdAt?: number;
+      id?: string;
+      /** This message was steered into a run already in flight — it started
+       *  no turn of its own. Consumers that badge a steer (a "waiting to be
+       *  read" notice) key off this; without it a replayed steer is
+       *  indistinguishable from an ordinary prompt. */
+      steer?: boolean;
+    }
   | { type: "title_generated"; title: string }
   | { type: "todo_update"; todos: TodoItem[] }
   | {
