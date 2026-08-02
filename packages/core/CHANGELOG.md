@@ -7,7 +7,7 @@
 - Turns now pair by `job.message_id`, the id the backend stamps on the prompt that started the job (needs Astralform ≥ 0.59.0; older jobs report `null` and fall back to the positional walk unchanged).
 - A user message no job claims is a steer: it replays as its own bubble, positioned where it was sent rather than dropped.
 - A job with no visible prompt is a goal continuation — its seed is hidden from the message list — and replays its events in place with no bubble, which is what the positional version did by accident when it ran off the end.
-- `user_message` events now carry `id`, and `ChatSession.replayTurn` takes an optional `userMessageId`.
+- `user_message` events now carry `id` and, for a replayed steer, `steer: true`; `ChatSession.replayTurn` takes an optional `userMessageId` and `isSteer`. Without the marker a replayed steer is indistinguishable from an ordinary prompt, so a consumer that also appends pending steers on restore would render the message twice.
 
 Conversations predating the link keep the old behaviour, including its flaw. No backfill is possible: inferring which historic prompt started which job is the exact ambiguity the link removes, so guessing would write the bug into the data.
 

@@ -412,6 +412,7 @@ export class StreamManager {
               [],
               step.content,
               step.messageId,
+              true,
             );
             continue;
           }

@@ -162,3 +162,23 @@ describe("planRestore", () => {
     ]);
   });
 });
+
+describe("replayed steers are distinguishable", () => {
+  it("marks steer steps so a consumer can badge them", () => {
+    // Without a marker a replayed steer is indistinguishable from an ordinary
+    // prompt, and a consumer that appends pending steers on restore (the chat's
+    // usePendingSteerRestore) can neither dedup against it nor show its
+    // "waiting" notice — it would render the message twice.
+    const steps = planRestore({
+      completedJobs: [job("j1", "m1")],
+      userMessages: [tagged("first", "m1"), tagged("still queued", "m2")],
+    });
+    const steer = steps.find((s) => s.kind === "steer");
+    expect(steer).toBeDefined();
+    expect(steer).toEqual({
+      kind: "steer",
+      content: "still queued",
+      messageId: "m2",
+    });
+  });
+});

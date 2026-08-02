@@ -764,6 +764,7 @@ export class ChatSession {
     events: ConversationEvent[],
     userMessageContent?: string,
     userMessageId?: string,
+    isSteer = false,
   ): void {
     this.conversationId = id;
     this.resetStreamingState();
@@ -773,6 +774,7 @@ export class ChatSession {
         type: "user_message",
         content: userMessageContent,
         ...(userMessageId ? { id: userMessageId } : {}),
+        ...(isSteer ? { steer: true } : {}),
       });
     }
 
