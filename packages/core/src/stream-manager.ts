@@ -17,6 +17,7 @@
  *   });
  *   await manager.send("Hello");
  */
+import { planRestore } from "./restore-plan";
 
 import type { ChatEvent, ModelChoiceOptions } from "./types.js";
 import { ChatEventType } from "./types.js";
@@ -354,6 +355,7 @@ export class StreamManager {
           {
             job_id: string;
             status: string;
+            message_id?: string | null;
             metrics?: Record<string, unknown>;
           }[]
         >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
@@ -361,13 +363,25 @@ export class StreamManager {
           (j: { status: string }) => j.status === "completed",
         );
 
-        // User prompts aren't persisted in job_events — they live in
-        // the messages table. Pair each completed job with its user
-        // prompt by chronological index: the N-th completed job was
-        // triggered by the N-th user message.
+        // User prompts aren't persisted in job_events — they live in the
+        // messages table, so each turn has to be paired with the message that
+        // started it. `job.message_id` is that link; planRestore also decides
+        // where mid-run steers (user messages that start no job) and goal
+        // continuations (jobs with no visible prompt) belong. See
+        // restore-plan.ts for why pairing by index was wrong.
         const userMessages = this.session.messages.filter(
           (m) => m.role === "user",
         );
+        const plan = planRestore({
+          completedJobs: completedJobs.map((j) => ({
+            job_id: j.job_id,
+            message_id: j.message_id,
+          })),
+          userMessages: userMessages.map((m) => ({
+            id: m.id,
+            content: m.content,
+          })),
+        });
 
         // Fetch every turn's events up front, in PARALLEL. The backend strips
         // live-only deltas from this path, so each response is small; parallel
@@ -383,14 +397,29 @@ export class StreamManager {
           ),
         );
 
-        // Replay every turn in one SYNCHRONOUS pass (no awaits between events
+        const eventsByJobId = new Map(
+          completedJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
+        );
+
+        // Replay every step in one SYNCHRONOUS pass (no awaits between events
         // or turns), so the consumer batches the whole history into a single
-        // render instead of re-typing it event by event.
-        for (let i = 0; i < completedJobs.length; i++) {
+        // render instead of re-typing it event by event. A steer replays as a
+        // turn with no events: the bubble, and nothing after it.
+        for (const step of plan) {
+          if (step.kind === "steer") {
+            this.session.replayTurn(
+              conversationId,
+              [],
+              step.content,
+              step.messageId,
+            );
+            continue;
+          }
           this.session.replayTurn(
             conversationId,
-            eventLists[i] ?? [],
-            userMessages[i]?.content,
+            eventsByJobId.get(step.jobId) ?? [],
+            step.content,
+            step.messageId,
           );
         }
 

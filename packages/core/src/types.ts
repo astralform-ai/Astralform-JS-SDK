@@ -430,7 +430,7 @@ export type ChatEvent =
     }
 
   // Conversation-level — typed custom events
-  | { type: "user_message"; content: string; createdAt?: number }
+  | { type: "user_message"; content: string; createdAt?: number; id?: string }
   | { type: "title_generated"; title: string }
   | { type: "todo_update"; todos: TodoItem[] }
   | {
