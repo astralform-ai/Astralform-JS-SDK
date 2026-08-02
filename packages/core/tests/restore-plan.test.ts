@@ -1,18 +1,34 @@
 import { describe, it, expect } from "vitest";
 import { planRestore } from "../src/restore-plan";
 
-const job = (id: string, messageId?: string | null) => ({
+/**
+ * Fixtures mirror what the wire actually produces, which is the whole point:
+ * an earlier version of these tests invented shapes that never occur and
+ * passed against an implementation that was broken in production.
+ *
+ *  - `jobs.message_id` is NOT NULL, so EVERY job carries a uuid — including
+ *    jobs from before prompts were tagged, whose uuid matches nothing.
+ *  - `Message.id` is a required string. When a stored row has no id of its own
+ *    (every pre-link prompt), the messages endpoint substitutes a positional
+ *    index string via `getattr(msg, "id", None) or str(len(result))`.
+ *
+ * So "has an id" is true of everything and distinguishes nothing. Only whether
+ * a job's id MATCHES a message carries information.
+ */
+const job = (id: string, messageId: string) => ({
   job_id: id,
-  message_id: messageId ?? null,
+  message_id: messageId,
 });
-const msg = (content: string, id?: string) =>
-  id ? { id, content } : { content };
+/** A tagged prompt, or a steer: carries the uuid the backend minted. */
+const tagged = (content: string, id: string) => ({ id, content });
+/** A pre-link row: the endpoint fabricated a positional index for its id. */
+const legacy = (content: string, idx: number) => ({ id: String(idx), content });
 
 describe("planRestore", () => {
   it("pairs each turn with the prompt that started it", () => {
     const steps = planRestore({
       completedJobs: [job("j1", "m1"), job("j2", "m2")],
-      userMessages: [msg("first", "m1"), msg("second", "m2")],
+      userMessages: [tagged("first", "m1"), tagged("second", "m2")],
     });
     expect(steps).toEqual([
       { kind: "turn", jobId: "j1", content: "first", messageId: "m1" },
@@ -21,14 +37,14 @@ describe("planRestore", () => {
   });
 
   it("does not let a steer shift later turns onto the wrong prompt", () => {
-    // The bug this exists for. Positionally, job j2 would take userMessages[1]
-    // — the steer — and "second" would never render at all.
+    // The bug this exists for. Positionally, j2 takes userMessages[1] — the
+    // steer — and "second" never renders at all.
     const steps = planRestore({
       completedJobs: [job("j1", "m1"), job("j2", "m3")],
       userMessages: [
-        msg("first", "m1"),
-        msg("a steer", "m2"),
-        msg("second", "m3"),
+        tagged("first", "m1"),
+        tagged("a steer", "m2"),
+        tagged("second", "m3"),
       ],
     });
     expect(steps).toEqual([
@@ -39,11 +55,9 @@ describe("planRestore", () => {
   });
 
   it("keeps a steer sent during the last turn, instead of dropping it", () => {
-    // Positionally this one fell off the end of the loop and vanished — the
-    // symptom that survived even after the pending-steer notice shipped.
     const steps = planRestore({
       completedJobs: [job("j1", "m1")],
-      userMessages: [msg("first", "m1"), msg("late steer", "m2")],
+      userMessages: [tagged("first", "m1"), tagged("late steer", "m2")],
     });
     expect(steps).toEqual([
       { kind: "turn", jobId: "j1", content: "first", messageId: "m1" },
@@ -52,12 +66,16 @@ describe("planRestore", () => {
   });
 
   it("replays a goal continuation in place, with no bubble of its own", () => {
-    // Continuation seeds are hidden from the message list, so the job matches
-    // nothing. It must still replay its events, and must stay between the turns
-    // it ran between — not get swept to the end.
+    // A continuation's seed is hidden from the message list, so its (non-null)
+    // message_id matches nothing. It must still replay, between the turns it
+    // ran between rather than swept to the end.
     const steps = planRestore({
-      completedJobs: [job("j1", "m1"), job("j1c", "m-seed"), job("j2", "m2")],
-      userMessages: [msg("start the goal", "m1"), msg("next turn", "m2")],
+      completedJobs: [
+        job("j1", "m1"),
+        job("j1c", "seed-uuid"),
+        job("j2", "m2"),
+      ],
+      userMessages: [tagged("start the goal", "m1"), tagged("next turn", "m2")],
     });
     expect(steps).toEqual([
       { kind: "turn", jobId: "j1", content: "start the goal", messageId: "m1" },
@@ -68,8 +86,16 @@ describe("planRestore", () => {
 
   it("interleaves a steer sent during a continuation", () => {
     const steps = planRestore({
-      completedJobs: [job("j1", "m1"), job("j1c", "m-seed"), job("j2", "m3")],
-      userMessages: [msg("goal", "m1"), msg("steer", "m2"), msg("after", "m3")],
+      completedJobs: [
+        job("j1", "m1"),
+        job("j1c", "seed-uuid"),
+        job("j2", "m3"),
+      ],
+      userMessages: [
+        tagged("goal", "m1"),
+        tagged("steer", "m2"),
+        tagged("after", "m3"),
+      ],
     });
     expect(steps.map((s) => s.kind)).toEqual(["turn", "turn", "steer", "turn"]);
     expect(steps[3]).toEqual({
@@ -80,31 +106,45 @@ describe("planRestore", () => {
     });
   });
 
-  it("falls back to positional pairing for a conversation with no links", () => {
-    // Pre-link data: no job carries a message_id and no backfill is possible.
-    // Keeping the old walk preserves the prompts; the alternative is every
-    // bubble disappearing from historic conversations.
+  it("falls back to position when NO job id matches — every pre-link conversation", () => {
+    // The case a presence check gets catastrophically wrong. Both jobs carry a
+    // uuid and both messages carry a fabricated index id, so "has an id" is
+    // true throughout; only the absence of any MATCH reveals that this
+    // conversation predates the tagging. Detecting it by presence renders both
+    // turns bubble-less and dumps both prompts at the end as steers.
     const steps = planRestore({
-      completedJobs: [job("j1"), job("j2")],
-      userMessages: [msg("first"), msg("second")],
+      completedJobs: [job("j1", "old-uuid-1"), job("j2", "old-uuid-2")],
+      userMessages: [legacy("first", 0), legacy("second", 2)],
     });
     expect(steps).toEqual([
-      { kind: "turn", jobId: "j1", content: "first", messageId: undefined },
-      { kind: "turn", jobId: "j2", content: "second", messageId: undefined },
+      { kind: "turn", jobId: "j1", content: "first", messageId: "0" },
+      { kind: "turn", jobId: "j2", content: "second", messageId: "2" },
     ]);
   });
 
   it("handles a conversation that spans the change", () => {
-    // An old turn (no ids either side) followed by a new one. The old job takes
-    // the id-less message; the new job matches by id.
+    // Tagging began at a point in time, so the split is chronological: the old
+    // turn falls back to position, the new one matches exactly.
     const steps = planRestore({
-      completedJobs: [job("old"), job("new", "m2")],
-      userMessages: [msg("legacy prompt"), msg("modern prompt", "m2")],
+      completedJobs: [job("old", "old-uuid"), job("new", "m2")],
+      userMessages: [legacy("legacy prompt", 0), tagged("modern prompt", "m2")],
     });
     expect(steps).toEqual([
-      { kind: "turn", jobId: "old", content: "legacy prompt" },
+      { kind: "turn", jobId: "old", content: "legacy prompt", messageId: "0" },
       { kind: "turn", jobId: "new", content: "modern prompt", messageId: "m2" },
     ]);
+  });
+
+  it("keeps a steer sent after the cutover in a spanning conversation", () => {
+    const steps = planRestore({
+      completedJobs: [job("old", "old-uuid"), job("new", "m2")],
+      userMessages: [
+        legacy("legacy prompt", 0),
+        tagged("modern prompt", "m2"),
+        tagged("steer", "m3"),
+      ],
+    });
+    expect(steps.map((s) => s.kind)).toEqual(["turn", "turn", "steer"]);
   });
 
   it("returns nothing for an empty conversation", () => {
@@ -112,12 +152,13 @@ describe("planRestore", () => {
   });
 
   it("replays a job whose prompt is missing rather than dropping the response", () => {
-    // Shouldn't happen, but losing the assistant's answer is worse than losing
-    // the bubble above it.
+    // Losing the assistant's answer is worse than losing the bubble above it.
     const steps = planRestore({
       completedJobs: [job("j1", "gone")],
       userMessages: [],
     });
-    expect(steps).toEqual([{ kind: "turn", jobId: "j1" }]);
+    expect(steps).toEqual([
+      { kind: "turn", jobId: "j1", content: undefined, messageId: undefined },
+    ]);
   });
 });

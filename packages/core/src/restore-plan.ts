@@ -19,12 +19,17 @@
  * | legacy prompt        | no             | n/a             |
  * | goal-continuation    | hidden from the message list entirely |
  *
- * So: an id that a job claims is a turn; an id no job claims is a steer; a
- * message with no id at all is from before the link existed and falls back to
- * being consumed positionally; and a job whose `message_id` matches nothing
- * visible is a continuation, which replays its events with no bubble of its own
- * (that is what the positional version did by accident, when it ran off the end
- * of the message list and passed `undefined`).
+ * Classification keys off whether a job's `message_id` actually MATCHES a
+ * message — never off a field being present. Both are always populated in real
+ * data: `jobs.message_id` is NOT NULL, and the messages endpoint substitutes a
+ * positional index string when a row carries no id of its own. A presence check
+ * therefore reads every pre-link conversation as linked and strips every prompt
+ * bubble from it.
+ *
+ * So: a job whose id matches a message is a turn; a message no job claims is a
+ * steer; a job past the cutover whose id matches nothing visible is a
+ * continuation, replaying with no bubble (what the positional version did by
+ * accident when it ran off the end of the message list).
  *
  * Jobs are the spine, so continuations keep their place in the transcript.
  * Steers are interleaved at the point they appear in the message list, which
@@ -67,33 +72,51 @@ export function planRestore(args: {
 }): ReplayStep[] {
   const { completedJobs, userMessages } = args;
 
-  // Nothing to pair against: every job predates the link. Keep the old
-  // positional walk rather than silently dropping every prompt bubble.
-  if (completedJobs.every((j) => !j.message_id)) {
-    return completedJobs.map((job, i) => ({
+  const byId = new Map<string, number>();
+  userMessages.forEach((m, i) => {
+    if (m.id) byId.set(m.id, i);
+  });
+  /** The message index this job's prompt lives at, if it is visible. */
+  const linkOf = (j: RestoreJob): number | undefined =>
+    j.message_id ? byId.get(j.message_id) : undefined;
+
+  const positional = (jobs: RestoreJob[], msgs: RestoreMessage[]): ReplayStep[] =>
+    jobs.map((job, i) => ({
       kind: "turn" as const,
       jobId: job.job_id,
-      content: userMessages[i]?.content,
-      messageId: userMessages[i]?.id,
+      content: msgs[i]?.content,
+      messageId: msgs[i]?.id,
     }));
+
+  // Detection keys off whether a job's id actually MATCHES a message — never
+  // off a field merely being present. Both fields are always populated in real
+  // data (`jobs.message_id` is NOT NULL, and the messages endpoint substitutes
+  // a positional index string when a row has no id of its own), so a
+  // presence check silently classifies every pre-link conversation as linked
+  // and strips every prompt bubble from it.
+  const firstLinked = completedJobs.findIndex((j) => linkOf(j) !== undefined);
+  if (firstLinked === -1) {
+    // Nothing matches: the whole conversation predates the tagging.
+    return positional(completedJobs, userMessages);
   }
 
-  const byId = new Map<string, RestoreMessage>();
-  for (const m of userMessages) if (m.id) byId.set(m.id, m);
+  // The tagging started at a point in time, so a conversation spanning it
+  // splits cleanly: everything before the first linked turn has no usable
+  // link and falls back to position; everything after is exact.
+  const cutover = linkOf(completedJobs[firstLinked]!)!;
+  const steps: ReplayStep[] = positional(
+    completedJobs.slice(0, firstLinked),
+    userMessages.slice(0, cutover),
+  );
 
-  const steps: ReplayStep[] = [];
-  // Walks the message list alongside the jobs, so steers are emitted at the
-  // position they actually occupy rather than swept to the end.
-  let cursor = 0;
-
-  /** Emit every steer sitting before `stopAt`, and advance past it. */
+  let cursor = cutover;
   const isSteer = (m: RestoreMessage | undefined): m is RestoreMessage =>
     !!m?.id && !completedJobs.some((j) => j.message_id === m.id);
 
+  /** Emit every steer sitting before `stopAt`, and advance past it. */
   const drainTo = (stopAt: number) => {
     while (cursor < stopAt) {
       const m = userMessages[cursor++];
-      // An id no job claimed: the user sent it mid-run, so it started no turn.
       if (isSteer(m)) {
         steps.push({ kind: "steer", content: m.content, messageId: m.id });
       }
@@ -101,10 +124,11 @@ export function planRestore(args: {
     cursor = stopAt + 1;
   };
 
-  for (const job of completedJobs) {
-    const prompt = job.message_id ? byId.get(job.message_id) : undefined;
-    if (prompt) {
-      drainTo(userMessages.indexOf(prompt));
+  for (const job of completedJobs.slice(firstLinked)) {
+    const at = linkOf(job);
+    if (at !== undefined) {
+      drainTo(at);
+      const prompt = userMessages[at]!;
       steps.push({
         kind: "turn",
         jobId: job.job_id,
@@ -113,21 +137,10 @@ export function planRestore(args: {
       });
       continue;
     }
-    // No visible prompt. Either a pre-link job in a conversation that also has
-    // newer ones — consume the next id-less message, which is what a pre-link
-    // prompt looks like — or a goal continuation, whose seed is hidden and
-    // which therefore replays with no bubble.
-    const legacy = userMessages.findIndex((m, i) => i >= cursor && !m.id);
-    const legacyMessage = legacy === -1 ? undefined : userMessages[legacy];
-    if (!job.message_id && legacyMessage) {
-      drainTo(legacy);
-      steps.push({
-        kind: "turn",
-        jobId: job.job_id,
-        content: legacyMessage.content,
-      });
-      continue;
-    }
+    // Past the cutover, a job whose id matches nothing visible is a goal
+    // continuation: its seed is deliberately hidden from the message list, so
+    // it replays its events with no bubble — which is what the positional
+    // version did by accident when it ran off the end of the messages.
     steps.push({ kind: "turn", jobId: job.job_id });
   }
 
