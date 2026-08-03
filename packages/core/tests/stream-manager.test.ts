@@ -9,6 +9,86 @@ describe("StreamManager", () => {
     userId: "user-1",
   };
 
+  it("forwards every send option through to the job request", async () => {
+    // StreamManager re-maps SendOptions field by field into session.send, so a
+    // field added to ChatSession alone never reaches the wire — which is
+    // exactly how imageMode shipped in 4.6.0 without working through
+    // manager.send(), the path every consumer actually uses. This asserts on
+    // the REQUEST BODY so a missing line in either mapper fails it.
+    let body: Record<string, unknown> | undefined;
+    const sse = [
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"m","job_id":"job-1","seq":0,"ts":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{},"total_ms":1,"stall_count":0,"seq":1,"ts":0}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs/job-1/events")) {
+        return new Response(sse, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      if (url.includes("/v1/jobs")) {
+        body = JSON.parse(init?.body as string);
+        return new Response(
+          JSON.stringify({
+            job_id: "job-1",
+            conversation_id: "c1",
+            message_id: "m1",
+            status: "queued",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes("/v1/agent/status")) {
+        return new Response(
+          JSON.stringify({ is_ready: true, llm_configured: true, message: "Ready" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("[]", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
+    await session.connect();
+    const manager = new StreamManager(session);
+    await manager.send("Draw a cat", {
+      imageMode: true,
+      planMode: true,
+      goal: "ship it",
+      agentName: "agent-x",
+      uploadIds: ["u1"],
+      provider: "openai",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      temperature: 0.5,
+    });
+
+    // EVERY option, not just the one this PR adds. The bug being fixed here is
+    // a field silently missing from a field-by-field mapper, and that can
+    // happen to any of them — asserting the whole set is what makes the next
+    // one fail loudly instead of shipping.
+    expect(body).toMatchObject({
+      image_mode: true,
+      plan_mode: true,
+      goal: "ship it",
+      agent_name: "agent-x",
+      upload_ids: ["u1"],
+      provider: "openai",
+      model: "gpt-5.4",
+      reasoning_effort: "high",
+      temperature: 0.5,
+    });
+  });
+
   it("treats a failing getActiveJob as no active job and proceeds to replay", async () => {
     // Restoring a conversation: active-job lookup errors, but the
     // manager should still fall through to the completed-jobs replay

@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.6.1
+
+**`imageMode` did not reach the wire through `StreamManager.send()` — the path every consumer actually uses.** 4.6.0 added the option to `ChatSession.SendOptions` and mapped it in `session.ts`, but `StreamManager` has its **own** `SendOptions` and re-maps field by field into the session. Neither line existed there, so `manager.send(content, { imageMode: true })` did not typecheck, and would have sent an ordinary turn if it had.
+
+- `SendOptions.imageMode` in `stream-manager.ts`, forwarded to `session.send`.
+- Test asserts on the **request body** through `manager.send()`, so a missing line in either mapper fails it. 4.6.0's tests only exercised `ChatSession` directly and passed while the consumer path was broken.
+
+`imageMode` now appears in the same four places `planMode` does — both option interfaces and both mappers. That symmetry is the thing to check when adding another send option.
+
 ## 4.6.0
 
 **A client could learn an agent has image generation but had no way to ask for it.** 4.5.0 forwarded `AgentStatus.capabilities`, so a UI could finally tell whether to offer image generation — but `send()` mapped its options field by field and had no image flag, so the request went out as an ordinary turn. The backend attaches the image tool *only* on a turn that asks for it, so the agent had nothing to call and the affordance did nothing.
