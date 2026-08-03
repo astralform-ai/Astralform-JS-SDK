@@ -63,6 +63,81 @@ describe("AstralformClient", () => {
     });
   });
 
+  it("getAgentStatus forwards capabilities", async () => {
+    // The whole point of the field: a client decides whether to OFFER a
+    // capability from this, so dropping it silently is indistinguishable from
+    // the agent not having it.
+    const mockFetch = createMockFetch({
+      "/v1/agent/status": {
+        status: 200,
+        body: {
+          is_ready: true,
+          llm_configured: true,
+          message: "Ready",
+          capabilities: [
+            { key: "image", enabled: true },
+            { key: "web", enabled: false },
+          ],
+        },
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const status = await client.getAgentStatus();
+
+    expect(status.capabilities).toEqual([
+      { key: "image", enabled: true },
+      { key: "web", enabled: false },
+    ]);
+  });
+
+  it("getAgentStatus defaults capabilities to [] on a server that omits them", async () => {
+    // Older backends have no such field. [] lets a caller iterate without a
+    // guard, and reads as "reports nothing" rather than "has nothing".
+    const mockFetch = createMockFetch({
+      "/v1/agent/status": {
+        status: 200,
+        body: { is_ready: true, llm_configured: true, message: "Ready" },
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const status = await client.getAgentStatus();
+
+    expect(status.capabilities).toEqual([]);
+  });
+
+  it("getAgentStatus drops capability entries with no usable key", async () => {
+    // A capability with no name cannot be matched against and would render as
+    // an unlabelled row; enabled is coerced so a missing flag is not truthy.
+    // "" counts as no name — typeof "" === "string", so a bare typeof check
+    // lets it through, which is the whole reason for the length guard.
+    const mockFetch = createMockFetch({
+      "/v1/agent/status": {
+        status: 200,
+        body: {
+          is_ready: true,
+          llm_configured: true,
+          message: "Ready",
+          capabilities: [
+            { enabled: true },
+            { key: "" },
+            { key: "image" },
+            { key: "web", enabled: true },
+          ],
+        },
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const status = await client.getAgentStatus();
+
+    expect(status.capabilities).toEqual([
+      { key: "image", enabled: false },
+      { key: "web", enabled: true },
+    ]);
+  });
+
   it("getAgentStatus defaults uiComponents when backend omits the field", async () => {
     const mockFetch = createMockFetch({
       "/v1/agent/status": {

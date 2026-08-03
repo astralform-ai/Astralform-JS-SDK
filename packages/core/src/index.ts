@@ -117,6 +117,7 @@ export type {
   Conversation,
   Message,
   AgentStatus,
+  AgentCapability,
   UIComponentsConfig,
   AgentInfo,
   SkillInfo,
