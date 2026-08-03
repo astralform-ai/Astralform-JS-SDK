@@ -726,6 +726,7 @@ export interface ChatStreamRequest {
   upload_ids?: string[];
   agent_name?: string;
   plan_mode?: boolean;
+  image_mode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode). The backend mints
    * an agent_goal from this text and drives the run under a budget until the
@@ -837,6 +838,19 @@ export interface SendOptions extends ModelChoiceOptions {
   uploadIds?: string[];
   agentName?: string;
   planMode?: boolean;
+  /**
+   * Attach the image-generation tool to this turn.
+   *
+   * Off by default and per-message, because generating costs the developer real
+   * money at a third-party provider — the agent does not get to decide on its
+   * own that a picture would be nice. The tool is not attached at all unless
+   * this is set, so an agent with image generation configured still cannot
+   * generate one on an ordinary turn.
+   *
+   * Gate the affordance on `AgentStatus.capabilities` — an agent with no
+   * provider configured will simply have no tool to call.
+   */
+  imageMode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode). The text becomes
    * the goal's objective; the backend keeps the agent working under a budget until

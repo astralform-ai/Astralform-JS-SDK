@@ -232,6 +232,7 @@ export class ChatSession {
       upload_ids: options?.uploadIds,
       agent_name: options?.agentName,
       plan_mode: options?.planMode,
+      image_mode: options?.imageMode,
       goal: options?.goal,
       // Per-request model choice (client-side model selection).
       provider: options?.provider,
