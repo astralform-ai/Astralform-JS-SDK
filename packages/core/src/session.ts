@@ -883,6 +883,28 @@ export class ChatSession {
     }
   }
 
+  /**
+   * Rename a conversation, server first.
+   *
+   * Deliberately NOT optimistic, unlike the delete below. A failed delete is
+   * self-correcting (the row is still there on the next page fetch), but a
+   * failed rename that had already been written locally would leave the
+   * sidebar showing a title the server never accepted — and nothing refetches
+   * a conversation that is already in the loaded list.
+   *
+   * Mirrors the `title_generated` path: the entry in `conversations` is
+   * mutated in place, which is what every consumer of the list reads.
+   */
+  async renameConversation(id: string, title: string): Promise<void> {
+    const updated = await this.client.renameConversation(id, title);
+    const conv = this.conversations.find((c) => c.id === id);
+    if (conv) {
+      // The server's title, not the caller's — it trims before storing.
+      conv.title = updated.title;
+    }
+    await this.storage.updateConversationTitle(id, updated.title);
+  }
+
   async deleteConversation(id: string): Promise<void> {
     try {
       await this.client.deleteConversation(id);

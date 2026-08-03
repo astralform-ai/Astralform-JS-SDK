@@ -312,6 +312,13 @@ export class AstralformClient {
     });
   }
 
+  async patch<T>(path: string, body: unknown): Promise<T> {
+    return this.withDeadline(async (signal) => {
+      const response = await this.send("PATCH", path, body, signal);
+      return (await response.json()) as T;
+    });
+  }
+
   private async del(path: string): Promise<void> {
     await this.request("DELETE", path);
   }
@@ -422,6 +429,32 @@ export class AstralformClient {
       status: "complete" as const,
       createdAt: m.created_at,
     }));
+  }
+
+  /**
+   * Replace the title the server generated from the conversation's first turn.
+   *
+   * The server does NOT bump `updated_at` for a rename — conversations list
+   * newest-updated first, and relabelling one is not activity — so the
+   * timestamp coming back is the original. Callers should merge the response
+   * rather than stamp their own, or they reintroduce the reordering the
+   * server deliberately avoids.
+   */
+  async renameConversation(id: string, title: string): Promise<Conversation> {
+    const c = await this.patch<{
+      id: string;
+      title: string;
+      message_count: number;
+      created_at: string;
+      updated_at: string;
+    }>(`/v1/conversations/${encodeURIComponent(id)}`, { title });
+    return {
+      id: c.id,
+      title: c.title,
+      messageCount: c.message_count,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+    };
   }
 
   async deleteConversation(id: string): Promise<void> {

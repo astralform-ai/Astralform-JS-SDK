@@ -285,12 +285,20 @@ export class StreamManager {
     await this.restore(conversationId);
   }
 
-  // ── Create / delete conversation ──────────────────────────────
+  // ── Create / rename / delete conversation ─────────────────────
 
   async createConversation(): Promise<string> {
     const id = await this.session.createNewConversation();
     this.setActiveConversation(id);
     return id;
+  }
+
+  /**
+   * Rename a conversation. Purely a relabel — no active-conversation or
+   * background-job bookkeeping to do, unlike delete, so this is a passthrough.
+   */
+  async renameConversation(id: string, title: string): Promise<void> {
+    await this.session.renameConversation(id, title);
   }
 
   async deleteConversation(id: string): Promise<void> {

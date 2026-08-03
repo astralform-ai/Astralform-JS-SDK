@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.7.0
+
+**A conversation can now be renamed — previously its title was whatever the server generated from the first turn, permanently.** There was no way to change it from any client; the SDK's `updateConversationTitle` is local-cache-only and makes no network call.
+
+- `ChatSession.renameConversation(id, title)` / `StreamManager.renameConversation(id, title)` — rename a conversation and update the entry the sidebar reads.
+- `AstralformClient.renameConversation(id, title)` — the REST call, returning the updated `Conversation`.
+- `AstralformClient.patch<T>(path, body)` — public raw verb, alongside the existing `get` / `post`.
+
+**Requires a backend with `PATCH /v1/conversations/{id}`.**
+
+The server deliberately does **not** bump `updated_at` for a rename: the list is ordered `updated_at DESC`, and relabelling a conversation is not activity — bumping it would fling a months-old conversation to the top of the user's history. `renameConversation` therefore merges the server's row rather than stamping its own timestamp, and consumers should do the same.
+
+The write is server-first rather than optimistic, unlike `deleteConversation`. A failed delete is self-correcting — the row is still there on the next page fetch — but nothing refetches a conversation already in the loaded list, so a locally-applied title the server rejected would survive until a full reload. The title stored is the server's, not the caller's, since the server trims before persisting.
+
 ## 4.6.1
 
 **`imageMode` did not reach the wire through `StreamManager.send()` — the path every consumer actually uses.** 4.6.0 added the option to `ChatSession.SendOptions` and mapped it in `session.ts`, but `StreamManager` has its **own** `SendOptions` and re-maps field by field into the session. Neither line existed there, so `manager.send(content, { imageMode: true })` did not typecheck, and would have sent an ordinary turn if it had.
