@@ -34,6 +34,12 @@ export interface SendOptions extends ModelChoiceOptions {
   uploadIds?: string[];
   planMode?: boolean;
   /**
+   * Attach the image-generation tool to this turn. Per-message and off by
+   * default — generating costs the developer real money at a third-party
+   * provider. Gate the affordance on `AgentStatus.capabilities`.
+   */
+  imageMode?: boolean;
+  /**
    * Start a durable long-horizon goal for this run (goal mode) — the text is the
    * goal objective the backend drives to completion. Omit for a normal turn.
    */
@@ -160,6 +166,7 @@ export class StreamManager {
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,
+        imageMode: options?.imageMode,
         goal: options?.goal,
         provider: options?.provider,
         model: options?.model,
