@@ -60,12 +60,33 @@ describe("StreamManager", () => {
     const session = new ChatSession({ ...baseConfig, fetch: mockFetch });
     await session.connect();
     const manager = new StreamManager(session);
-    await manager.send("Draw a cat", { imageMode: true, planMode: true });
+    await manager.send("Draw a cat", {
+      imageMode: true,
+      planMode: true,
+      goal: "ship it",
+      agentName: "agent-x",
+      uploadIds: ["u1"],
+      provider: "openai",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      temperature: 0.5,
+    });
 
-    expect(body?.image_mode).toBe(true);
-    // planMode alongside it, so a regression that drops ONE mapping is
-    // distinguishable from one that drops the whole options object.
-    expect(body?.plan_mode).toBe(true);
+    // EVERY option, not just the one this PR adds. The bug being fixed here is
+    // a field silently missing from a field-by-field mapper, and that can
+    // happen to any of them — asserting the whole set is what makes the next
+    // one fail loudly instead of shipping.
+    expect(body).toMatchObject({
+      image_mode: true,
+      plan_mode: true,
+      goal: "ship it",
+      agent_name: "agent-x",
+      upload_ids: ["u1"],
+      provider: "openai",
+      model: "gpt-5.4",
+      reasoning_effort: "high",
+      temperature: 0.5,
+    });
   });
 
   it("treats a failing getActiveJob as no active job and proceeds to replay", async () => {
