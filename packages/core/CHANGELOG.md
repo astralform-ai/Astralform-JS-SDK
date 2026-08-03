@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.5.0
+
+**The agent's capability list never reached consumers.** The backend reports which capabilities an agent actually has — so a client can offer image generation only where a provider is configured, rather than rendering a control that fails on send — but `getAgentStatus()` mapped the response field by field and `capabilities` was not one of them. The field was dropped in the mapper, which downstream is indistinguishable from the agent not having the capability at all.
+
+- `AgentStatus.capabilities: AgentCapability[]` — `{ key, enabled }`, exported as `AgentCapability`. Needs Astralform ≥ 0.61.0; older servers omit the field.
+- Defaults to `[]`, never `undefined`, so a caller can iterate without a guard and a server predating the field reads as *reports nothing* rather than throwing.
+- Entries with no usable `key` are dropped and `enabled` is coerced. `""` counts as no key: a capability with no name cannot be matched against and would render as an unlabelled row.
+
+Treat an **absent key as "not reported", never as disabled.** The backend only reports capabilities with a real per-agent gate — always-on ones are deliberately omitted, since a constant tells a client nothing. A consumer that reads a missing key as `false` will hide a working feature on any server that does not report it.
+
 ## 4.4.0
 
 **Restoring a conversation paired each turn with the wrong prompt whenever a mid-run steer was involved.** `StreamManager.restore` matched the N-th completed job to the N-th user message, which is only sound while every user message starts exactly one job. A steer (`POST /conversations/{id}/steer`) starts none, so it shifted every later turn onto the prompt before it and pushed the last one off the end of the loop — and the steer's own bubble was never rendered at all.

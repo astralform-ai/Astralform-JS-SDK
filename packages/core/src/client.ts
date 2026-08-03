@@ -369,7 +369,9 @@ export class AstralformClient {
       // capability with no name cannot be matched against and would render as
       // an unlabelled row.
       capabilities: (raw.capabilities ?? []).flatMap((c) =>
-        typeof c?.key === "string" ? [{ key: c.key, enabled: Boolean(c.enabled) }] : [],
+        typeof c?.key === "string" && c.key.length > 0
+          ? [{ key: c.key, enabled: Boolean(c.enabled) }]
+          : [],
       ),
       uiComponents: {
         enabled: Boolean(ui.enabled),

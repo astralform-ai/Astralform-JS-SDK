@@ -107,9 +107,11 @@ describe("AstralformClient", () => {
     expect(status.capabilities).toEqual([]);
   });
 
-  it("getAgentStatus drops capability entries with no key", async () => {
+  it("getAgentStatus drops capability entries with no usable key", async () => {
     // A capability with no name cannot be matched against and would render as
     // an unlabelled row; enabled is coerced so a missing flag is not truthy.
+    // "" counts as no name — typeof "" === "string", so a bare typeof check
+    // lets it through, which is the whole reason for the length guard.
     const mockFetch = createMockFetch({
       "/v1/agent/status": {
         status: 200,
@@ -119,6 +121,7 @@ describe("AstralformClient", () => {
           message: "Ready",
           capabilities: [
             { enabled: true },
+            { key: "" },
             { key: "image" },
             { key: "web", enabled: true },
           ],
