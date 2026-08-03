@@ -583,6 +583,13 @@ export interface UIComponentsConfig {
   mimeType: string | null;
 }
 
+/** One capability the agent either has or does not, right now. */
+export interface AgentCapability {
+  /** Stable key, e.g. `"image"`, `"web"`, `"skills"`. */
+  key: string;
+  enabled: boolean;
+}
+
 export interface AgentStatus {
   isReady: boolean;
   llmConfigured: boolean;
@@ -590,6 +597,16 @@ export interface AgentStatus {
   llmModel?: string;
   message: string;
   uiComponents: UIComponentsConfig;
+  /**
+   * What the agent can do right now, so a client can offer a capability only
+   * where it will actually work rather than failing on send.
+   *
+   * Empty when the backend does not report it (older servers) or when the agent
+   * is not ready — treat an ABSENT key as "not reported", never as disabled.
+   * Only capabilities with a real per-agent gate appear; always-on ones do not,
+   * because a constant tells a client nothing.
+   */
+  capabilities: AgentCapability[];
 }
 
 export interface AgentInfo {

@@ -354,6 +354,7 @@ export class AstralformClient {
         protocol?: string | null;
         mime_type?: string | null;
       };
+      capabilities?: Array<{ key?: string; enabled?: boolean }>;
     }>("/v1/agent/status");
     const ui = raw.ui_components ?? {};
     return {
@@ -362,6 +363,14 @@ export class AstralformClient {
       llmProvider: raw.llm_provider,
       llmModel: raw.llm_model,
       message: raw.message,
+      // Defaults to [] rather than undefined so a caller can iterate without a
+      // guard, and so a server that predates the field behaves as "reports
+      // nothing" instead of throwing. Entries missing a key are dropped: a
+      // capability with no name cannot be matched against and would render as
+      // an unlabelled row.
+      capabilities: (raw.capabilities ?? []).flatMap((c) =>
+        typeof c?.key === "string" ? [{ key: c.key, enabled: Boolean(c.enabled) }] : [],
+      ),
       uiComponents: {
         enabled: Boolean(ui.enabled),
         protocol: ui.protocol ?? null,
