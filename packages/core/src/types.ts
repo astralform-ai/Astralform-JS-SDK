@@ -847,8 +847,9 @@ export interface SendOptions extends ModelChoiceOptions {
    * this is set, so an agent with image generation configured still cannot
    * generate one on an ordinary turn.
    *
-   * Gate the affordance on `AgentStatus.capabilities` — an agent with no
-   * provider configured will simply have no tool to call.
+   * Gate the affordance on `AgentStatus.capabilities` (Astralform ≥ 0.61.0) —
+   * an agent with no provider configured will simply have no tool to call.
+   * The `image_mode` field itself is accepted from Astralform ≥ 0.59.0.
    */
   imageMode?: boolean;
   /**

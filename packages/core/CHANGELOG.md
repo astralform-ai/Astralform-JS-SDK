@@ -4,7 +4,7 @@
 
 **A client could learn an agent has image generation but had no way to ask for it.** 4.5.0 forwarded `AgentStatus.capabilities`, so a UI could finally tell whether to offer image generation — but `send()` mapped its options field by field and had no image flag, so the request went out as an ordinary turn. The backend attaches the image tool *only* on a turn that asks for it, so the agent had nothing to call and the affordance did nothing.
 
-- `SendOptions.imageMode` → `image_mode` on the job request. Needs Astralform ≥ 0.61.0.
+- `SendOptions.imageMode` → `image_mode` on the job request. Needs Astralform ≥ 0.59.0, where the backend began accepting the field.
 - Off by default and per-message: generating costs the developer real money at a third-party provider, so the agent does not get to decide on its own that a picture would be nice. An unset flag is omitted from the body rather than sent as `false`.
 
 Gate the affordance on `AgentStatus.capabilities` (4.5.0) — an agent with no provider configured has no tool to call even with `imageMode: true`.
