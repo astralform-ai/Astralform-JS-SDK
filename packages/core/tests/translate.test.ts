@@ -82,6 +82,68 @@ describe("translateCustomEvent", () => {
     });
   });
 
+  it("maps todo_update, translating snake_case todos to camelCase", () => {
+    // Regression pin for https://github.com/astralform-ai/Astralform-JS-SDK/issues/16:
+    // the backend emits `active_form` / `blocked_by` (protocol.py TodoItem), but the
+    // typed surface is camelCase. The payload must be translated, not passed through.
+    const ev = translateCustomEvent("todo_update", {
+      todos: [
+        {
+          id: 1,
+          subject: "Ship the SDK fix",
+          status: "in_progress",
+          description: "Normalize todo payload keys",
+          active_form: "Shipping the fix",
+          owner: "atom2ueki",
+          blocked_by: [2],
+          blocks: [3],
+          priority: 1,
+        },
+        {
+          id: 2,
+          subject: "Open the PR",
+          status: "pending",
+          active_form: null,
+          blocked_by: null,
+        },
+      ],
+    });
+    expect(ev).toEqual({
+      type: "todo_update",
+      todos: [
+        {
+          id: 1,
+          subject: "Ship the SDK fix",
+          status: "in_progress",
+          description: "Normalize todo payload keys",
+          activeForm: "Shipping the fix",
+          owner: "atom2ueki",
+          blockedBy: [2],
+          blocks: [3],
+          priority: 1,
+        },
+        {
+          id: 2,
+          subject: "Open the PR",
+          status: "pending",
+          description: null,
+          activeForm: null,
+          owner: null,
+          blockedBy: null,
+          blocks: null,
+          priority: null,
+        },
+      ],
+    });
+  });
+
+  it("defaults todo_update with no todos to an empty list", () => {
+    expect(translateCustomEvent("todo_update", {})).toEqual({
+      type: "todo_update",
+      todos: [],
+    });
+  });
+
   it("maps prompt_suggestion via custom envelope", () => {
     const ev = translateCustomEvent("prompt_suggestion", {
       suggestions: ["Try X", "Ask about Y"],
@@ -119,6 +181,37 @@ describe("translateWireEvent", () => {
     expect(ev).toEqual({
       type: "prompt_suggestion",
       suggestions: ["Reboot the thing", "Check the logs"],
+    });
+  });
+
+  it("maps message_stop usage including cache_creation_tokens", () => {
+    const wire = {
+      type: "message_stop",
+      seq: 1,
+      ts: 0,
+      job_id: "job-1",
+      turn_id: "t1",
+      stop_reason: "end_turn",
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cached_tokens: 20,
+        cache_creation_tokens: 5,
+      },
+      ttfb_ms: 40,
+      total_ms: 1000,
+      stall_count: 0,
+    } as unknown as WireEvent;
+
+    const ev = translateWireEvent(wire);
+    expect(ev).toMatchObject({
+      type: "message_stop",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedTokens: 20,
+        cacheCreationTokens: 5,
+      },
     });
   });
 });
