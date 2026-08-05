@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.8.0
+
+**The plan and notes a conversation accumulates now reach the client live.** The backend has emitted `plan_update` and `note_update` since the plan/note tools shipped, but `translateCustomEvent` dropped both at `default: return null` — so a client could only learn about a plan by polling REST. Combined with a poll that is skipped mid-stream, a plan written at minute 1 of a 13-minute turn stayed invisible until the turn ended.
+
+- `plan_update` → `{ type: "plan_update"; plan: string }` — the full markdown body, not a diff, because `write_plan` replaces the document wholesale.
+- `note_update` → `{ type: "note_update"; notes: string[] }` — names only; bodies are unbounded and read on demand.
+- `PlanUpdatePayload` / `NoteUpdatePayload` exported alongside the other custom-event payloads.
+
+Both default rather than drop on an empty payload: a plan can legitimately be cleared, and dropping that event would leave a panel showing a plan that no longer exists.
+
 ## 4.7.0
 
 **A conversation can now be renamed — previously its title was whatever the server generated from the first turn, permanently.** There was no way to change it from any client; the SDK's `updateConversationTitle` is local-cache-only and makes no network call.

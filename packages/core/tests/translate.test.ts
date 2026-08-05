@@ -3,6 +3,29 @@ import { translateCustomEvent, translateWireEvent } from "../src/translate.js";
 import type { WireEvent } from "../src/types.js";
 
 describe("translateCustomEvent", () => {
+  // The backend has emitted these since the plan/note tools shipped; the SDK dropped both
+  // at `default: return null`, so a plan written at minute 1 of a 13-minute job stayed
+  // invisible until the turn ended and a REST read replaced it.
+  it("maps plan_update", () => {
+    const ev = translateCustomEvent("plan_update", { plan: "# Step 1\nDo the thing" });
+    expect(ev).toEqual({ type: "plan_update", plan: "# Step 1\nDo the thing" });
+  });
+
+  it("maps note_update", () => {
+    const ev = translateCustomEvent("note_update", { notes: ["research", "decisions"] });
+    expect(ev).toEqual({ type: "note_update", notes: ["research", "decisions"] });
+  });
+
+  it("defaults a plan_update with no body to an empty string, not null", () => {
+    // A plan can legitimately be cleared. Dropping the event would leave the panel showing
+    // a plan that no longer exists.
+    expect(translateCustomEvent("plan_update", {})).toEqual({ type: "plan_update", plan: "" });
+  });
+
+  it("defaults note_update to an empty list", () => {
+    expect(translateCustomEvent("note_update", {})).toEqual({ type: "note_update", notes: [] });
+  });
+
   it("maps tool_approval_granted", () => {
     const ev = translateCustomEvent("tool_approval_granted", {
       tool_name: "read_file",

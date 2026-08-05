@@ -90,6 +90,16 @@ export function translateCustomEvent(
         type: "todo_update",
         todos: (data.todos as TodoItem[]) ?? [],
       };
+    case "plan_update":
+      return {
+        type: "plan_update",
+        plan: (data.plan as string) ?? "",
+      };
+    case "note_update":
+      return {
+        type: "note_update",
+        notes: (data.notes as string[]) ?? [],
+      };
     case "context_update":
       return {
         type: "context_update",
