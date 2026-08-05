@@ -125,6 +125,8 @@ export const ChatEventType = {
   UserMessage: "user_message",
   TitleGenerated: "title_generated",
   TodoUpdate: "todo_update",
+  PlanUpdate: "plan_update",
+  NoteUpdate: "note_update",
   ContextUpdate: "context_update",
   SubagentStart: "subagent_start",
   SubagentStop: "subagent_stop",
@@ -443,6 +445,14 @@ export type ChatEvent =
     }
   | { type: "title_generated"; title: string }
   | { type: "todo_update"; todos: TodoItem[] }
+  /** The conversation's plan, as markdown, after the agent wrote or revised it.
+   *  Carries the FULL body rather than a diff: the backend replaces the plan
+   *  wholesale (`write_plan` — "Replaces any existing plan"), so a consumer that
+   *  merged deltas would drift from the stored document. */
+  | { type: "plan_update"; plan: string }
+  /** Names of the conversation's notes, after one was written or deleted. Names
+   *  only — bodies are unbounded and read on demand. */
+  | { type: "note_update"; notes: string[] }
   | {
       type: "context_update";
       context: Record<string, unknown>;
