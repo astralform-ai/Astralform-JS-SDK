@@ -1129,6 +1129,7 @@ describe("team/agent discovery (user-token mode)", () => {
         team_id: "team-1",
         created_at: "2026-07-01T00:00:00Z",
         updated_at: "2026-07-02T00:00:00Z",
+        avatar_url: "https://example.com/avatar.png",
       },
     ]);
     const client = new AstralformClient({
@@ -1147,6 +1148,7 @@ describe("team/agent discovery (user-token mode)", () => {
         teamId: "team-1",
         createdAt: "2026-07-01T00:00:00Z",
         updatedAt: "2026-07-02T00:00:00Z",
+        avatarUrl: "https://example.com/avatar.png",
       },
     ]);
   });

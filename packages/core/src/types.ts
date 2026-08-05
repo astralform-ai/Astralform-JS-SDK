@@ -268,6 +268,7 @@ export interface WireMessageStop extends WireEnvelope {
     input_tokens?: number;
     output_tokens?: number;
     cached_tokens?: number;
+    cache_creation_tokens?: number;
   };
   ttfb_ms?: number | null;
   total_ms: number;
@@ -337,6 +338,8 @@ export interface TurnUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /** Tokens written to the model's prompt cache (wire: `cache_creation_tokens`). */
+  cacheCreationTokens: number;
 }
 
 export type BlockDeltaPayload =
@@ -650,6 +653,8 @@ export interface TeamAgentSummary {
   teamId: string;
   createdAt: string;
   updatedAt: string;
+  /** Agent avatar URL, when the team has set one (wire: `avatar_url`). */
+  avatarUrl?: string | null;
 }
 
 export interface SkillInfo {

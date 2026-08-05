@@ -715,6 +715,7 @@ export class AstralformClient {
         team_id: string;
         created_at: string;
         updated_at: string;
+        avatar_url?: string | null;
       }>
     >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
     return raw.map((a) => ({
@@ -723,6 +724,7 @@ export class AstralformClient {
       teamId: a.team_id,
       createdAt: a.created_at,
       updatedAt: a.updated_at,
+      avatarUrl: a.avatar_url ?? null,
     }));
   }
 
