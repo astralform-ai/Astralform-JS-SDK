@@ -62,6 +62,8 @@ export type {
   TaskStatus,
   TodoItem,
   TodoUpdatePayload,
+  PlanUpdatePayload,
+  NoteUpdatePayload,
   TitleGeneratedPayload,
   SubagentStartPayload,
   SubagentStopPayload,
