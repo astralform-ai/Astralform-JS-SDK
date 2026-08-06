@@ -233,6 +233,7 @@ export class ChatSession {
       agent_name: options?.agentName,
       plan_mode: options?.planMode,
       image_mode: options?.imageMode,
+      video_mode: options?.videoMode,
       goal: options?.goal,
       // Per-request model choice (client-side model selection).
       provider: options?.provider,

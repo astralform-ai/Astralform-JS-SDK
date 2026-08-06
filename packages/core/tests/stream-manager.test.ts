@@ -62,6 +62,7 @@ describe("StreamManager", () => {
     const manager = new StreamManager(session);
     await manager.send("Draw a cat", {
       imageMode: true,
+      videoMode: true,
       planMode: true,
       goal: "ship it",
       agentName: "agent-x",
@@ -78,6 +79,7 @@ describe("StreamManager", () => {
     // one fail loudly instead of shipping.
     expect(body).toMatchObject({
       image_mode: true,
+      video_mode: true,
       plan_mode: true,
       goal: "ship it",
       agent_name: "agent-x",
