@@ -39,6 +39,12 @@ export interface SendOptions extends ModelChoiceOptions {
    * provider. Gate the affordance on `AgentStatus.capabilities`.
    */
   imageMode?: boolean;
+  /**
+   * Attach the video-generation tool to this turn. Mutually exclusive with
+   * `imageMode` at the composer level. See `SendOptions.videoMode` in types.ts
+   * for the full rule — a clip animates an existing image, is silent, and holds
+   * one shared GPU for minutes, so it is per-message and off by default.
+   */
   videoMode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode) — the text is the

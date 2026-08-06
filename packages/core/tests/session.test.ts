@@ -376,7 +376,6 @@ describe("ChatSession", () => {
     expect(body.video_mode).toBeUndefined();
   });
 
-
   it("send passes goal (goal mode) to the request", async () => {
     let capturedBody: string | undefined;
     const sseData = [
