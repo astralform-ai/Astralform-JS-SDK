@@ -168,6 +168,7 @@ export class StreamManager {
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,
         imageMode: options?.imageMode,
+        videoMode: options?.videoMode,
         goal: options?.goal,
         provider: options?.provider,
         model: options?.model,
