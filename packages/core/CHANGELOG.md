@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.9.0
+
+**A turn can now be put in video mode.** The backend has accepted `video_mode` on `POST /v1/jobs` since Astralform 0.67.0, but `send()` builds the request body field by field — so a client passing `videoMode` had it silently dropped, ran an ordinary turn, and waited for a clip nobody had requested. There was nothing on the wire to explain why.
+
+- `SendOptions.videoMode` on both `ChatSession` and `StreamManager`, mapped to `video_mode`.
+- Mutually exclusive with `imageMode` at the composer level — which is why a video turn also gets the image tool server-side: the user cannot select both, so the agent must be able to produce its own first frame.
+
+`generate_video` animates an **existing** image; it cannot start from text, and the clip is silent.
+
+**Which backend you need, precisely** — `video_mode` being accepted is not the same as a clip arriving:
+
+| Needs | Backend |
+|---|---|
+| `video_mode` accepted on `POST /v1/jobs` | ≥ 0.67.0 |
+| A clip that actually completes | **> 0.67.0** — a ~232 s generation cannot cross Cloudflare's ~126 s origin timeout, so on 0.67.0 it fails with a 524. Fixed by the submit+poll transport, unreleased at time of writing. |
+| `AgentStatus.capabilities` reporting `video`, to gate the affordance | **> 0.67.0** — also unreleased at time of writing. |
+
+Gate on the capability the same way image mode does. Until a backend carrying it ships, the key is simply absent, which reads as hidden — so a client written against this is correct now and lights up on its own when the backend catches up.
+
 ## 4.8.0
 
 **The plan and notes a conversation accumulates now reach the client live.** The backend has emitted `plan_update` and `note_update` since the plan/note tools shipped, but `translateCustomEvent` dropped both at `default: return null` — so a client could only learn about a plan by polling REST. Combined with a poll that is skipped mid-stream, a plan written at minute 1 of a 13-minute turn stayed invisible until the turn ended.
