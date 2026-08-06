@@ -39,6 +39,7 @@ export interface SendOptions extends ModelChoiceOptions {
    * provider. Gate the affordance on `AgentStatus.capabilities`.
    */
   imageMode?: boolean;
+  videoMode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode) — the text is the
    * goal objective the backend drives to completion. Omit for a normal turn.

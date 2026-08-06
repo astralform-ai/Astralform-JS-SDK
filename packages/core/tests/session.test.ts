@@ -285,6 +285,98 @@ describe("ChatSession", () => {
     expect(body.image_mode).toBeUndefined();
   });
 
+  it("send passes videoMode to the request", async () => {
+    // Without video_mode on the wire the backend never attaches the video tool,
+    // so the composer's mode is a silent no-op: the turn runs normally and the
+    // user waits for a clip nobody actually requested.
+    let capturedBody: string | undefined;
+    const sseData = [
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"m","job_id":"job-1","seq":0,"ts":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{},"total_ms":50,"stall_count":0,"seq":1,"ts":0}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/agent/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [],
+    });
+
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs") && !url.includes("/events")) {
+        capturedBody = init?.body as string;
+      }
+      return mockFetch(input, init);
+    };
+
+    const session = new ChatSession({ ...baseConfig, fetch: wrappedFetch });
+    await session.connect();
+    await session.send("Animate this still", { videoMode: true });
+
+    const body = JSON.parse(capturedBody!);
+    expect(body.video_mode).toBe(true);
+  });
+
+  it("send omits video_mode on an ordinary turn", async () => {
+    // Costlier to leak than image: a clip holds the one shared GPU for minutes,
+    // during which image generation on the same host cannot run at all.
+    let capturedBody: string | undefined;
+    const sseData = [
+      'event: message_start\ndata: {"type":"message_start","turn_id":"t1","model":"m","job_id":"job-1","seq":0,"ts":0}\n',
+      "",
+      'event: message_stop\ndata: {"type":"message_stop","turn_id":"t1","job_id":"job-1","stop_reason":"end_turn","usage":{},"total_ms":50,"stall_count":0,"seq":1,"ts":0}\n',
+      "",
+      "data: [DONE]\n",
+      "",
+    ].join("\n");
+
+    const mockFetch = createSessionMockFetch({
+      "/v1/jobs/job-1/events": sseData,
+      "/v1/jobs": {
+        job_id: "job-1",
+        conversation_id: "c1",
+        message_id: "m1",
+        status: "queued",
+      },
+      "/v1/agent/status": {
+        is_ready: true,
+        llm_configured: true,
+        message: "Ready",
+      },
+      "/v1/conversations": [],
+    });
+
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs") && !url.includes("/events")) {
+        capturedBody = init?.body as string;
+      }
+      return mockFetch(input, init);
+    };
+
+    const session = new ChatSession({ ...baseConfig, fetch: wrappedFetch });
+    await session.connect();
+    await session.send("Hi");
+
+    const body = JSON.parse(capturedBody!);
+    expect(body.video_mode).toBeUndefined();
+  });
+
+
   it("send passes goal (goal mode) to the request", async () => {
     let capturedBody: string | undefined;
     const sseData = [

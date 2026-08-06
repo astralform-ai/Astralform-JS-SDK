@@ -742,6 +742,7 @@ export interface ChatStreamRequest {
   agent_name?: string;
   plan_mode?: boolean;
   image_mode?: boolean;
+  video_mode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode). The backend mints
    * an agent_goal from this text and drives the run under a budget until the
@@ -867,6 +868,22 @@ export interface SendOptions extends ModelChoiceOptions {
    * The `image_mode` field itself is accepted from Astralform ≥ 0.59.0.
    */
   imageMode?: boolean;
+  /**
+   * Put this turn in video mode, attaching the video-generation tool.
+   *
+   * Off by default and per-message, for a sharper reason than images: a clip
+   * occupies one shared GPU for minutes, during which image generation on the
+   * same host cannot run at all. The tool is not attached unless this is set.
+   *
+   * Mutually exclusive with `imageMode` at the composer level — which is why a
+   * video turn also gets the image tool server-side: the user cannot select
+   * both, so the agent must be able to produce its own first frame.
+   *
+   * `generate_video` animates an EXISTING image; it cannot start from text, and
+   * the clip is silent. Gate the affordance on `AgentStatus.capabilities`
+   * (`video`), the same way image mode does.
+   */
+  videoMode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode). The text becomes
    * the goal's objective; the backend keeps the agent working under a budget until
