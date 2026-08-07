@@ -53,6 +53,14 @@ const SSE_MAX_RECONNECTS = 6;
  * leave ``reader.read()`` pending forever — no bytes, no error, no FIN — and
  * without a watchdog the retry loop below never engages and the UI hangs on
  * "working" indefinitely. Set to 3x the keepalive interval.
+ *
+ * DEPENDS ON THE KEEPALIVE'S FRAMING, not just its interval. The backend
+ * sends it as a typed wire event (``{"event": "keepalive", "data": ...}``), so
+ * it reaches ``streamJobSSE``'s parser as a real ``data:`` line and resets the
+ * timer below. An SSE-protocol comment (``: keepalive``) would be silently
+ * swallowed by that parser — it only reacts to ``event:``/``data:`` — and this
+ * watchdog would then fire on every healthy turn that thinks for 45s. If the
+ * backend ever changes that framing, this constant has to change with it.
  */
 const SSE_STALL_TIMEOUT_MS = 45_000;
 
