@@ -32,10 +32,37 @@ type ChatEventHandler = (event: ChatEvent) => void;
  * restart, network blip). We resume from ``lastSeq`` — the backend replays
  * missed events (``?after=seq``) and, for a job that already died, back-fills a
  * terminal event — so the UI recovers without a manual page refresh. Backoff is
- * exponential and capped; total window (~17s over 6 tries) comfortably covers a
- * server restart without spinning forever if the job is genuinely gone.
+ * exponential and capped: the six sleeps sum to 17.5s (0.5+1+2+4+5+5), which
+ * comfortably covers a server restart without spinning forever if the job is
+ * genuinely gone.
+ *
+ * That 17.5s is the BACKOFF total, not the time to give up. An attempt that
+ * fails fast costs ~nothing, but one that stalls burns SSE_STALL_TIMEOUT_MS
+ * before it even registers as a failure — so with all 7 attempts stalling the
+ * worst case is 7 * 45s + 17.5s ≈ 5.5 minutes. That is the intended trade: a
+ * stalled stream is indistinguishable from a slow one until the watchdog
+ * fires, and cutting it shorter risks killing healthy long-running turns.
  */
 const SSE_MAX_RECONNECTS = 6;
+
+/**
+ * Max silence tolerated on an established SSE stream before we declare it a
+ * zombie and reconnect. The backend emits a keepalive every 15s
+ * (``subscribe.py``), so a healthy stream never goes quiet this long. This
+ * matters because some failures (notably HTTP/3 / QUIC connection deaths)
+ * leave ``reader.read()`` pending forever — no bytes, no error, no FIN — and
+ * without a watchdog the retry loop below never engages and the UI hangs on
+ * "working" indefinitely. Set to 3x the keepalive interval.
+ *
+ * DEPENDS ON THE KEEPALIVE'S FRAMING, not just its interval. The backend
+ * sends it as a typed wire event (``{"event": "keepalive", "data": ...}``), so
+ * it reaches ``streamJobSSE``'s parser as a real ``data:`` line and resets the
+ * timer below. An SSE-protocol comment (``: keepalive``) would be silently
+ * swallowed by that parser — it only reacts to ``event:``/``data:`` — and this
+ * watchdog would then fire on every healthy turn that thinks for 45s. If the
+ * backend ever changes that framing, this constant has to change with it.
+ */
+const SSE_STALL_TIMEOUT_MS = 45_000;
 
 // Retries for the client-tool result POST itself, independent of the SSE
 // reconnect loop — reconnecting the *stream* can't recover a failed *result
@@ -363,17 +390,36 @@ export class ChatSession {
     const signal = this.abortController?.signal;
 
     for (let attempt = 0; ; attempt++) {
-      const stream = this.client.streamJobEvents(jobId, this.lastSeq, signal);
+      // Bail BEFORE building the next attempt. An already-aborted signal never
+      // dispatches `abort` again, so the listener below would silently miss it
+      // and this attempt would go out after the caller disconnected — emitting
+      // events, and potentially running a client tool, on a session it believes
+      // is gone. Passing the outer signal straight to fetch used to make that
+      // impossible (fetch checks `signal.aborted` up front); the per-attempt
+      // controller removes that guarantee unless it is restored here.
+      if (signal?.aborted) return;
+      // Each attempt gets its own controller, linked to the session signal,
+      // so the stall watchdog can kill a zombie connection without aborting
+      // the whole session — the retry below then resumes from lastSeq.
+      const attemptController = new AbortController();
+      const linkAbort = () => attemptController.abort();
+      signal?.addEventListener("abort", linkAbort);
       // Client tools stay enabled across reconnects; re-seen tool requests are
       // deduped by submitted call_id in dispatchWireEvent, so a tool whose
       // result we never posted (drop before submit) still runs on resume.
       let sawTerminal: boolean;
       try {
+        const stream = this.client.streamJobEvents(
+          jobId,
+          this.lastSeq,
+          attemptController.signal,
+        );
         sawTerminal = await this.pumpStream(
           stream,
           conversationId,
           messageId,
           executeClientTools,
+          () => attemptController.abort(),
         );
       } catch (err) {
         if (signal?.aborted) return; // user cancelled / detached
@@ -389,6 +435,8 @@ export class ChatSession {
         if (attempt >= SSE_MAX_RECONNECTS) throw err;
         await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1), signal);
         continue; // resume from lastSeq
+      } finally {
+        signal?.removeEventListener("abort", linkAbort);
       }
 
       // A terminal event (message_stop / error) ends the turn — including the
@@ -410,48 +458,92 @@ export class ChatSession {
    * Consume a single SSE stream to exhaustion. Returns whether a terminal
    * event (``message_stop`` / ``error``) was seen, so the caller can decide
    * whether an ended stream means "turn done" vs "dropped, reconnect".
+   *
+   * ``onStall`` aborts the per-attempt connection: if no event arrives within
+   * SSE_STALL_TIMEOUT_MS (backend keepalives land every 15s), the stream is a
+   * zombie — ``reader.read()`` will never settle — so we kill the fetch and
+   * throw a ConnectionError, feeding the caller's reconnect-from-lastSeq loop.
    */
   private async pumpStream(
     stream: AsyncGenerator<{ data: string }>,
     conversationId: string,
     messageId: string,
     executeClientTools: boolean,
+    onStall?: () => void,
   ): Promise<boolean> {
     let sawTerminal = false;
-    for await (const raw of stream) {
-      let parsed: WireEvent;
-      try {
-        const data = JSON.parse(raw.data);
-        if (
-          typeof data !== "object" ||
-          data === null ||
-          typeof data.type !== "string"
-        ) {
-          // Legacy "done" sentinel — backend still emits it for subscribers.
-          // Silently consume; the new protocol uses message_stop for turn end.
-          if (typeof (data as { seq?: unknown })?.seq === "number") {
-            this.lastSeq = (data as { seq: number }).seq;
+    const iterator = stream[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = iterator.next();
+        let stallTimer: ReturnType<typeof setTimeout> | undefined;
+        const stall = new Promise<never>((_, reject) => {
+          stallTimer = setTimeout(() => {
+            // Reject BEFORE aborting, and the order is load-bearing. Aborting
+            // first makes the pending read reject too (StreamAbortedError from
+            // `streaming.ts`), and whichever settles first wins the race below
+            // — so a stall could surface as `stream_aborted`. Both retry
+            // identically, but the diagnostic would then contradict this very
+            // comment. Rejecting first settles the race deterministically;
+            // `reject` changes state synchronously, so the later abort is a
+            // no-op for the race.
+            reject(
+              new ConnectionError(
+                `Stream stalled: no events for ${SSE_STALL_TIMEOUT_MS}ms`,
+              ),
+            );
+            // Then cancel the zombie fetch so the connection is released
+            // instead of leaking one per reconnect.
+            onStall?.();
+          }, SSE_STALL_TIMEOUT_MS);
+        });
+        let result: IteratorResult<{ data: string }>;
+        try {
+          result = await Promise.race([next, stall]);
+        } finally {
+          clearTimeout(stallTimer);
+        }
+        if (result.done) break;
+        const raw = result.value;
+        let parsed: WireEvent;
+        try {
+          const data = JSON.parse(raw.data);
+          if (
+            typeof data !== "object" ||
+            data === null ||
+            typeof data.type !== "string"
+          ) {
+            // Legacy "done" sentinel — backend still emits it for subscribers.
+            // Silently consume; the new protocol uses message_stop for turn end.
+            if (typeof (data as { seq?: unknown })?.seq === "number") {
+              this.lastSeq = (data as { seq: number }).seq;
+            }
+            continue;
           }
+          parsed = data as WireEvent;
+          if (typeof (data as Record<string, unknown>).seq === "number") {
+            this.lastSeq = (data as Record<string, unknown>).seq as number;
+          }
+        } catch {
           continue;
         }
-        parsed = data as WireEvent;
-        if (typeof (data as Record<string, unknown>).seq === "number") {
-          this.lastSeq = (data as Record<string, unknown>).seq as number;
+
+        if (parsed.type === "message_stop" || parsed.type === "error") {
+          sawTerminal = true;
         }
-      } catch {
-        continue;
-      }
 
-      if (parsed.type === "message_stop" || parsed.type === "error") {
-        sawTerminal = true;
+        await this.dispatchWireEvent(
+          parsed,
+          conversationId,
+          messageId,
+          executeClientTools,
+        );
       }
-
-      await this.dispatchWireEvent(
-        parsed,
-        conversationId,
-        messageId,
-        executeClientTools,
-      );
+    } finally {
+      // Fire-and-forget: on the stall path the pending read may never settle
+      // (e.g. a custom fetchFn that ignores the abort signal), and awaiting
+      // this would re-hang the pump the watchdog just rescued.
+      void iterator.return?.(undefined).catch(() => {});
     }
     return sawTerminal;
   }
