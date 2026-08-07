@@ -76,6 +76,12 @@ export class StreamManager {
   private _backgroundJobs = new Map<string, string>();
   private handlers: EventHandler[] = [];
   private unsub: (() => void) | null = null;
+  /**
+   * Bumped every time the active conversation moves. An async sequence that
+   * captures it can then tell, at each await boundary, whether it is still the
+   * one the user is waiting on — see ``restore``.
+   */
+  private generation = 0;
 
   constructor(session: ChatSession) {
     this.session = session;
@@ -266,6 +272,8 @@ export class StreamManager {
     }
 
     this.setActiveConversation(conversationId);
+    // Captured AFTER the bump above, so this is this switch's own generation.
+    const gen = this.generation;
 
     if (opts?.skipHistoryReplay && !targetHadBackgroundJob) {
       // Cached fast path — but a job started before this instance existed (page
@@ -278,11 +286,13 @@ export class StreamManager {
       } catch {
         // Network error — treat as no active job (best-effort, matches restore()).
       }
+      if (gen !== this.generation) return;
       if (!activeJobId) {
         // Consumer already holds the rendered blocks. Load the message list so
         // send/regenerate have their context, but skip the fetch + replay and
         // stay out of the ``restoring`` state.
         await this.session.loadConversation(conversationId);
+        if (gen !== this.generation) return;
         this.setState("idle");
         return;
       }
@@ -290,7 +300,7 @@ export class StreamManager {
       // reconnects to its stream.
     }
 
-    await this.restore(conversationId);
+    await this.restore(conversationId, gen);
   }
 
   // ── Create / rename / delete conversation ─────────────────────
@@ -313,8 +323,7 @@ export class StreamManager {
     await this.session.deleteConversation(id);
     this._backgroundJobs.delete(id);
     if (this._activeConversationId === id) {
-      this._activeConversationId = null;
-      this.emit({ type: "conversationChanged", conversationId: null });
+      this.setActiveConversation(null);
     }
   }
 
@@ -345,7 +354,29 @@ export class StreamManager {
 
   // ── Internal: restore ─────────────────────────────────────────
 
-  private async restore(conversationId: string): Promise<void> {
+  private async restore(conversationId: string, gen: number): Promise<void> {
+    /**
+     * Has the user moved on since this restore started?
+     *
+     * A restore is a long chain of awaits — the active-job probe, the message
+     * list, the job list, then every completed turn's events in parallel. That
+     * last one is seconds for a large conversation, and clicks are not
+     * serialized, so a switch routinely lands mid-chain. Everything after this
+     * point either mutates session state the newer switch now owns
+     * (``loadConversation``, ``replayTurn``, ``reconnectToJob``) or announces a
+     * state the newer switch is responsible for (``setState``), so a superseded
+     * restore must stop rather than finish.
+     *
+     * Left to run, it re-pointed the session at the conversation it was
+     * replaying and poured that conversation's whole history out of the event
+     * stream, which the consumer rendered into the one on screen.
+     *
+     * Stopping is safe with a consumer that caches restored blocks: the blocks
+     * for this conversation never arrive, so its cache stays empty and the next
+     * open takes the full path again rather than the skip-replay fast path.
+     */
+    const superseded = (): boolean => gen !== this.generation;
+
     this.setState("restoring");
 
     // Check for active job
@@ -356,22 +387,28 @@ export class StreamManager {
     } catch {
       // Network error — assume no active job
     }
+    if (superseded()) return;
 
     if (activeJobId) {
       // Active job: load messages, reconnect to live SSE
       await this.session.loadConversation(conversationId);
+      if (superseded()) return;
       this.setState("streaming");
       try {
         await this.session.reconnectToJob(activeJobId);
       } catch {
         // Stream ended or aborted
       }
+      // A switch during the stream already detached it and parked the job in
+      // ``_backgroundJobs``; the newer switch owns the state from there.
+      if (superseded()) return;
       if (this._state === "streaming") {
         this.setState("idle");
       }
     } else {
       // Completed: load the final messages once, then replay each turn.
       await this.session.loadConversation(conversationId);
+      if (superseded()) return;
 
       try {
         const jobs = await this.session.client.get<
@@ -382,6 +419,7 @@ export class StreamManager {
             metrics?: Record<string, unknown>;
           }[]
         >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
+        if (superseded()) return;
         const completedJobs = jobs.filter(
           (j: { status: string }) => j.status === "completed",
         );
@@ -419,6 +457,12 @@ export class StreamManager {
               .catch(() => []),
           ),
         );
+        // THE window. This wave is the slow part of a restore — the events of
+        // every completed turn — and a click during it is the ordinary case,
+        // not a rare one. The fetched events are discarded rather than
+        // replayed: the replay below is what re-points the session and floods
+        // the consumer.
+        if (superseded()) return;
 
         const eventsByJobId = new Map(
           completedJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
@@ -458,14 +502,23 @@ export class StreamManager {
         // Version chain loading failed — non-blocking
       }
 
+      // The replay is synchronous, so nothing can have superseded us between
+      // it and here — but the `catch` above swallows a failure that may have
+      // left the chain part-way, and this announcement belongs to whichever
+      // switch is current.
+      if (superseded()) return;
       this.setState("idle");
     }
   }
 
   // ── Internal: set active conversation ─────────────────────────
 
-  private setActiveConversation(id: string): void {
+  private setActiveConversation(id: string | null): void {
     this._activeConversationId = id;
+    // EVERY move of the pointer bumps the generation, not just `switchTo`:
+    // creating a conversation and deleting the active one relocate the user
+    // just as much, and an in-flight restore has to yield to those too.
+    this.generation++;
     this.emit({ type: "conversationChanged", conversationId: id });
   }
 }

@@ -676,9 +676,16 @@ export class ChatSession {
   async loadConversation(id: string): Promise<void> {
     this.conversationId = id;
     this.resetStreamingState();
-    this.messages = await this.client
+    const messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
+    // Nothing serializes callers, and this fetch is not instant: a switch that
+    // lands while it is in flight has already re-pointed the session. Install
+    // these now and the session holds ONE conversation's id beside ANOTHER's
+    // messages — the pair `send` (which posts to `conversationId`) and
+    // `regenerate` (which resends `messages`' last user turn) read together.
+    if (this.conversationId !== id) return;
+    this.messages = messages;
   }
 
   /**
