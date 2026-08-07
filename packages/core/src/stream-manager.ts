@@ -340,8 +340,10 @@ export class StreamManager {
     // `switchTo`, there is no successor restore to announce it instead, so
     // `_state` would sit at `restoring` on a brand-new empty conversation
     // until the next `send` or `stop` happened to clear it. Being a
-    // generation-bumping origin means owning the announcement.
-    this.setState("idle");
+    // generation-bumping origin means owning the announcement — but not over
+    // a live turn: `createNewConversation` is awaited, and a send landing
+    // inside that await owns the streaming state and will finalize it itself.
+    this.settleIdle();
     return id;
   }
 
@@ -363,11 +365,14 @@ export class StreamManager {
       // a running-job indicator on a conversation no longer in the list, and
       // `switchTo` would compute `targetHadBackgroundJob` and force a full
       // restore of it.
-      if (this._state === "streaming") this.session.disconnect();
+      if (this._state === "streaming") {
+        this.session.disconnect();
+        this._state = "idle"; // cancelled, not parked — same recording as above
+      }
       this.setActiveConversation(null);
       // Same reason as `createConversation`: this bumps the generation, so any
       // restore it supersedes goes quiet, and nothing else will announce.
-      this.setState("idle");
+      this.settleIdle();
     }
     // AFTER the branch above, so nothing can put the entry back.
     this._backgroundJobs.delete(id);
@@ -411,6 +416,11 @@ export class StreamManager {
       this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
     }
     this.session.detach();
+    // Record — without announcing — that the manager no longer owns a live
+    // turn. The caller announces, and this is what lets it use `settleIdle()`:
+    // a `streaming` state seen there afterwards belongs to a NEW send that
+    // landed during the caller's own awaits, which owns its own announcement.
+    this._state = "idle";
   }
 
   /**

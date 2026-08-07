@@ -961,6 +961,80 @@ describe("relocating the conversation tears the live turn down first", () => {
     held.open();
   });
 
+  it("createConversation does not announce idle over a send that landed in its await", async () => {
+    // `createNewConversation` is awaited — a real async op for any storage
+    // backend other than InMemoryStorage — and a send landing inside it owns
+    // the streaming state. Announcing `idle` there is the unrecoverable shape:
+    // `finalizeStream` and the `message_stop` branch both no-op on a
+    // non-streaming state, so it stays idle for the whole turn and the next
+    // send is swallowed by `ChatSession.send`'s own `isStreaming` bail.
+    const held = gate();
+    const slowCreate = gate();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events")) {
+            await held.wait;
+            return new Response("data: [DONE]\n\n", {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            });
+          }
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "job-1",
+              conversation_id: "conv-new",
+              message_id: "m1",
+              status: "queued",
+            });
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => {
+          await slowCreate.wait; // the send lands inside this await
+          return {
+            id,
+            title: "",
+            createdAt: "",
+            updatedAt: "",
+            messageCount: 0,
+          };
+        },
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    // An active conversation first, or `send` would itself call
+    // `createNewConversation` and block on the same gate.
+    await manager.switchTo("conv-a");
+
+    const creating = manager.createConversation();
+    await flush();
+    void manager.send("during the create");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    slowCreate.open();
+    await creating;
+    await flush();
+
+    expect(manager.state).toBe("streaming");
+    expect(session.isStreaming).toBe(true);
+
+    held.open();
+  });
+
   it("createConversation parks the streaming job instead of announcing idle over it", async () => {
     // Announcing `idle` while the stream lives is worse than announcing
     // nothing: `manager.send` stops bailing, calls `session.send`, and THAT
@@ -1418,6 +1492,113 @@ describe("no path announces idle over a live stream", () => {
     expect(session.isStreaming).toBe(true);
 
     held.open();
+  });
+});
+
+describe("the put-back never rewinds a session that has moved on", () => {
+  it("declines when a later load has taken ownership", async () => {
+    // The last post-await mutation in the file without a supersession guard.
+    // `createJob` can hang and then fail while the session moves elsewhere; an
+    // unguarded put-back rewinds it to a conversation the user has left, which
+    // is the very failure this change exists to prevent.
+    const hangingJob = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          await hangingJob.wait;
+          return new Response("boom", { status: 500 });
+        }
+        const which = url.includes("/conv-a/")
+          ? "a"
+          : url.includes("/conv-c/")
+            ? "c"
+            : null;
+        if (which && url.includes("/messages"))
+          return json([
+            {
+              id: `m-${which}`,
+              conversation_id: `conv-${which}`,
+              role: "user",
+              content: `${which.toUpperCase()}'s prompt`,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    const sending = session.send("hi", { conversationId: "conv-b" });
+    await flush();
+    await session.loadConversation("conv-c"); // the user moves on; this wins
+    hangingJob.open();
+    await sending;
+    await flush();
+
+    // conv-c is what the caller is displaying. Rewinding to conv-a here would
+    // send the next unaddressed message — and `resendFromCheckpoint`, which
+    // reads `conversationId` — to a conversation left two steps ago.
+    expect(session.conversationId).toBe("conv-c");
+    expect(session.messagesConversationId).toBe("conv-c");
+    expect(session.messages.map((m) => m.content)).toEqual(["C's prompt"]);
+  });
+});
+
+describe("the put-back restores each pointer from its own snapshot", () => {
+  it("does not rewind conversationId to wherever the messages happened to be", async () => {
+    // The two pointers are deliberately distinct — during any in-flight
+    // `loadConversation` they disagree, which is the whole reason
+    // `messagesConversationId` exists. Restoring one snapshot into both
+    // rewinds `conversationId` to where the MESSAGES were rather than where
+    // the session pointed.
+    const parked = gate();
+    const failJob = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          await failJob.wait;
+          return new Response("boom", { status: 500 });
+        }
+        if (url.includes("/conv-x/messages"))
+          return json([
+            {
+              id: "m-x",
+              conversation_id: "conv-x",
+              role: "user",
+              content: "X's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        if (url.includes("/conv-a/messages")) {
+          await parked.wait; // never lands before the assertions
+          return json([]);
+        }
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-x");
+    void session.loadConversation("conv-a"); // pointer -> conv-a, messages still conv-x
+    await flush();
+    expect(session.conversationId).toBe("conv-a");
+    expect(session.messagesConversationId).toBe("conv-x");
+
+    const sending = session.send("hi", { conversationId: "conv-b" });
+    await flush();
+    failJob.open();
+    await sending;
+    await flush();
+
+    // Each pointer goes back to its own value, not to a single shared one.
+    expect(session.conversationId).toBe("conv-a");
+    expect(session.messagesConversationId).toBe("conv-x");
+    expect(session.messages.map((m) => m.content)).toEqual(["X's prompt"]);
+
+    parked.open();
   });
 });
 

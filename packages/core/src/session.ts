@@ -263,7 +263,12 @@ export class ChatSession {
       options?.conversationId ?? this.conversationId ?? undefined;
     // Captured so a send that never reaches the wire can put the list back —
     // see the restore in the catch below.
-    let relocatedFrom: { messages: Message[]; id: string | null } | null = null;
+    let relocatedFrom: {
+      messages: Message[];
+      messagesId: string | null;
+      conversationId: string | null;
+      generation: number;
+    } | null = null;
 
     // Sending to an explicit conversation makes it the session's — catch the
     // pointer up now rather than waiting for an in-flight `loadConversation`
@@ -288,7 +293,18 @@ export class ChatSession {
       // would throw the history away.
       if (conversationId !== this.conversationId) {
         this.loadGeneration++;
-        relocatedFrom = { messages: this.messages, id: this.messagesConversationId };
+        // Both pointers, snapshotted separately: they are deliberately
+        // distinct everywhere else here, and during an in-flight
+        // `loadConversation` they disagree — restoring one into both would
+        // rewind `conversationId` to wherever the MESSAGES were rather than
+        // where the session pointed. The generation is claimed here too, so
+        // the put-back can tell whether it still owns the session.
+        relocatedFrom = {
+          messages: this.messages,
+          messagesId: this.messagesConversationId,
+          conversationId: this.conversationId,
+          generation: this.loadGeneration,
+        };
         // Drop the old conversation's list with the pointer. Leaving it behind
         // is the same one-conversation's-messages-under-another's-id pairing
         // the load guard exists to prevent — and here nothing re-fetches, so
@@ -348,10 +364,19 @@ export class ChatSession {
     // was created there is no new conversation's history to replace it and
     // nothing that will re-fetch, so a direct `ChatSession` caller would be
     // left holding nothing at all. Put it back.
-    if (relocatedFrom && this.jobsCreated === jobsBefore) {
+    // Guarded like every other post-await mutation in this file. `createJob`
+    // can hang and then fail, and the session can have moved on meanwhile — an
+    // unguarded put-back would rewind it to a conversation the user left, which
+    // is the failure this whole change exists to prevent, arriving through the
+    // one path that was still missing the check.
+    if (
+      relocatedFrom &&
+      this.jobsCreated === jobsBefore &&
+      this.loadGeneration === relocatedFrom.generation
+    ) {
       this.messages = relocatedFrom.messages;
-      this.messagesConversationId = relocatedFrom.id;
-      this.conversationId = relocatedFrom.id;
+      this.messagesConversationId = relocatedFrom.messagesId;
+      this.conversationId = relocatedFrom.conversationId;
     }
   }
 
