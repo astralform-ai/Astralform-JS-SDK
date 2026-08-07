@@ -32,8 +32,16 @@ type ChatEventHandler = (event: ChatEvent) => void;
  * restart, network blip). We resume from ``lastSeq`` — the backend replays
  * missed events (``?after=seq``) and, for a job that already died, back-fills a
  * terminal event — so the UI recovers without a manual page refresh. Backoff is
- * exponential and capped; total window (~17s over 6 tries) comfortably covers a
- * server restart without spinning forever if the job is genuinely gone.
+ * exponential and capped: the six sleeps sum to 17.5s (0.5+1+2+4+5+5), which
+ * comfortably covers a server restart without spinning forever if the job is
+ * genuinely gone.
+ *
+ * That 17.5s is the BACKOFF total, not the time to give up. An attempt that
+ * fails fast costs ~nothing, but one that stalls burns SSE_STALL_TIMEOUT_MS
+ * before it even registers as a failure — so with all 7 attempts stalling the
+ * worst case is 7 * 45s + 17.5s ≈ 5.5 minutes. That is the intended trade: a
+ * stalled stream is indistinguishable from a slow one until the watchdog
+ * fires, and cutting it shorter risks killing healthy long-running turns.
  */
 const SSE_MAX_RECONNECTS = 6;
 
