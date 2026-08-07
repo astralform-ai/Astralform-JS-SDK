@@ -280,4 +280,101 @@ describe("ChatSession auto-reconnect", () => {
     // aborted check silently fails, so the loop reconnects to exhaustion.
     expect(urls.length).toBeLessThan(MAX_EVENTS_CALLS);
   });
+
+  // Sharper than the bound above, which passes even when one extra attempt
+  // slips out. Detaching during backoff must stop the loop IMMEDIATELY: the
+  // per-attempt AbortController is linked to the session signal by an `abort`
+  // LISTENER, and a signal aborted while we were sleeping already dispatched
+  // that event — so the listener never fires and the fresh controller stays
+  // live. That attempt would then reach the network, emit events, and could
+  // run a client tool on a session the caller believes is disconnected.
+  it("detach during backoff issues NO further /events request", async () => {
+    const partial = msgStart(0) + blockStart(1); // never terminal → would retry
+    const urls: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: reconnectFetch([partial], urls),
+    });
+    await session.connect();
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    await vi.advanceTimersByTimeAsync(50); // first pump done, now in backoff
+    const afterFirst = urls.length;
+    session.detach();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await p;
+    vi.useRealTimers();
+
+    expect(urls).toHaveLength(afterFirst); // not one more round trip
+  });
+
+  it("rescues a zombie stream (no bytes, no error, no FIN) via the stall watchdog", async () => {
+    const partial = msgStart(0) + blockStart(1) + blockDelta(2, "Hi");
+    const terminal = msgStop(3) + DONE;
+    const urls: string[] = [];
+    let call = 0;
+    // First /events connection delivers partial events then goes silent
+    // forever — the HTTP/3 zombie mode where reader.read() never settles.
+    const fetch = (async (input: unknown, init?: { method?: string }) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : (input as Request).url;
+      if (url.includes("/events")) {
+        const i = call++;
+        urls.push(url);
+        if (i === 0) {
+          const enc = new TextEncoder();
+          const stream = new ReadableStream({
+            start(c) {
+              c.enqueue(enc.encode(partial)); // …and then nothing, ever
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        return sseResponse(terminal);
+      }
+      if (url.includes("/v1/jobs") && init?.method === "POST") {
+        return jsonResponse(
+          {
+            job_id: "job-1",
+            conversation_id: "c1",
+            message_id: "m1",
+            status: "queued",
+          },
+          201,
+        );
+      }
+      if (url.includes("/v1/agent/status")) {
+        return jsonResponse({
+          is_ready: true,
+          llm_configured: true,
+          message: "Ready",
+        });
+      }
+      return jsonResponse([]);
+    }) as unknown as typeof globalThis.fetch;
+
+    const session = new ChatSession({ ...baseConfig, fetch });
+    await session.connect();
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    // 45s stall timeout + reconnect backoff, with margin.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await p;
+    vi.useRealTimers();
+
+    expect(events.some((e) => e.type === "message_stop")).toBe(true);
+    expect(urls).toHaveLength(2); // watchdog killed the zombie, reconnected once
+    expect(urls[1]).toContain("after=2"); // resumed from the last seq before the stall
+  });
 });
