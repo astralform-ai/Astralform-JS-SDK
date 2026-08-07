@@ -123,6 +123,17 @@ export class ChatSession {
   /** True while ``loadMoreConversations`` is in flight. */
   isLoadingConversations = false;
   messages: Message[] = [];
+  /**
+   * Which conversation ``messages`` currently holds.
+   *
+   * Distinct from ``conversationId``, and the distinction is the point:
+   * ``loadConversation`` moves the POINTER synchronously and installs the LIST
+   * an await later, so for the whole duration of every load the two disagree.
+   * Anything pairing a message with a conversation — ``regenerate`` above all —
+   * has to read this one, or it will pair the previous conversation's last
+   * message with the new conversation's id.
+   */
+  messagesConversationId: string | null = null;
   isStreaming = false;
   agentStatus: AgentStatus | null = null;
   agents: AgentInfo[] = [];
@@ -264,7 +275,18 @@ export class ChatSession {
       // passes the active id on every send — must leave a load for that same
       // conversation alone, or sending while its history is still arriving
       // would throw the history away.
-      if (conversationId !== this.conversationId) this.loadGeneration++;
+      if (conversationId !== this.conversationId) {
+        this.loadGeneration++;
+        // Drop the old conversation's list with the pointer. Leaving it behind
+        // is the same one-conversation's-messages-under-another's-id pairing
+        // the load guard exists to prevent — and here nothing re-fetches, so
+        // for a direct `ChatSession` caller (this is a documented public
+        // option) it would simply persist. Through `StreamManager` the
+        // in-flight restore reinstalls the right list, which is why the
+        // manager-level tests never saw it.
+        this.messages = [];
+        this.messagesConversationId = conversationId;
+      }
       this.conversationId = conversationId;
     }
 
@@ -854,15 +876,24 @@ export class ChatSession {
     // carrying an id the server never assigned, which `regenerate` would then
     // pick as the last user message and `planRestore` would replay as a
     // free-standing steer bubble.
-    const stillPending = this.messages.filter(
-      (m) =>
-        m.conversationId === id &&
-        !knownBeforeFetch.has(m.id) &&
-        !messages.some((f) => f.role === m.role && f.content === m.content),
+    const arrived = this.messages.filter(
+      (m) => m.conversationId === id && !knownBeforeFetch.has(m.id),
+    );
+    // Compare against the TAIL only — the newest `arrived.length` rows. If the
+    // server committed these sends they are necessarily the newest rows in the
+    // reply, so nothing older can be a match. Comparing against the whole
+    // history instead made any repeat of a prompt the conversation had EVER
+    // contained collapse: "continue", "yes", "retry" are the norm in an agent
+    // chat, and the just-sent copy would be dropped against a turn-3 row the
+    // server's read never saw — the very loss this filter exists to prevent.
+    const tail = messages.slice(Math.max(0, messages.length - arrived.length));
+    const stillPending = arrived.filter(
+      (m) => !tail.some((f) => f.role === m.role && f.content === m.content),
     );
     this.messages = stillPending.length
       ? [...messages, ...stillPending]
       : messages;
+    this.messagesConversationId = id;
   }
 
   /**
@@ -928,6 +959,9 @@ export class ChatSession {
     this.conversations.unshift(conversation);
     this.conversationId = id;
     this.messages = [];
+    // The empty list IS this conversation's list — say so, or every consumer
+    // of the pairing (regenerate) stays blocked on the previous conversation.
+    this.messagesConversationId = id;
     return id;
   }
 
@@ -1004,10 +1038,20 @@ export class ChatSession {
     // token THIS switch is operating under.
     const loading = this.loadConversation(id);
     const token = this.loadGeneration;
-    const [, eventsResult] = await Promise.allSettled([
+    const [loadResult, eventsResult] = await Promise.allSettled([
       loading,
       this.client.getConversationEvents(id, jobId),
     ]);
+    // A REJECTED load is not a superseded one, so the token check below lets it
+    // through — and `loadConversation` has already moved the pointer, leaving
+    // the previous conversation's list under the new id. The old code blanked
+    // the list on failure; restore that floor. Only reachable through a custom
+    // `ChatStorage` whose fallback throws (`InMemoryStorage` never does), but
+    // `ChatStorage` is a public interface.
+    if (loadResult.status === "rejected") {
+      this.messages = [];
+      this.messagesConversationId = id;
+    }
     // Guarding the messages alone was not enough — and left this in a worse
     // state than before. `replayTurn` opens by assigning `this.conversationId`
     // and then emits the whole turn, so a superseded call still did both of
@@ -1140,6 +1184,7 @@ export class ChatSession {
     if (this.conversationId === id) {
       this.conversationId = null;
       this.messages = [];
+      this.messagesConversationId = null;
     }
   }
 

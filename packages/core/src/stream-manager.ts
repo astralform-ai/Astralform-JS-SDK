@@ -211,14 +211,22 @@ export class StreamManager {
     // PREVIOUS conversation's list. Pairing that id with any conversation is
     // incoherent, so the only correct move is not to act.
     //
-    // Tested as pointer equality rather than `state === "restoring"`, which was
-    // the first attempt and is wrong: the `skipHistoryReplay` fast path never
-    // enters that state — not entering it is the entire point of the fast path
-    // — so the window is just as open there, at `idle`. This asks the question
-    // that actually matters, "has the session caught up with me yet", and so
-    // covers every switch path including any added later. Returns silently, as
-    // this method already does for a streaming state and an empty history.
-    if (this.session.conversationId !== this._activeConversationId) return;
+    // Gated on which conversation the MESSAGES belong to, not on the session's
+    // conversation pointer. Pointer equality was the second attempt and is
+    // still wrong, in the widest case rather than an edge: `loadConversation`
+    // assigns the pointer SYNCHRONOUSLY and installs the messages only when the
+    // fetch returns, so for the whole duration of every ordinary load the two
+    // pointers already agree while `messages` still holds the previous
+    // conversation's turns. Regenerating there resends the OLD conversation's
+    // last message under the NEW conversation's id.
+    //
+    // `messagesConversationId` moves with the list itself, so it answers the
+    // question that actually matters — are these messages this conversation's?
+    // Returns silently, as this method already does for a streaming state and
+    // an empty history.
+    if (this.session.messagesConversationId !== this._activeConversationId) {
+      return;
+    }
 
     const userMsgs = this.session.messages.filter(
       (m: { role: string }) => m.role === "user",
@@ -270,18 +278,7 @@ export class StreamManager {
     const targetHadBackgroundJob = this._backgroundJobs.has(conversationId);
 
     // If streaming, detach (job keeps running in background)
-    if (this._state === "streaming") {
-      const oldConvId = this._activeConversationId;
-      const jobId = this.session.currentJobId;
-      if (oldConvId && jobId) {
-        this._backgroundJobs.set(oldConvId, jobId);
-        this.emit({
-          type: "backgroundJobsChanged",
-          jobs: this._backgroundJobs,
-        });
-      }
-      this.session.detach();
-    }
+    this.detachStreamingTurn();
 
     // Clear background job for target (we're viewing it now)
     if (this._backgroundJobs.has(conversationId)) {
@@ -328,6 +325,10 @@ export class StreamManager {
 
   async createConversation(): Promise<string> {
     const id = await this.session.createNewConversation();
+    // Tear the live turn down BEFORE relocating, exactly as `switchTo` does.
+    // Without it the `setState("idle")` below announces a ready composer over
+    // a stream that is still running, and the next send is silently dropped.
+    this.detachStreamingTurn();
     this.setActiveConversation(id);
     // Settle the state here. `setActiveConversation` bumps the generation, so
     // a restore this supersedes now returns WITHOUT emitting — including
@@ -352,6 +353,7 @@ export class StreamManager {
     await this.session.deleteConversation(id);
     this._backgroundJobs.delete(id);
     if (this._activeConversationId === id) {
+      this.detachStreamingTurn();
       this.setActiveConversation(null);
       // Same reason as `createConversation`: this bumps the generation, so any
       // restore it supersedes goes quiet, and nothing else will announce.
@@ -377,6 +379,27 @@ export class StreamManager {
   }
 
   // ── Internal: helpers ──────────────────────────────────────────
+
+  /**
+   * Park a streaming turn as a background job and detach from its SSE stream.
+   *
+   * Every method that relocates the active conversation has to do this before
+   * announcing a new state. Announcing `idle` while `session.isStreaming` is
+   * still true is worse than announcing nothing: `manager.send` no longer bails
+   * on the streaming state, calls `session.send`, and THAT bails on its own
+   * `isStreaming` — so the message is never posted, no error is emitted, and
+   * the composer looks ready the whole time.
+   */
+  private detachStreamingTurn(): void {
+    if (this._state !== "streaming") return;
+    const oldConvId = this._activeConversationId;
+    const jobId = this.session.currentJobId;
+    if (oldConvId && jobId) {
+      this._backgroundJobs.set(oldConvId, jobId);
+      this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
+    }
+    this.session.detach();
+  }
 
   private finalizeStream(): void {
     if (this._state === "streaming") {

@@ -840,6 +840,277 @@ describe("a send that MOVES the pointer invalidates a load in flight", () => {
   });
 });
 
+describe("regenerate is gated on whose messages these are", () => {
+  it("stays blocked during an ordinary load, when the pointers already agree", async () => {
+    // The widest instance, not an edge: `loadConversation` moves the POINTER
+    // synchronously and installs the LIST when the fetch returns, so during
+    // every ordinary load the two pointers agree while `messages` still holds
+    // the previous conversation's turns. A pointer-equality guard passes here.
+    const slowB = gate();
+    const seen: { jobBody?: Record<string, unknown> } = {};
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          seen.jobBody = JSON.parse(init?.body as string);
+          return json({
+            job_id: "j",
+            conversation_id: "x",
+            message_id: "m",
+            status: "queued",
+          });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        if (url.includes("/conv-b/messages")) {
+          await slowB.wait; // parked with the pointer ALREADY on conv-b
+          return json([]);
+        }
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    const switchingB = manager.switchTo("conv-b");
+    await flush();
+
+    // Both pointers agree; the messages do not.
+    expect(manager.activeConversationId).toBe("conv-b");
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messages.map((m) => m.content)).toEqual(["A's prompt"]);
+
+    void manager.regenerate();
+    await flush();
+
+    // Unguarded this resends A's last message under B's id.
+    expect(seen.jobBody).toBeUndefined();
+
+    slowB.open();
+    await switchingB;
+  });
+});
+
+describe("relocating the conversation tears the live turn down first", () => {
+  function streamingFixture() {
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // the turn's SSE stream never finishes on its own
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-1",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    return { session, manager: new StreamManager(session), held };
+  }
+
+  it("createConversation parks the streaming job instead of announcing idle over it", async () => {
+    // Announcing `idle` while the stream lives is worse than announcing
+    // nothing: `manager.send` stops bailing, calls `session.send`, and THAT
+    // bails on its own `isStreaming` — the message is never posted, no error
+    // is emitted, and the composer looks ready throughout.
+    const { session, manager, held } = streamingFixture();
+    await manager.switchTo("conv-a");
+    void manager.send("first");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    await manager.createConversation();
+
+    expect(manager.state).toBe("idle");
+    expect(session.isStreaming).toBe(false);
+    expect([...manager.backgroundJobs.keys()]).toContain("conv-a");
+
+    held.open();
+  });
+});
+
+describe("the anti-duplicate comparison is scoped to the fetch window", () => {
+  it("keeps a repeat of a prompt the conversation already contains", async () => {
+    // Comparing role+content against the WHOLE history drops any repeat of a
+    // prompt ever said. "continue" / "yes" / "retry" are the norm in an agent
+    // chat, so this is common, and the consequence is the loss the filter
+    // exists to prevent. Only the newest rows can be the pending sends.
+    const gated = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m",
+            status: "queued",
+          });
+        if (url.includes("/conv-a/messages")) {
+          await gated.wait;
+          // The server's read happened BEFORE the new "continue" committed, so
+          // the only "continue" here is the old turn-3 one.
+          return json([
+            {
+              id: "m1",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "continue",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "m2",
+              conversation_id: "conv-a",
+              role: "assistant",
+              content: "ok",
+              created_at: "2026-01-01T00:00:01Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+
+    const loading = session.loadConversation("conv-a");
+    await flush();
+    void session.send("continue", { conversationId: "conv-a" });
+    await flush();
+    gated.open();
+    await loading;
+
+    // Three: the two historical rows plus the new send.
+    expect(session.messages.map((m) => m.content)).toEqual([
+      "continue",
+      "ok",
+      "continue",
+    ]);
+  });
+});
+
+describe("a rejected load does not leave the old list under the new id", () => {
+  it("blanks the messages instead", async () => {
+    // A rejected load is not a SUPERSEDED one, so the token check lets it
+    // through — while `loadConversation` has already moved the pointer. Only
+    // reachable via a custom `ChatStorage` whose fallback throws, but
+    // `ChatStorage` is a public interface.
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/conv-a/messages"))
+            return json([
+              {
+                id: "m-a",
+                conversation_id: "conv-a",
+                role: "user",
+                content: "A's prompt",
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ]);
+          if (url.includes("/conv-b/messages"))
+            return new Response("nope", { status: 500 });
+          return json([]);
+        },
+      },
+      {
+        // Storage fallback that throws — the path InMemoryStorage never takes.
+        createConversation: async () => ({
+          id: "x",
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => {
+          throw new Error("storage unavailable");
+        },
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+
+    await session.switchConversation("conv-a");
+    expect(session.messages.map((m) => m.content)).toEqual(["A's prompt"]);
+
+    await session.switchConversation("conv-b");
+
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messages).toEqual([]);
+  });
+});
+
+describe("a send addressed elsewhere takes the message list with it", () => {
+  it("does not leave the previous conversation's turns under the new id", async () => {
+    // `send(..., { conversationId })` is a documented public option. Moving the
+    // pointer without the list leaves one conversation's messages under
+    // another's id, and unlike a load nothing re-fetches — through
+    // `StreamManager` the in-flight restore reinstalls the right list, which
+    // is exactly why the manager-level tests never saw this.
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-b",
+            message_id: "m",
+            status: "queued",
+          });
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    expect(session.messages.map((m) => m.content)).toEqual(["A's prompt"]);
+
+    void session.send("hi", { conversationId: "conv-b" });
+    await flush();
+
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messagesConversationId).toBe("conv-b");
+    expect(session.messages.map((m) => m.content)).toEqual(["hi"]);
+  });
+});
+
 describe("loadConversation does not install a left conversation's messages", () => {
   it("keeps the messages and the id describing the same conversation", async () => {
     // The narrower half of the same race: `loadConversation` assigns the id
