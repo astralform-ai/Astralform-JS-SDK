@@ -253,6 +253,9 @@ export class ChatSession {
 
     const conversationId =
       options?.conversationId ?? this.conversationId ?? undefined;
+    // Captured so a send that never reaches the wire can put the list back —
+    // see the restore in the catch below.
+    let relocatedFrom: { messages: Message[]; id: string | null } | null = null;
 
     // Sending to an explicit conversation makes it the session's — catch the
     // pointer up now rather than waiting for an in-flight `loadConversation`
@@ -277,6 +280,7 @@ export class ChatSession {
       // would throw the history away.
       if (conversationId !== this.conversationId) {
         this.loadGeneration++;
+        relocatedFrom = { messages: this.messages, id: this.messagesConversationId };
         // Drop the old conversation's list with the pointer. Leaving it behind
         // is the same one-conversation's-messages-under-another's-id pairing
         // the load guard exists to prevent — and here nothing re-fetches, so
@@ -323,7 +327,22 @@ export class ChatSession {
       temperature: options?.temperature,
     };
 
+    // `processStream` never rejects — it catches and emits an `error` event —
+    // so a thrown-exception guard here would be dead code. A new job id is the
+    // real signal that the send reached the wire: `consumeJobStream` assigns it
+    // immediately after `createJob` returns.
+    const jobIdBefore = this.currentJobId;
     await this.processStream(request);
+
+    // The relocation above emptied the list before anything was sent. If no job
+    // was created there is no new conversation's history to replace it and
+    // nothing that will re-fetch, so a direct `ChatSession` caller would be
+    // left holding nothing at all. Put it back.
+    if (relocatedFrom && this.currentJobId === jobIdBefore) {
+      this.messages = relocatedFrom.messages;
+      this.messagesConversationId = relocatedFrom.id;
+      this.conversationId = relocatedFrom.id;
+    }
   }
 
   async resendFromCheckpoint(
@@ -391,6 +410,11 @@ export class ChatSession {
     const conversationId = job.conversation_id;
     if (!this.conversationId) {
       this.conversationId = conversationId;
+      // The list in hand is this conversation's — the backend just created it
+      // around the turn being sent. Without this the pairing never becomes
+      // valid and `regenerate` is a permanent no-op for a consumer that
+      // reached a conversation this way.
+      this.messagesConversationId = conversationId;
     }
     // Ensure the conversation exists in both the local array and
     // ChatStorage so title_generated, completeStream, and fallback
@@ -1042,16 +1066,6 @@ export class ChatSession {
       loading,
       this.client.getConversationEvents(id, jobId),
     ]);
-    // A REJECTED load is not a superseded one, so the token check below lets it
-    // through — and `loadConversation` has already moved the pointer, leaving
-    // the previous conversation's list under the new id. The old code blanked
-    // the list on failure; restore that floor. Only reachable through a custom
-    // `ChatStorage` whose fallback throws (`InMemoryStorage` never does), but
-    // `ChatStorage` is a public interface.
-    if (loadResult.status === "rejected") {
-      this.messages = [];
-      this.messagesConversationId = id;
-    }
     // Guarding the messages alone was not enough — and left this in a worse
     // state than before. `replayTurn` opens by assigning `this.conversationId`
     // and then emits the whole turn, so a superseded call still did both of
@@ -1067,6 +1081,18 @@ export class ChatSession {
     // supersedes. The token catches both — the load losing mid-flight, and
     // this whole call losing after it.
     if (token !== this.loadGeneration) return;
+    // Ordered AFTER the token check, because a load can be both rejected AND
+    // superseded: blanking then wipes the NEWER conversation's freshly
+    // installed list and stamps it with this conversation's id — the same
+    // mismatch this whole guard exists to prevent, arriving through the
+    // failure path. A rejected load has already moved the pointer, so when
+    // this call does still own the session the list must not be left behind.
+    // Only reachable through a custom `ChatStorage` whose fallback throws
+    // (`InMemoryStorage` never does), but `ChatStorage` is a public interface.
+    if (loadResult.status === "rejected") {
+      this.messages = [];
+      this.messagesConversationId = id;
+    }
     this.replayTurn(
       id,
       eventsResult.status === "fulfilled" ? eventsResult.value : [],

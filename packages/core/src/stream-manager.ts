@@ -351,14 +351,22 @@ export class StreamManager {
 
   async deleteConversation(id: string): Promise<void> {
     await this.session.deleteConversation(id);
-    this._backgroundJobs.delete(id);
     if (this._activeConversationId === id) {
-      this.detachStreamingTurn();
+      // CANCEL rather than park. `detachStreamingTurn` is right when the user
+      // navigates away — the turn keeps running and can be rejoined — but this
+      // conversation is gone, so its output has nowhere to land. Parking it
+      // would also re-add the very entry deleted below: consumers would render
+      // a running-job indicator on a conversation no longer in the list, and
+      // `switchTo` would compute `targetHadBackgroundJob` and force a full
+      // restore of it.
+      if (this._state === "streaming") this.session.disconnect();
       this.setActiveConversation(null);
       // Same reason as `createConversation`: this bumps the generation, so any
       // restore it supersedes goes quiet, and nothing else will announce.
       this.setState("idle");
     }
+    // AFTER the branch above, so nothing can put the entry back.
+    this._backgroundJobs.delete(id);
   }
 
   // ── Stop (explicit cancel) ────────────────────────────────────

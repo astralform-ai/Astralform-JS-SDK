@@ -905,10 +905,15 @@ describe("regenerate is gated on whose messages these are", () => {
 describe("relocating the conversation tears the live turn down first", () => {
   function streamingFixture() {
     const held = gate();
+    const cancelled: string[] = [];
     const session = new ChatSession({
       ...baseConfig,
       fetch: async (input) => {
         const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/cancel")) {
+          cancelled.push(url);
+          return json({});
+        }
         if (url.includes("/v1/jobs/") && url.includes("/events")) {
           await held.wait; // the turn's SSE stream never finishes on its own
           return new Response("data: [DONE]\n\n", {
@@ -928,15 +933,40 @@ describe("relocating the conversation tears the live turn down first", () => {
         return json([]);
       },
     });
-    return { session, manager: new StreamManager(session), held };
+    return { session, manager: new StreamManager(session), held, cancelled };
   }
+
+  it("deleteConversation cancels instead of parking a job for a gone conversation", async () => {
+    // Parking is right when the user navigates away — the turn keeps running
+    // and can be rejoined. Here the conversation is gone, so the entry would
+    // be re-added right after being deleted: a running-job indicator on a row
+    // no longer in the list, and `switchTo` forcing a full restore of it.
+    const { session, manager, held, cancelled } = streamingFixture();
+    await manager.switchTo("conv-a");
+    void manager.send("first");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    await manager.deleteConversation("conv-a");
+    await flush();
+
+    // The distinguishing behaviour: the job is CANCELLED, not parked. Merely
+    // keeping the map clean is not enough — a detached job keeps running
+    // server-side, producing output for a conversation that no longer exists.
+    expect(cancelled.some((u) => u.includes("job-1"))).toBe(true);
+    expect([...manager.backgroundJobs.keys()]).not.toContain("conv-a");
+    expect(manager.state).toBe("idle");
+    expect(session.isStreaming).toBe(false);
+
+    held.open();
+  });
 
   it("createConversation parks the streaming job instead of announcing idle over it", async () => {
     // Announcing `idle` while the stream lives is worse than announcing
     // nothing: `manager.send` stops bailing, calls `session.send`, and THAT
     // bails on its own `isStreaming` — the message is never posted, no error
     // is emitted, and the composer looks ready throughout.
-    const { session, manager, held } = streamingFixture();
+    const { session, manager, held, cancelled } = streamingFixture();
     await manager.switchTo("conv-a");
     void manager.send("first");
     await flush();
@@ -946,7 +976,10 @@ describe("relocating the conversation tears the live turn down first", () => {
 
     expect(manager.state).toBe("idle");
     expect(session.isStreaming).toBe(false);
+    // Parked, NOT cancelled — the conversation still exists and the turn can
+    // be rejoined. This is the control for the delete case above.
     expect([...manager.backgroundJobs.keys()]).toContain("conv-a");
+    expect(cancelled).toEqual([]);
 
     held.open();
   });
@@ -1108,6 +1141,151 @@ describe("a send addressed elsewhere takes the message list with it", () => {
     expect(session.conversationId).toBe("conv-b");
     expect(session.messagesConversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).toEqual(["hi"]);
+  });
+});
+
+describe("regenerate still fires when the session is settled", () => {
+  it("resends the last user message — the positive control", async () => {
+    // Every other regenerate test here asserts the guard BLOCKS. Without this
+    // one an over-broad guard — or a `messagesConversationId` left unset on
+    // some path — is a permanent silent no-op that every test still passes.
+    const seen: { jobBody?: Record<string, unknown> } = {};
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          seen.jobBody = JSON.parse(init?.body as string);
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m",
+            status: "queued",
+          });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-a1",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "the prompt to resend",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a"); // fully settled
+    void manager.regenerate();
+    await flush();
+
+    expect(seen.jobBody?.resend_from).toBe("m-a1");
+    expect(seen.jobBody?.message).toBe("the prompt to resend");
+  });
+});
+
+describe("an addressed send that never reaches the wire puts the list back", () => {
+  it("does not leave a direct caller holding nothing", async () => {
+    // The relocation empties the list before anything is sent. If the send
+    // fails there is no new history to replace it and nothing re-fetches.
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs"))
+          return new Response("boom", { status: 500 });
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    // `send` resolves either way — the failure surfaces as an `error` event,
+    // which is why the restore keys on "was a job created", not on a throw.
+    const errors: string[] = [];
+    session.on((e) => {
+      if (e.type === "error") errors.push(e.message);
+    });
+    await session.send("hi", { conversationId: "conv-b" });
+    expect(errors.length).toBeGreaterThan(0);
+
+    expect(session.messages.map((m) => m.content)).toEqual(["A's prompt"]);
+    expect(session.conversationId).toBe("conv-a");
+    expect(session.messagesConversationId).toBe("conv-a");
+  });
+});
+
+describe("a load that is BOTH rejected and superseded stays out of the way", () => {
+  it("does not blank the newer conversation's list", async () => {
+    // Rejected and superseded are independent, and this is the case where both
+    // hold. Ordering the rejection fallback before the token check lets a dead
+    // call wipe the list a newer one just installed — and stamp it with the
+    // wrong conversation, blocking regenerate on the live one indefinitely.
+    const slowFail = gate();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/conv-a/messages")) {
+            await slowFail.wait;
+            return new Response("nope", { status: 500 });
+          }
+          if (url.includes("/conv-b/messages"))
+            return json([
+              {
+                id: "m-b",
+                conversation_id: "conv-b",
+                role: "user",
+                content: "B's prompt",
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ]);
+          return json([]);
+        },
+      },
+      {
+        createConversation: async () => ({
+          id: "x",
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => {
+          throw new Error("storage unavailable");
+        },
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+
+    const failingA = session.switchConversation("conv-a"); // parked, will reject
+    await flush();
+    await session.loadConversation("conv-b"); // supersedes, installs B
+    slowFail.open();
+    await failingA;
+
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messagesConversationId).toBe("conv-b");
+    expect(session.messages.map((m) => m.content)).toEqual(["B's prompt"]);
   });
 });
 
