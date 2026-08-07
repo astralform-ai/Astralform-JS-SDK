@@ -35,6 +35,12 @@ function json(body: unknown): Response {
   });
 }
 
+/** Let every pending fetch chain settle — microtasks alone are not enough,
+ *  since each mocked request resolves through several await points. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+}
+
 /** A promise plus its resolver, for holding one endpoint open. */
 function gate(): { wait: Promise<void>; open: () => void } {
   let open!: () => void;
@@ -377,6 +383,118 @@ describe("a switch from inside an event handler supersedes it too", () => {
 
     expect(texts).toEqual(["first prompt", "second prompt"]);
     expect(seen.some((e) => e.type === "versionsReady")).toBe(true);
+  });
+});
+
+describe("a send during the probe window goes to the displayed conversation", () => {
+  /**
+   * The narrowest window, found in review of this PR. The generation guards
+   * stop the superseded restore, but `session.conversationId` is assigned
+   * synchronously by `loadConversation` and only re-assigned when the NEXT
+   * switch reaches its own `loadConversation` — an await later, behind the
+   * active-job probe. In between, the manager points at B while the session
+   * still points at A, and `send`/`regenerate` are the two things that read
+   * the session's pointer.
+   *
+   * Interleaving: park A on its `/messages` fetch and B on its `/active-job`
+   * probe, then release A. A's restore stops (superseded), but the session is
+   * left on A while the user is looking at B.
+   */
+  function racedBackend(
+    slowAMessages: Promise<void>,
+    slowBActiveJob: Promise<void>,
+    seen: { jobBody?: Record<string, unknown> },
+  ): typeof globalThis.fetch {
+    return async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs")) {
+        seen.jobBody = JSON.parse(init?.body as string);
+        return json({
+          job_id: "job-x",
+          conversation_id: seen.jobBody?.conversation_id,
+          message_id: "m-x",
+          status: "queued",
+        });
+      }
+      if (url.includes("/conv-b/active-job")) {
+        await slowBActiveJob; // B parks here, before its loadConversation
+        return json({ job_id: null, status: "none" });
+      }
+      if (url.includes("/active-job"))
+        return json({ job_id: null, status: "none" });
+      if (url.includes("/conv-a/messages")) {
+        await slowAMessages; // A parks here, having already set conversationId
+        return json([
+          {
+            id: "m-a",
+            conversation_id: "conv-a",
+            role: "user",
+            content: "A's prompt",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]);
+      }
+      return json([]);
+    };
+  }
+
+  /** Drive both switches into the window, then release A. */
+  async function enterWindow() {
+    const slowA = gate();
+    const slowB = gate();
+    const seen: { jobBody?: Record<string, unknown> } = {};
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: racedBackend(slowA.wait, slowB.wait, seen),
+    });
+    const manager = new StreamManager(session);
+
+    const restoringA = manager.switchTo("conv-a");
+    await flush(); // A reaches loadConversation("conv-a") and parks on /messages
+    const restoringB = manager.switchTo("conv-b"); // parks on /active-job
+    await flush();
+
+    slowA.open();
+    await restoringA;
+    await flush();
+
+    // The window, exactly as described: manager on B, session still on A.
+    expect(manager.activeConversationId).toBe("conv-b");
+    expect(session.conversationId).toBe("conv-a");
+    expect(manager.state).toBe("restoring");
+
+    return { manager, session, seen, slowB, restoringB };
+  }
+
+  it("posts to the manager's conversation, not the session's stale one", async () => {
+    const { manager, seen, slowB, restoringB } = await enterWindow();
+
+    // Not awaited: `send` goes on to consume the job's SSE stream, which this
+    // fixture does not serve. The POST is what this pins.
+    void manager.send("hello");
+    await flush();
+
+    // `send` only bails on "streaming", so it runs here — and without an
+    // explicit address it would post to `session.conversationId` ("conv-a"),
+    // the conversation the user just left.
+    expect(seen.jobBody?.conversation_id).toBe("conv-b");
+
+    slowB.open();
+    await restoringB;
+  });
+
+  it("does not regenerate against a half-settled session", async () => {
+    const { manager, seen, slowB, restoringB } = await enterWindow();
+
+    void manager.regenerate();
+    await flush();
+
+    // Nothing posted: the message id would have come from the previous
+    // conversation's list, which pairs with no conversation coherently.
+    expect(seen.jobBody).toBeUndefined();
+
+    slowB.open();
+    await restoringB;
   });
 });
 

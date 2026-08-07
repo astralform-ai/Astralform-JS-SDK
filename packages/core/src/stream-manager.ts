@@ -176,6 +176,13 @@ export class StreamManager {
 
     try {
       await this.session.send(content, {
+        // Address the send explicitly. `ChatSession.send` otherwise falls back
+        // to `session.conversationId`, which LAGS this pointer: a restore
+        // assigns it synchronously but only reaches the next switch's own
+        // `loadConversation` an await later, so between the two the session
+        // still names the conversation the user left. The manager's pointer
+        // moved the moment the user clicked; it is the authority.
+        conversationId: this._activeConversationId ?? undefined,
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,
@@ -198,6 +205,14 @@ export class StreamManager {
 
   async regenerate(): Promise<void> {
     if (this._state === "streaming") return;
+    // Unlike `send`, regenerate cannot be addressed: `resendFromCheckpoint`
+    // takes no conversation override, and the message id comes from
+    // `session.messages` — which a settling restore can leave holding the
+    // PREVIOUS conversation's list. Pairing that id with any conversation is
+    // incoherent, so the only correct move mid-restore is not to act. Returns
+    // silently, as this method already does for a streaming state and for an
+    // empty history.
+    if (this._state === "restoring") return;
 
     const userMsgs = this.session.messages.filter(
       (m: { role: string }) => m.role === "user",
