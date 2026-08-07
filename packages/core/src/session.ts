@@ -37,6 +37,17 @@ type ChatEventHandler = (event: ChatEvent) => void;
  */
 const SSE_MAX_RECONNECTS = 6;
 
+/**
+ * Max silence tolerated on an established SSE stream before we declare it a
+ * zombie and reconnect. The backend emits a keepalive every 15s
+ * (``subscribe.py``), so a healthy stream never goes quiet this long. This
+ * matters because some failures (notably HTTP/3 / QUIC connection deaths)
+ * leave ``reader.read()`` pending forever — no bytes, no error, no FIN — and
+ * without a watchdog the retry loop below never engages and the UI hangs on
+ * "working" indefinitely. Set to 3x the keepalive interval.
+ */
+const SSE_STALL_TIMEOUT_MS = 45_000;
+
 // Retries for the client-tool result POST itself, independent of the SSE
 // reconnect loop — reconnecting the *stream* can't recover a failed *result
 // submission*, and retrying the POST avoids re-executing a client tool.
@@ -363,17 +374,28 @@ export class ChatSession {
     const signal = this.abortController?.signal;
 
     for (let attempt = 0; ; attempt++) {
-      const stream = this.client.streamJobEvents(jobId, this.lastSeq, signal);
+      // Each attempt gets its own controller, linked to the session signal,
+      // so the stall watchdog can kill a zombie connection without aborting
+      // the whole session — the retry below then resumes from lastSeq.
+      const attemptController = new AbortController();
+      const linkAbort = () => attemptController.abort();
+      signal?.addEventListener("abort", linkAbort);
       // Client tools stay enabled across reconnects; re-seen tool requests are
       // deduped by submitted call_id in dispatchWireEvent, so a tool whose
       // result we never posted (drop before submit) still runs on resume.
       let sawTerminal: boolean;
       try {
+        const stream = this.client.streamJobEvents(
+          jobId,
+          this.lastSeq,
+          attemptController.signal,
+        );
         sawTerminal = await this.pumpStream(
           stream,
           conversationId,
           messageId,
           executeClientTools,
+          () => attemptController.abort(),
         );
       } catch (err) {
         if (signal?.aborted) return; // user cancelled / detached
@@ -389,6 +411,8 @@ export class ChatSession {
         if (attempt >= SSE_MAX_RECONNECTS) throw err;
         await this.sleepUnlessAborted(sseReconnectDelayMs(attempt + 1), signal);
         continue; // resume from lastSeq
+      } finally {
+        signal?.removeEventListener("abort", linkAbort);
       }
 
       // A terminal event (message_stop / error) ends the turn — including the
@@ -410,48 +434,84 @@ export class ChatSession {
    * Consume a single SSE stream to exhaustion. Returns whether a terminal
    * event (``message_stop`` / ``error``) was seen, so the caller can decide
    * whether an ended stream means "turn done" vs "dropped, reconnect".
+   *
+   * ``onStall`` aborts the per-attempt connection: if no event arrives within
+   * SSE_STALL_TIMEOUT_MS (backend keepalives land every 15s), the stream is a
+   * zombie — ``reader.read()`` will never settle — so we kill the fetch and
+   * throw a ConnectionError, feeding the caller's reconnect-from-lastSeq loop.
    */
   private async pumpStream(
     stream: AsyncGenerator<{ data: string }>,
     conversationId: string,
     messageId: string,
     executeClientTools: boolean,
+    onStall?: () => void,
   ): Promise<boolean> {
     let sawTerminal = false;
-    for await (const raw of stream) {
-      let parsed: WireEvent;
-      try {
-        const data = JSON.parse(raw.data);
-        if (
-          typeof data !== "object" ||
-          data === null ||
-          typeof data.type !== "string"
-        ) {
-          // Legacy "done" sentinel — backend still emits it for subscribers.
-          // Silently consume; the new protocol uses message_stop for turn end.
-          if (typeof (data as { seq?: unknown })?.seq === "number") {
-            this.lastSeq = (data as { seq: number }).seq;
+    const iterator = stream[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = iterator.next();
+        let stallTimer: ReturnType<typeof setTimeout> | undefined;
+        const stall = new Promise<never>((_, reject) => {
+          stallTimer = setTimeout(() => {
+            // Cancel the zombie fetch so the pending read rejects and the
+            // connection is released instead of leaking one per reconnect.
+            onStall?.();
+            reject(
+              new ConnectionError(
+                `Stream stalled: no events for ${SSE_STALL_TIMEOUT_MS}ms`,
+              ),
+            );
+          }, SSE_STALL_TIMEOUT_MS);
+        });
+        let result: IteratorResult<{ data: string }>;
+        try {
+          result = await Promise.race([next, stall]);
+        } finally {
+          clearTimeout(stallTimer);
+        }
+        if (result.done) break;
+        const raw = result.value;
+        let parsed: WireEvent;
+        try {
+          const data = JSON.parse(raw.data);
+          if (
+            typeof data !== "object" ||
+            data === null ||
+            typeof data.type !== "string"
+          ) {
+            // Legacy "done" sentinel — backend still emits it for subscribers.
+            // Silently consume; the new protocol uses message_stop for turn end.
+            if (typeof (data as { seq?: unknown })?.seq === "number") {
+              this.lastSeq = (data as { seq: number }).seq;
+            }
+            continue;
           }
+          parsed = data as WireEvent;
+          if (typeof (data as Record<string, unknown>).seq === "number") {
+            this.lastSeq = (data as Record<string, unknown>).seq as number;
+          }
+        } catch {
           continue;
         }
-        parsed = data as WireEvent;
-        if (typeof (data as Record<string, unknown>).seq === "number") {
-          this.lastSeq = (data as Record<string, unknown>).seq as number;
+
+        if (parsed.type === "message_stop" || parsed.type === "error") {
+          sawTerminal = true;
         }
-      } catch {
-        continue;
-      }
 
-      if (parsed.type === "message_stop" || parsed.type === "error") {
-        sawTerminal = true;
+        await this.dispatchWireEvent(
+          parsed,
+          conversationId,
+          messageId,
+          executeClientTools,
+        );
       }
-
-      await this.dispatchWireEvent(
-        parsed,
-        conversationId,
-        messageId,
-        executeClientTools,
-      );
+    } finally {
+      // Fire-and-forget: on the stall path the pending read may never settle
+      // (e.g. a custom fetchFn that ignores the abort signal), and awaiting
+      // this would re-hang the pump the watchdog just rescued.
+      void iterator.return?.(undefined).catch(() => {});
     }
     return sawTerminal;
   }
