@@ -694,6 +694,10 @@ export class ChatSession {
     const load = ++this.loadGeneration;
     this.conversationId = id;
     this.resetStreamingState();
+    // Snapshot which messages already existed when the fetch was ISSUED. What
+    // the server's reply cannot know about is exactly what arrived after that
+    // instant — see the merge below.
+    const knownBeforeFetch = new Set(this.messages.map((m) => m.id));
     const messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
@@ -716,16 +720,25 @@ export class ChatSession {
     // again — so the send is posted correctly and then vanishes from the list,
     // leaving `regenerate` with no last user message to resend.
     //
-    // Keep local messages that belong to THIS conversation and are absent from
-    // the snapshot. Matching on the message's own `conversationId` is what
-    // makes it safe: a message left over from a conversation being switched
-    // away from is not carried across, only one addressed to the conversation
-    // being loaded.
-    const pendingLocal = this.messages.filter(
-      (m) => m.conversationId === id && !messages.some((f) => f.id === m.id),
+    // Keep only what was appended AFTER the fetch was issued, and only for this
+    // conversation. Those two conditions are what make the server the source of
+    // truth for everything else.
+    //
+    // Deliberately NOT "absent from the reply by id": a locally-created message
+    // carries a client `generateId()` that is never sent to the server and never
+    // reconciled with the row the server assigns, so an id comparison can never
+    // match and would keep the local copy FOREVER. Revisiting the conversation
+    // would then show the last sent message twice — once from the server,
+    // correctly placed, once as a trailing duplicate carrying an id the server
+    // has never heard of. `regenerate` takes the LAST user message, so it would
+    // pick that duplicate and resend from a checkpoint id the server cannot
+    // resolve. Arrival time answers the real question ("could the reply have
+    // included this?"); identity cannot.
+    const arrivedDuringFetch = this.messages.filter(
+      (m) => m.conversationId === id && !knownBeforeFetch.has(m.id),
     );
-    this.messages = pendingLocal.length
-      ? [...messages, ...pendingLocal]
+    this.messages = arrivedDuringFetch.length
+      ? [...messages, ...arrivedDuringFetch]
       : messages;
   }
 

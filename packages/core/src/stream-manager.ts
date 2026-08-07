@@ -207,12 +207,18 @@ export class StreamManager {
     if (this._state === "streaming") return;
     // Unlike `send`, regenerate cannot be addressed: `resendFromCheckpoint`
     // takes no conversation override, and the message id comes from
-    // `session.messages` — which a settling restore can leave holding the
+    // `session.messages` — which a settling switch can leave holding the
     // PREVIOUS conversation's list. Pairing that id with any conversation is
-    // incoherent, so the only correct move mid-restore is not to act. Returns
-    // silently, as this method already does for a streaming state and for an
-    // empty history.
-    if (this._state === "restoring") return;
+    // incoherent, so the only correct move is not to act.
+    //
+    // Tested as pointer equality rather than `state === "restoring"`, which was
+    // the first attempt and is wrong: the `skipHistoryReplay` fast path never
+    // enters that state — not entering it is the entire point of the fast path
+    // — so the window is just as open there, at `idle`. This asks the question
+    // that actually matters, "has the session caught up with me yet", and so
+    // covers every switch path including any added later. Returns silently, as
+    // this method already does for a streaming state and an empty history.
+    if (this.session.conversationId !== this._activeConversationId) return;
 
     const userMsgs = this.session.messages.filter(
       (m: { role: string }) => m.role === "user",

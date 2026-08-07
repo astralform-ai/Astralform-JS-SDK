@@ -420,6 +420,25 @@ describe("a send during the probe window goes to the displayed conversation", ()
         await slowBActiveJob; // B parks here, before its loadConversation
         return json({ job_id: null, status: "none" });
       }
+      if (url.includes("/conv-b/messages")) {
+        // A REAL server round-trips the POSTed message back under its OWN id.
+        // The earlier fixture returned a static empty list, which is what let a
+        // duplicate-on-revisit bug pass its tests — see the merge in
+        // `loadConversation`.
+        return json(
+          seen.jobBody
+            ? [
+                {
+                  id: "m-server-hello",
+                  conversation_id: "conv-b",
+                  role: "user",
+                  content: seen.jobBody.message,
+                  created_at: "2026-01-01T00:00:00Z",
+                },
+              ]
+            : [],
+        );
+      }
       if (url.includes("/active-job"))
         return json({ job_id: null, status: "none" });
       if (url.includes("/conv-a/messages")) {
@@ -482,10 +501,12 @@ describe("a send during the probe window goes to the displayed conversation", ()
     slowB.open();
     await restoringB;
 
-    // ...and the message survives B's own loadConversation, which resolves a
-    // fetch started BEFORE the send and would otherwise replace the array
-    // wholesale. Posting it correctly is not enough if the client then loses it.
-    expect(session.messages.map((m) => m.content)).toContain("hello");
+    // ...and after B's own restore settles the message is present EXACTLY
+    // once. Losing it and duplicating it are both failures: B's fetch was
+    // issued after the POST, so the server's copy is authoritative and the
+    // local one must not be carried forward beside it under a client id the
+    // server never assigned.
+    expect(session.messages.map((m) => m.content)).toEqual(["hello"]);
     expect(session.conversationId).toBe("conv-b");
   });
 
@@ -501,6 +522,73 @@ describe("a send during the probe window goes to the displayed conversation", ()
 
     slowB.open();
     await restoringB;
+  });
+});
+
+describe("the skipHistoryReplay fast path has the same window at idle", () => {
+  it("does not regenerate while the session still points at the old conversation", async () => {
+    // The fast path deliberately never enters `restoring` — that is its whole
+    // point, so a consumer with cached blocks sees no spinner. So a guard
+    // written as `state === "restoring"` never fires here, and the window is
+    // just as open at `idle`. This is why the guard asks whether the session
+    // has caught up, rather than which state the manager is in.
+    const slowBProbe = gate();
+    const seen: { jobBody?: Record<string, unknown> } = {};
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          seen.jobBody = JSON.parse(init?.body as string);
+          return json({
+            job_id: "job-x",
+            conversation_id: "x",
+            message_id: "m-x",
+            status: "queued",
+          });
+        }
+        if (url.includes("/conv-b/active-job")) {
+          await slowBProbe.wait; // fast path parks here, BEFORE its loadConversation
+          return json({ job_id: null, status: "none" });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/messages")) {
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a"); // settles: session and manager both on A
+    expect(session.conversationId).toBe("conv-a");
+
+    const switchingB = manager.switchTo("conv-b", { skipHistoryReplay: true });
+    await flush();
+
+    // The window — note the state is `idle`, not `restoring`.
+    expect(manager.activeConversationId).toBe("conv-b");
+    expect(session.conversationId).toBe("conv-a");
+    expect(manager.state).toBe("idle");
+
+    void manager.regenerate();
+    await flush();
+
+    // Nothing posted. Unguarded, this resends A's last user message — and the
+    // manager would call it conversation B.
+    expect(seen.jobBody).toBeUndefined();
+
+    slowBProbe.open();
+    await switchingB;
   });
 });
 
