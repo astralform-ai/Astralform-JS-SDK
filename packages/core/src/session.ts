@@ -471,14 +471,22 @@ export class ChatSession {
         let stallTimer: ReturnType<typeof setTimeout> | undefined;
         const stall = new Promise<never>((_, reject) => {
           stallTimer = setTimeout(() => {
-            // Cancel the zombie fetch so the pending read rejects and the
-            // connection is released instead of leaking one per reconnect.
-            onStall?.();
+            // Reject BEFORE aborting, and the order is load-bearing. Aborting
+            // first makes the pending read reject too (StreamAbortedError from
+            // `streaming.ts`), and whichever settles first wins the race below
+            // — so a stall could surface as `stream_aborted`. Both retry
+            // identically, but the diagnostic would then contradict this very
+            // comment. Rejecting first settles the race deterministically;
+            // `reject` changes state synchronously, so the later abort is a
+            // no-op for the race.
             reject(
               new ConnectionError(
                 `Stream stalled: no events for ${SSE_STALL_TIMEOUT_MS}ms`,
               ),
             );
+            // Then cancel the zombie fetch so the connection is released
+            // instead of leaking one per reconnect.
+            onStall?.();
           }, SSE_STALL_TIMEOUT_MS);
         });
         let result: IteratorResult<{ data: string }>;
