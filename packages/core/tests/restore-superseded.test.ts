@@ -467,7 +467,7 @@ describe("a send during the probe window goes to the displayed conversation", ()
   }
 
   it("posts to the manager's conversation, not the session's stale one", async () => {
-    const { manager, seen, slowB, restoringB } = await enterWindow();
+    const { manager, session, seen, slowB, restoringB } = await enterWindow();
 
     // Not awaited: `send` goes on to consume the job's SSE stream, which this
     // fixture does not serve. The POST is what this pins.
@@ -481,6 +481,12 @@ describe("a send during the probe window goes to the displayed conversation", ()
 
     slowB.open();
     await restoringB;
+
+    // ...and the message survives B's own loadConversation, which resolves a
+    // fetch started BEFORE the send and would otherwise replace the array
+    // wholesale. Posting it correctly is not enough if the client then loses it.
+    expect(session.messages.map((m) => m.content)).toContain("hello");
+    expect(session.conversationId).toBe("conv-b");
   });
 
   it("does not regenerate against a half-settled session", async () => {

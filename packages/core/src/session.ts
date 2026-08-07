@@ -216,6 +216,14 @@ export class ChatSession {
     const conversationId =
       options?.conversationId ?? this.conversationId ?? undefined;
 
+    // Sending to an explicit conversation makes it the session's — catch the
+    // pointer up now rather than waiting for an in-flight `loadConversation`
+    // to land. `onSessionEvent` tags every emitted event with this field, so
+    // leaving it behind would file this send's own stream events under the
+    // conversation the caller just addressed away from: the same mis-tagging
+    // the restore guards close, re-entering through the send path.
+    if (conversationId) this.conversationId = conversationId;
+
     const userMessage: Message = {
       id: generateId(),
       conversationId: conversationId ?? "",
@@ -701,7 +709,24 @@ export class ChatSession {
     // clobbers the fresh messages the second A load already installed. The id
     // says where the session is, not which load last spoke.
     if (load !== this.loadGeneration) return;
-    this.messages = messages;
+    // The fetch is a SNAPSHOT taken before it resolved, so a send that lands
+    // while it is in flight is not in it. Assigning it straight over
+    // `this.messages` drops that message with nothing to restore it — the SSE
+    // handler only ever appends the assistant's reply, never the user turn
+    // again — so the send is posted correctly and then vanishes from the list,
+    // leaving `regenerate` with no last user message to resend.
+    //
+    // Keep local messages that belong to THIS conversation and are absent from
+    // the snapshot. Matching on the message's own `conversationId` is what
+    // makes it safe: a message left over from a conversation being switched
+    // away from is not carried across, only one addressed to the conversation
+    // being loaded.
+    const pendingLocal = this.messages.filter(
+      (m) => m.conversationId === id && !messages.some((f) => f.id === m.id),
+    );
+    this.messages = pendingLocal.length
+      ? [...messages, ...pendingLocal]
+      : messages;
   }
 
   /**
