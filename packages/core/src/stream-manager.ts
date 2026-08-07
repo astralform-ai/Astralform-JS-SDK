@@ -473,6 +473,16 @@ export class StreamManager {
         // render instead of re-typing it event by event. A steer replays as a
         // turn with no events: the bubble, and nothing after it.
         for (const step of plan) {
+          // Checked per TURN, not just before the loop: "synchronous" bounds
+          // out awaits, not re-entrancy. `replayTurn` emits through
+          // `onSessionEvent` to every handler, and nothing in the `on()`
+          // contract stops a handler driving the manager straight back —
+          // `switchTo`, `createConversation` and `deleteConversation` all bump
+          // the generation from inside this loop. Without this the remaining
+          // turns keep pouring out, tagged with the abandoned conversation's
+          // id, which is the leak this guard exists to close, reached through
+          // the one door an await boundary does not cover.
+          if (superseded()) return;
           if (step.kind === "steer") {
             this.session.replayTurn(
               conversationId,
@@ -502,10 +512,9 @@ export class StreamManager {
         // Version chain loading failed — non-blocking
       }
 
-      // The replay is synchronous, so nothing can have superseded us between
-      // it and here — but the `catch` above swallows a failure that may have
-      // left the chain part-way, and this announcement belongs to whichever
-      // switch is current.
+      // The loop above can be superseded from inside a handler, and the `catch`
+      // swallows a failure that may have left the chain part-way. Either way
+      // this announcement belongs to whichever switch is current.
       if (superseded()) return;
       this.setState("idle");
     }

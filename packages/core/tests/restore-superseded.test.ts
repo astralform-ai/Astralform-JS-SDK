@@ -231,6 +231,124 @@ describe("a switch during a restore supersedes it", () => {
   });
 });
 
+describe("a switch from inside an event handler supersedes it too", () => {
+  /** conv-a with TWO completed turns, so the replay loop has a second pass. */
+  function twoTurnBackend(): typeof globalThis.fetch {
+    const turn = (jobId: string, text: string) => [
+      {
+        seq: 0,
+        event: "message_start",
+        data: {
+          type: "message_start",
+          turn_id: jobId,
+          model: "m",
+          job_id: jobId,
+        },
+      },
+      {
+        seq: 1,
+        event: "block_stop",
+        data: {
+          type: "block_stop",
+          turn_id: jobId,
+          job_id: jobId,
+          path: [0],
+          status: "ok",
+          final: { text },
+        },
+      },
+    ];
+    return async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/active-job"))
+        return json({ job_id: null, status: "none" });
+      if (url.includes("job_id=job-a1")) return json(turn("job-a1", "first"));
+      if (url.includes("job_id=job-a2")) return json(turn("job-a2", "second"));
+      if (url.includes("/conv-a/jobs")) {
+        return json([
+          { job_id: "job-a1", status: "completed", message_id: "m-a1" },
+          { job_id: "job-a2", status: "completed", message_id: "m-a2" },
+        ]);
+      }
+      if (url.includes("/jobs")) return json([]);
+      if (url.includes("/conv-a/messages")) {
+        return json([
+          {
+            id: "m-a1",
+            conversation_id: "conv-a",
+            role: "user",
+            content: "first prompt",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "m-a2",
+            conversation_id: "conv-a",
+            role: "user",
+            content: "second prompt",
+            created_at: "2026-01-01T00:01:00Z",
+          },
+        ]);
+      }
+      return json([]);
+    };
+  }
+
+  it("stops the replay loop mid-way rather than pouring out the rest", async () => {
+    // "Synchronous" bounds out awaits, not RE-ENTRANCY: `replayTurn` emits to
+    // every handler, and a handler is free to drive the manager straight back.
+    // Guarding only before the loop left the remaining turns streaming out
+    // under the abandoned conversation's id — the same leak, through the one
+    // door an await boundary does not cover. Found in review of this PR.
+    const session = new ChatSession({ ...baseConfig, fetch: twoTurnBackend() });
+    const manager = new StreamManager(session);
+
+    const seen: StreamManagerEvent[] = [];
+    let switched = false;
+    manager.on((e) => {
+      seen.push(e);
+      // The consumer reacts to the first replayed event by navigating away,
+      // synchronously, from inside the handler.
+      if (!switched && e.type === "event") {
+        switched = true;
+        void manager.switchTo("conv-b");
+      }
+    });
+
+    await manager.switchTo("conv-a");
+
+    const texts = seen
+      .filter((e) => e.type === "event")
+      .map((e) => (e as { event: { type: string; content?: string } }).event)
+      .filter((e) => e.type === "user_message")
+      .map((e) => e.content);
+
+    // The first turn's bubble had already been emitted when the handler fired;
+    // the SECOND turn must not follow it.
+    expect(texts).toEqual(["first prompt"]);
+    expect(seen.some((e) => e.type === "versionsReady")).toBe(false);
+  });
+
+  it("still replays both turns when the handler does not navigate", async () => {
+    // The control: the per-turn check must not truncate an ordinary restore.
+    const session = new ChatSession({ ...baseConfig, fetch: twoTurnBackend() });
+    const manager = new StreamManager(session);
+
+    const seen: StreamManagerEvent[] = [];
+    manager.on((e) => seen.push(e));
+
+    await manager.switchTo("conv-a");
+
+    const texts = seen
+      .filter((e) => e.type === "event")
+      .map((e) => (e as { event: { type: string; content?: string } }).event)
+      .filter((e) => e.type === "user_message")
+      .map((e) => e.content);
+
+    expect(texts).toEqual(["first prompt", "second prompt"]);
+    expect(seen.some((e) => e.type === "versionsReady")).toBe(true);
+  });
+});
+
 describe("loadConversation does not install a left conversation's messages", () => {
   it("keeps the messages and the id describing the same conversation", async () => {
     // The narrower half of the same race: `loadConversation` assigns the id
