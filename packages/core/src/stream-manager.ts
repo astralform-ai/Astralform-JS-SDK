@@ -501,6 +501,13 @@ export class StreamManager {
           );
         }
 
+        // Before the announcement, not only before `setState` below. The
+        // loop's check runs at the TOP of each turn, so a handler that
+        // navigates away while the LAST turn replays — or the only turn, for a
+        // single-job conversation — exits the loop normally with no iteration
+        // left to catch it, and this would fire for the abandoned
+        // conversation.
+        if (superseded()) return;
         if (completedJobs.length > 0) {
           this.emit({
             type: "versionsReady",

@@ -328,6 +328,37 @@ describe("a switch from inside an event handler supersedes it too", () => {
     expect(seen.some((e) => e.type === "versionsReady")).toBe(false);
   });
 
+  it("does not announce versionsReady when the handler navigates on the LAST turn", async () => {
+    // The loop's check runs at the TOP of each turn, so navigating away during
+    // the FINAL turn leaves no iteration to catch it — the loop just ends. A
+    // single-job conversation is the sharpest form: one turn, so the very
+    // first replay is also the last. The two-turn test above cannot see this,
+    // because its turn-2 check masks the gap. Found in review of this PR.
+    const events = gate();
+    events.open();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: mockBackend(events.wait), // conv-a has exactly one completed job
+    });
+    const manager = new StreamManager(session);
+
+    const seen: StreamManagerEvent[] = [];
+    let switched = false;
+    manager.on((e) => {
+      seen.push(e);
+      if (!switched && e.type === "event") {
+        switched = true;
+        void manager.switchTo("conv-b");
+      }
+    });
+
+    await manager.switchTo("conv-a");
+
+    // `versionsReady` carries the abandoned conversation's id and its job
+    // count — an announcement about a restore that was called off.
+    expect(seen.some((e) => e.type === "versionsReady")).toBe(false);
+  });
+
   it("still replays both turns when the handler does not navigate", async () => {
     // The control: the per-turn check must not truncate an ordinary restore.
     const session = new ChatSession({ ...baseConfig, fetch: twoTurnBackend() });
