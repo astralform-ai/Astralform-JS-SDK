@@ -176,6 +176,14 @@ export class ChatSession {
    */
   private loadGeneration = 0;
 
+  /**
+   * Count of jobs this session has created. Monotonic on purpose:
+   * ``currentJobId`` is nulled again by ``message_stop``, so after any turn
+   * that completes it is back to what it was before the send — which makes it
+   * useless as an "did this send reach the wire" signal.
+   */
+  private jobsCreated = 0;
+
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
   // is tracked by the consumer's own block store.
@@ -328,17 +336,19 @@ export class ChatSession {
     };
 
     // `processStream` never rejects — it catches and emits an `error` event —
-    // so a thrown-exception guard here would be dead code. A new job id is the
-    // real signal that the send reached the wire: `consumeJobStream` assigns it
-    // immediately after `createJob` returns.
-    const jobIdBefore = this.currentJobId;
+    // so a thrown-exception guard here would be dead code. The signal has to
+    // SURVIVE the turn, which `currentJobId` does not: `message_stop` nulls it,
+    // so after any completed send it reads exactly as it did before, and a
+    // put-back keyed on it would fire on the success path and revert a
+    // relocation that worked.
+    const jobsBefore = this.jobsCreated;
     await this.processStream(request);
 
     // The relocation above emptied the list before anything was sent. If no job
     // was created there is no new conversation's history to replace it and
     // nothing that will re-fetch, so a direct `ChatSession` caller would be
     // left holding nothing at all. Put it back.
-    if (relocatedFrom && this.currentJobId === jobIdBefore) {
+    if (relocatedFrom && this.jobsCreated === jobsBefore) {
       this.messages = relocatedFrom.messages;
       this.messagesConversationId = relocatedFrom.id;
       this.conversationId = relocatedFrom.id;
@@ -405,6 +415,7 @@ export class ChatSession {
 
   private async consumeJobStream(request: ChatStreamRequest): Promise<void> {
     const job = await this.client.createJob(request);
+    this.jobsCreated++;
     this.currentJobId = job.job_id;
 
     const conversationId = job.conversation_id;

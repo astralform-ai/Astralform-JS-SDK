@@ -972,8 +972,20 @@ describe("relocating the conversation tears the live turn down first", () => {
     await flush();
     expect(manager.state).toBe("streaming");
 
+    const tagged: (string | null)[] = [];
+    manager.on((e) => {
+      if (e.type === "event" && e.event.type === "disconnected")
+        tagged.push(e.conversationId);
+    });
+
     await manager.createConversation();
 
+    // The teardown belongs to the OLD conversation. `createNewConversation` is
+    // itself the relocation — it moves `session.conversationId` and empties
+    // `messages` — and `onSessionEvent` tags from that field, so detaching
+    // after it labels conv-a's teardown with the new conversation's id, before
+    // `conversationChanged` has even fired.
+    expect(tagged).toEqual(["conv-a"]);
     expect(manager.state).toBe("idle");
     expect(session.isStreaming).toBe(false);
     // Parked, NOT cancelled — the conversation still exists and the turn can
@@ -1286,6 +1298,126 @@ describe("a load that is BOTH rejected and superseded stays out of the way", () 
     expect(session.conversationId).toBe("conv-b");
     expect(session.messagesConversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).toEqual(["B's prompt"]);
+  });
+});
+
+describe("a SUCCESSFUL addressed send keeps its relocation", () => {
+  it("does not revert when the turn completes", async () => {
+    // The put-back has to key on a signal that SURVIVES the turn.
+    // `currentJobId` does not — `message_stop` nulls it — so after any
+    // completed send it reads exactly as it did before, and the restore fires
+    // on the success path: the relocation is reverted, the user message and
+    // the reply are discarded, and through StreamManager the whole bug this PR
+    // fixes comes back. Earlier fixtures never emitted `message_stop`, which
+    // is precisely why they missed it.
+    const sse = [
+      'event: message_start',
+      'data: {"type":"message_start","turn_id":"t1","model":"m","job_id":"j","seq":0,"ts":0}',
+      "",
+      'event: message_stop',
+      'data: {"type":"message_stop","turn_id":"t1","job_id":"j","stop_reason":"end_turn","usage":{},"total_ms":1,"stall_count":0,"seq":1,"ts":0}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return new Response(sse, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-b",
+            message_id: "m",
+            status: "queued",
+          });
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    await session.send("hi", { conversationId: "conv-b" });
+    await flush();
+
+    // The relocation stands: the send succeeded, so there is nothing to undo.
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messagesConversationId).toBe("conv-b");
+    expect(session.messages.map((m) => m.content)).toContain("hi");
+    expect(session.messages.map((m) => m.content)).not.toContain("A's prompt");
+  });
+});
+
+describe("no path announces idle over a live stream", () => {
+  it("the fast-path probe leaves a send's streaming state alone", async () => {
+    // The fast path deliberately stays out of `restoring`, so the composer is
+    // live for the whole probe and a send can land inside it. `send` sets
+    // `streaming` without bumping the generation, so the path resumes and
+    // would announce a ready composer over a running stream — after which
+    // `finalizeStream` and the `message_stop` branch both no-op, and the next
+    // send is silently dropped by `ChatSession.send`'s own `isStreaming` bail.
+    const probe = gate();
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // the turn never finishes on its own
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-1",
+            conversation_id: "conv-b",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/conv-b/active-job")) {
+          await probe.wait; // fast path parks here, composer still live
+          return json({ job_id: null, status: "none" });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    const switching = manager.switchTo("conv-b", { skipHistoryReplay: true });
+    await flush();
+
+    void manager.send("during the probe");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    probe.open(); // the fast path resumes and would settle
+    await switching;
+    await flush();
+
+    expect(manager.state).toBe("streaming");
+    expect(session.isStreaming).toBe(true);
+
+    held.open();
   });
 });
 

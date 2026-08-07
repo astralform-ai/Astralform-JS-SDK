@@ -311,7 +311,7 @@ export class StreamManager {
         // stay out of the ``restoring`` state.
         await this.session.loadConversation(conversationId);
         if (gen !== this.generation) return;
-        this.setState("idle");
+        this.settleIdle();
         return;
       }
       // A live job is running — fall through to a full restore(), which
@@ -324,11 +324,15 @@ export class StreamManager {
   // ── Create / rename / delete conversation ─────────────────────
 
   async createConversation(): Promise<string> {
-    const id = await this.session.createNewConversation();
-    // Tear the live turn down BEFORE relocating, exactly as `switchTo` does.
-    // Without it the `setState("idle")` below announces a ready composer over
-    // a stream that is still running, and the next send is silently dropped.
+    // BEFORE `createNewConversation`, which is itself the relocation — it sets
+    // `session.conversationId` and empties `session.messages`. `detach()`
+    // emits `disconnected`, and `onSessionEvent` tags every event from
+    // `session.conversationId`, so tearing down afterwards labels the OLD
+    // conversation's teardown with the NEW conversation's id — and does it
+    // before `conversationChanged` has fired. `switchTo` detaches while the
+    // pointer is still the old one; this is the parity that comment claimed.
     this.detachStreamingTurn();
+    const id = await this.session.createNewConversation();
     this.setActiveConversation(id);
     // Settle the state here. `setActiveConversation` bumps the generation, so
     // a restore this supersedes now returns WITHOUT emitting — including
@@ -407,6 +411,24 @@ export class StreamManager {
       this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
     }
     this.session.detach();
+  }
+
+  /**
+   * Announce `idle` unless a turn is actually streaming.
+   *
+   * A `send` can land inside any of the switch paths — the fast path most
+   * easily, since it deliberately stays out of `restoring` and so leaves the
+   * composer live for the whole probe. `send` sets `streaming` and does not
+   * bump the generation, so the path resumes, passes its supersession check,
+   * and would announce a ready composer over a running stream. From there
+   * `finalizeStream` and the `message_stop` branch both no-op (they only act
+   * on `streaming`), so it stays `idle` for the whole turn — and the next send
+   * reaches `session.send`, which bails on its own `isStreaming`: message
+   * never posted, no error, composer ready throughout.
+   */
+  private settleIdle(): void {
+    if (this._state === "streaming") return;
+    this.setState("idle");
   }
 
   private finalizeStream(): void {
@@ -586,7 +608,7 @@ export class StreamManager {
       // swallows a failure that may have left the chain part-way. Either way
       // this announcement belongs to whichever switch is current.
       if (superseded()) return;
-      this.setState("idle");
+      this.settleIdle();
     }
   }
 
