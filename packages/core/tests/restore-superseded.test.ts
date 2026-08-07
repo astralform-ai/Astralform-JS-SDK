@@ -636,6 +636,210 @@ describe("switchConversation carries the same guard as loadConversation", () => 
   });
 });
 
+describe("a generation-bumping origin settles the state itself", () => {
+  async function parkedRestore() {
+    const msgs = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/messages")) {
+          await msgs.wait; // A's restore parks here
+          return json([]);
+        }
+        if (url.includes("/conversations") && !url.includes("/"))
+          return json([]);
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+    const restoringA = manager.switchTo("conv-a");
+    await flush();
+    expect(manager.state).toBe("restoring");
+    return { manager, msgs, restoringA };
+  }
+
+  it("createConversation clears a restoring state it superseded", async () => {
+    // Widening the generation bump to every pointer move means a superseded
+    // restore returns WITHOUT emitting — so an origin that has no successor
+    // restore to announce for it must announce itself, or `_state` sits at
+    // `restoring` forever on a brand-new empty conversation and a consumer's
+    // spinner never clears.
+    const { manager, msgs, restoringA } = await parkedRestore();
+
+    await manager.createConversation();
+    msgs.open();
+    await restoringA;
+
+    expect(manager.state).toBe("idle");
+  });
+
+  it("deleteConversation of the active conversation does the same", async () => {
+    const { manager, msgs, restoringA } = await parkedRestore();
+
+    await manager.deleteConversation("conv-a");
+    msgs.open();
+    await restoringA;
+
+    expect(manager.state).toBe("idle");
+  });
+});
+
+describe("switchConversation does not replay a conversation the caller left", () => {
+  it("stops on plain A -> B, not just the A -> B -> A the merge covers", async () => {
+    // The messages half was guarded first; `replayTurn` was still called
+    // unconditionally, and it both re-points the session and emits the turn.
+    // A -> B -> A ends on A either way, so only plain A -> B exposes it.
+    const slowA = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/conv-a/events")) {
+          await slowA.wait;
+          return json(A_EVENTS);
+        }
+        if (url.includes("/events")) return json([]);
+        return json([]);
+      },
+    });
+
+    const staleA = session.switchConversation("conv-a");
+    await flush();
+    await session.switchConversation("conv-b");
+
+    const seen: string[] = [];
+    session.on((e) => seen.push(e.type));
+    slowA.open();
+    await staleA;
+
+    expect(session.conversationId).toBe("conv-b");
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("a send that MOVES the pointer invalidates a load in flight", () => {
+  it("does not let the abandoned snapshot land under the new conversation", async () => {
+    // Same probe window, releases in the other order: the send happens while
+    // A's message fetch is STILL open. Without the bump, A's snapshot passes
+    // its own token check (nothing else bumped) and installs A's list under
+    // B's id — one conversation's messages under another's — and the just-sent
+    // message is filtered out by the conversation predicate and lost.
+    const slowAMessages = gate();
+    const slowBProbe = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-x",
+            conversation_id: "conv-b",
+            message_id: "m-x",
+            status: "queued",
+          });
+        if (url.includes("/conv-b/active-job")) {
+          await slowBProbe.wait;
+          return json({ job_id: null, status: "none" });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/messages")) {
+          await slowAMessages.wait; // still open when the send happens
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    const switchingA = manager.switchTo("conv-a");
+    await flush();
+    const switchingB = manager.switchTo("conv-b");
+    await flush();
+
+    void manager.send("hello");
+    await flush();
+
+    slowAMessages.open(); // A's snapshot lands AFTER the send moved the pointer
+    await switchingA;
+    await flush();
+
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messages.map((m) => m.content)).toEqual(["hello"]);
+
+    slowBProbe.open();
+    await switchingB;
+  });
+
+  it("leaves a load for the conversation being sent to alone", async () => {
+    // The other half of the rule, and the reason the bump is conditional:
+    // re-stating the current conversation is not a move, so a load for THAT
+    // conversation must still win — otherwise sending while its history is
+    // arriving would discard the history.
+    const gated = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-x",
+            conversation_id: "conv-b",
+            message_id: "m-x",
+            status: "queued",
+          });
+        if (url.includes("/conv-b/messages")) {
+          await gated.wait;
+          // The server has ALREADY persisted the send by the time it answers.
+          return json([
+            {
+              id: "m-history",
+              conversation_id: "conv-b",
+              role: "user",
+              content: "earlier turn",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "m-server-hello",
+              conversation_id: "conv-b",
+              role: "user",
+              content: "hello",
+              created_at: "2026-01-01T00:01:00Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+
+    const loading = session.loadConversation("conv-b");
+    await flush();
+    void session.send("hello", { conversationId: "conv-b" });
+    await flush();
+    gated.open();
+    await loading;
+
+    // History kept, and "hello" appears ONCE — the local copy carries a client
+    // id the server never assigned, so keeping it beside the server's row is a
+    // duplicate that `regenerate` would then resend from an unknown checkpoint.
+    expect(session.messages.map((m) => m.content)).toEqual([
+      "earlier turn",
+      "hello",
+    ]);
+  });
+});
+
 describe("loadConversation does not install a left conversation's messages", () => {
   it("keeps the messages and the id describing the same conversation", async () => {
     // The narrower half of the same race: `loadConversation` assigns the id

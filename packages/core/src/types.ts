@@ -849,6 +849,21 @@ export interface ConversationEvent {
 // =============================================================================
 
 export interface SendOptions extends ModelChoiceOptions {
+  /**
+   * Which conversation this turn belongs to. Defaults to the session's current
+   * one.
+   *
+   * ⚠️ BEHAVIOR CHANGE: passing this now RELOCATES the session — it sets
+   * `session.conversationId`, and a value different from the current one
+   * invalidates any `loadConversation` still in flight. Previously it addressed
+   * a single turn elsewhere and left the session where it was.
+   *
+   * The change is deliberate: `onSessionEvent` tags every emitted event with
+   * `session.conversationId`, so a turn sent elsewhere without moving the
+   * pointer streamed its events back under the wrong conversation. Addressing
+   * one turn away from the session is not something the session can honestly
+   * represent while it has a single pointer, so the send now moves it.
+   */
   conversationId?: string;
   enabledClientTools?: string[];
   uploadIds?: string[];

@@ -329,6 +329,14 @@ export class StreamManager {
   async createConversation(): Promise<string> {
     const id = await this.session.createNewConversation();
     this.setActiveConversation(id);
+    // Settle the state here. `setActiveConversation` bumps the generation, so
+    // a restore this supersedes now returns WITHOUT emitting — including
+    // without the `idle` that would have cleared a consumer's spinner. Unlike
+    // `switchTo`, there is no successor restore to announce it instead, so
+    // `_state` would sit at `restoring` on a brand-new empty conversation
+    // until the next `send` or `stop` happened to clear it. Being a
+    // generation-bumping origin means owning the announcement.
+    this.setState("idle");
     return id;
   }
 
@@ -345,6 +353,9 @@ export class StreamManager {
     this._backgroundJobs.delete(id);
     if (this._activeConversationId === id) {
       this.setActiveConversation(null);
+      // Same reason as `createConversation`: this bumps the generation, so any
+      // restore it supersedes goes quiet, and nothing else will announce.
+      this.setState("idle");
     }
   }
 

@@ -222,7 +222,24 @@ export class ChatSession {
     // leaving it behind would file this send's own stream events under the
     // conversation the caller just addressed away from: the same mis-tagging
     // the restore guards close, re-entering through the send path.
-    if (conversationId) this.conversationId = conversationId;
+    //
+    // The `loadGeneration` bump is not optional bookkeeping. `loadConversation`
+    // reads its token as "am I still the newest load", and relies on that
+    // implying "the session still points where I left it". Moving the pointer
+    // here without bumping breaks the second half: an in-flight load would pass
+    // its guard and install its list under a conversation the send has since
+    // relocated to — one conversation's messages under another's id, the exact
+    // pairing that guard exists to prevent. A pointer move IS an event a load
+    // in flight must lose to.
+    if (conversationId) {
+      // Only a MOVE invalidates a load in flight. Re-stating the conversation
+      // the session is already on — the ordinary case, since the manager
+      // passes the active id on every send — must leave a load for that same
+      // conversation alone, or sending while its history is still arriving
+      // would throw the history away.
+      if (conversationId !== this.conversationId) this.loadGeneration++;
+      this.conversationId = conversationId;
+    }
 
     const userMessage: Message = {
       id: generateId(),
@@ -734,11 +751,25 @@ export class ChatSession {
     // pick that duplicate and resend from a checkpoint id the server cannot
     // resolve. Arrival time answers the real question ("could the reply have
     // included this?"); identity cannot.
-    const arrivedDuringFetch = this.messages.filter(
-      (m) => m.conversationId === id && !knownBeforeFetch.has(m.id),
+    //
+    // Arrival time alone is necessary but NOT sufficient: a send that lands
+    // while the fetch is open may still be committed before the read, in which
+    // case the reply already carries it under the server's id and keeping the
+    // local copy duplicates it. Whether it does is pure timing, so the second
+    // condition compares the only fields both sides agree on — role and
+    // content. Two identical prompts sent within one fetch window would
+    // collapse to one; that is a far better failure than a phantom duplicate
+    // carrying an id the server never assigned, which `regenerate` would then
+    // pick as the last user message and `planRestore` would replay as a
+    // free-standing steer bubble.
+    const stillPending = this.messages.filter(
+      (m) =>
+        m.conversationId === id &&
+        !knownBeforeFetch.has(m.id) &&
+        !messages.some((f) => f.role === m.role && f.content === m.content),
     );
-    this.messages = arrivedDuringFetch.length
-      ? [...messages, ...arrivedDuringFetch]
+    this.messages = stillPending.length
+      ? [...messages, ...stillPending]
       : messages;
   }
 
@@ -876,10 +907,30 @@ export class ChatSession {
     // unconditional overwrite, so a send landing mid-fetch is lost. One
     // implementation of the rule means it cannot drift back apart. Still
     // parallel — the two fetches start together, as before.
+    // `loadConversation` claims its token synchronously, before its first
+    // await, so reading `loadGeneration` straight after the call gives the
+    // token THIS switch is operating under.
+    const loading = this.loadConversation(id);
+    const token = this.loadGeneration;
     const [, eventsResult] = await Promise.allSettled([
-      this.loadConversation(id),
+      loading,
       this.client.getConversationEvents(id, jobId),
     ]);
+    // Guarding the messages alone was not enough — and left this in a worse
+    // state than before. `replayTurn` opens by assigning `this.conversationId`
+    // and then emits the whole turn, so a superseded call still did both of
+    // the things this guard exists to stop: re-pointed the session at the
+    // conversation the caller left, and poured its events out of the stream.
+    // With the messages now correctly dropped, the id moved back alone —
+    // leaving one conversation's messages under another's id, precisely the
+    // pairing `loadConversation` documents itself as eliminating. Previously
+    // both moved together: still wrong, but at least coherent.
+    // Checked against the token, not against whether the load itself was
+    // superseded: on a plain A -> B the load for A COMPLETES before B starts,
+    // so it reports success, and only the events fetch is still open when B
+    // supersedes. The token catches both — the load losing mid-flight, and
+    // this whole call losing after it.
+    if (token !== this.loadGeneration) return;
     this.replayTurn(
       id,
       eventsResult.status === "fulfilled" ? eventsResult.value : [],
