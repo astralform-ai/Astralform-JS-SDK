@@ -374,6 +374,14 @@ export class ChatSession {
     const signal = this.abortController?.signal;
 
     for (let attempt = 0; ; attempt++) {
+      // Bail BEFORE building the next attempt. An already-aborted signal never
+      // dispatches `abort` again, so the listener below would silently miss it
+      // and this attempt would go out after the caller disconnected — emitting
+      // events, and potentially running a client tool, on a session it believes
+      // is gone. Passing the outer signal straight to fetch used to make that
+      // impossible (fetch checks `signal.aborted` up front); the per-attempt
+      // controller removes that guarantee unless it is restored here.
+      if (signal?.aborted) return;
       // Each attempt gets its own controller, linked to the session signal,
       // so the stall watchdog can kill a zombie connection without aborting
       // the whole session — the retry below then resumes from lastSeq.

@@ -281,6 +281,34 @@ describe("ChatSession auto-reconnect", () => {
     expect(urls.length).toBeLessThan(MAX_EVENTS_CALLS);
   });
 
+  // Sharper than the bound above, which passes even when one extra attempt
+  // slips out. Detaching during backoff must stop the loop IMMEDIATELY: the
+  // per-attempt AbortController is linked to the session signal by an `abort`
+  // LISTENER, and a signal aborted while we were sleeping already dispatched
+  // that event — so the listener never fires and the fresh controller stays
+  // live. That attempt would then reach the network, emit events, and could
+  // run a client tool on a session the caller believes is disconnected.
+  it("detach during backoff issues NO further /events request", async () => {
+    const partial = msgStart(0) + blockStart(1); // never terminal → would retry
+    const urls: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: reconnectFetch([partial], urls),
+    });
+    await session.connect();
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    await vi.advanceTimersByTimeAsync(50); // first pump done, now in backoff
+    const afterFirst = urls.length;
+    session.detach();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await p;
+    vi.useRealTimers();
+
+    expect(urls).toHaveLength(afterFirst); // not one more round trip
+  });
+
   it("rescues a zombie stream (no bytes, no error, no FIN) via the stall watchdog", async () => {
     const partial = msgStart(0) + blockStart(1) + blockDelta(2, "Hi");
     const terminal = msgStop(3) + DONE;
