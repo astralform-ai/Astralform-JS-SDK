@@ -131,6 +131,13 @@ export class ChatSession {
    */
   private conversationsGeneration = 0;
 
+  /**
+   * Bumped by every ``loadConversation`` call, so an out-of-order fetch can
+   * tell it is no longer the newest one and drop its result. Separate from
+   * ``conversationsGeneration``, which guards the conversation LIST.
+   */
+  private loadGeneration = 0;
+
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
   // is tracked by the consumer's own block store.
@@ -674,17 +681,26 @@ export class ChatSession {
    * Used before reconnectToJob — SSE replay handles event replay.
    */
   async loadConversation(id: string): Promise<void> {
+    // Claimed BEFORE the await, so the check below is "am I still the newest
+    // load?" rather than "does the session still point where I left it?".
+    const load = ++this.loadGeneration;
     this.conversationId = id;
     this.resetStreamingState();
     const messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
-    // Nothing serializes callers, and this fetch is not instant: a switch that
-    // lands while it is in flight has already re-pointed the session. Install
-    // these now and the session holds ONE conversation's id beside ANOTHER's
-    // messages — the pair `send` (which posts to `conversationId`) and
-    // `regenerate` (which resends `messages`' last user turn) read together.
-    if (this.conversationId !== id) return;
+    // Nothing serializes callers, and this fetch is not instant. Install these
+    // unconditionally and the session holds ONE conversation's id beside
+    // ANOTHER's messages — the pair `send` (which posts to `conversationId`)
+    // and `regenerate` (which resends `messages`' last user turn) read
+    // together.
+    //
+    // A monotonic token rather than `this.conversationId !== id`, because that
+    // comparison is ABA-blind: on A -> B -> A with A's FIRST fetch slow, the id
+    // is back to A by the time that fetch lands, so the check passes and it
+    // clobbers the fresh messages the second A load already installed. The id
+    // says where the session is, not which load last spoke.
+    if (load !== this.loadGeneration) return;
     this.messages = messages;
   }
 

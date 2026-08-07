@@ -392,4 +392,56 @@ describe("loadConversation does not install a left conversation's messages", () 
     expect(session.conversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).toEqual(["B's prompt"]);
   });
+
+  it("survives A -> B -> A, where the id is back to A when the stale fetch lands", async () => {
+    // The ABA case, found in review of this PR. Comparing `this.conversationId
+    // !== id` is blind to it: on the revisit the id is back to A by the time
+    // A's FIRST fetch resolves, so the check passes and it clobbers the fresh
+    // messages A's SECOND load already installed. Nothing upstream catches it
+    // either — the stale write happens inside `loadConversation`, before
+    // control returns to `restore`'s own `superseded()`. Hence a monotonic
+    // token: the id says where the session IS, not which load last spoke.
+    const firstA = gate();
+    let aCalls = 0;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/conv-a/messages")) {
+          aCalls += 1;
+          const nth = aCalls;
+          if (nth === 1) await firstA.wait;
+          return json([
+            {
+              id: `m-a${nth}`,
+              conversation_id: "conv-a",
+              role: "user",
+              content: nth === 1 ? "A stale" : "A fresh",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        }
+        return json([
+          {
+            id: "m-b",
+            conversation_id: "conv-b",
+            role: "user",
+            content: "B's prompt",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]);
+      },
+    });
+
+    const staleA = session.loadConversation("conv-a"); // slow, parked
+    await session.loadConversation("conv-b");
+    await session.loadConversation("conv-a"); // fast, installs "A fresh"
+    expect(session.messages.map((m) => m.content)).toEqual(["A fresh"]);
+
+    firstA.open(); // the first load finally lands, with the id back on A
+    await staleA;
+
+    expect(session.conversationId).toBe("conv-a");
+    expect(session.messages.map((m) => m.content)).toEqual(["A fresh"]);
+  });
 });
