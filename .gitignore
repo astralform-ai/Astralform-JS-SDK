@@ -12,3 +12,10 @@ test-*.mjs
 # We use pnpm workspaces — npm/yarn lockfiles shouldn't land here
 package-lock.json
 yarn.lock
+
+# `actions/setup-node` with `registry-url:` writes a registry auth token into
+# .npmrc on the runner, so a working tree mid-CI holds a real credential. Nothing
+# here is meant to be committed — ignore it so a stray `git add .` in a future
+# change can't publish one. (The repo publishes via OIDC trusted publishing and
+# needs no committed token.)
+.npmrc
