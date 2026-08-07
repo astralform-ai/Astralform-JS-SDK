@@ -504,6 +504,50 @@ describe("a send during the probe window goes to the displayed conversation", ()
   });
 });
 
+describe("switchConversation carries the same guard as loadConversation", () => {
+  it("survives A -> B -> A, the same ABA the direct load handles", async () => {
+    // `switchConversation` is the direct-ChatSession API (the manager does not
+    // call it) and had its own copy of the messages assignment — so its own
+    // copy of the ABA bug. Found by auditing every reader of `this.messages`
+    // rather than waiting for it to be reported: same defect, one function
+    // away. It now loads through `loadConversation`, so there is one guard.
+    const firstA = gate();
+    let aCalls = 0;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/events")) return json([]);
+        if (url.includes("/conv-a/messages")) {
+          aCalls += 1;
+          const nth = aCalls;
+          if (nth === 1) await firstA.wait;
+          return json([
+            {
+              id: `m-a${nth}`,
+              conversation_id: "conv-a",
+              role: "user",
+              content: nth === 1 ? "A stale" : "A fresh",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+
+    const staleA = session.switchConversation("conv-a"); // slow, parked
+    await session.switchConversation("conv-b");
+    await session.switchConversation("conv-a"); // fast, installs "A fresh"
+    expect(session.messages.map((m) => m.content)).toEqual(["A fresh"]);
+
+    firstA.open();
+    await staleA;
+
+    expect(session.messages.map((m) => m.content)).toEqual(["A fresh"]);
+  });
+});
+
 describe("loadConversation does not install a left conversation's messages", () => {
   it("keeps the messages and the id describing the same conversation", async () => {
     // The narrower half of the same race: `loadConversation` assigns the id

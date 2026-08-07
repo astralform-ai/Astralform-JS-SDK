@@ -856,12 +856,17 @@ export class ChatSession {
    * job's events.
    */
   async switchConversation(id: string, jobId?: string): Promise<void> {
-    const [messagesResult, eventsResult] = await Promise.allSettled([
-      this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
+    // Load the messages through `loadConversation` rather than fetching and
+    // assigning them here. This function had its own copy of that assignment
+    // and therefore its own copy of both bugs the guarded version fixes: no
+    // generation token, so two overlapping calls install out of order; and an
+    // unconditional overwrite, so a send landing mid-fetch is lost. One
+    // implementation of the rule means it cannot drift back apart. Still
+    // parallel — the two fetches start together, as before.
+    const [, eventsResult] = await Promise.allSettled([
+      this.loadConversation(id),
       this.client.getConversationEvents(id, jobId),
     ]);
-    this.messages =
-      messagesResult.status === "fulfilled" ? messagesResult.value : [];
     this.replayTurn(
       id,
       eventsResult.status === "fulfilled" ? eventsResult.value : [],
