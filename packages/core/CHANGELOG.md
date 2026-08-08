@@ -1,5 +1,29 @@
 # Changelog
 
+## 5.1.0
+
+### Added
+
+**`ConversationAsset.posterUrl`** — a signed still to render for an asset that
+cannot be its own thumbnail. Video only: an `<img src>` pointed at an mp4 draws
+nothing, because a poster frame costs a container decode, so a video row had no
+thumbnail to show at all. The backend resolves it from the image a generated
+clip was animated from — that still is literally the clip's first frame.
+Undefined for everything else, and for a clip with no recorded source (one
+assembled in a sandbox rather than by `generate_video`).
+
+**`ConversationAsset.contentUrl`** — the asset's permanent address. It never
+expires, because authorization is resolved per request against the caller's
+live session rather than frozen into a signature; store and link this one.
+It needs an `Authorization` header, which a browser will not attach to an
+`<img src>`, so keep rendering from `url`.
+
+`contentUrl` is not a new API field — the backend has served `content_url` for
+several releases. `mapAsset` is an allowlist and silently dropped it, so every
+consumer saw `undefined`, including one that had declared the field in a local
+type widening and therefore type-checked against a value that never arrived.
+Nothing breaks on upgrade; a consumer that worked around the gap can stop.
+
 ## 5.0.0
 
 ### BREAKING CHANGES

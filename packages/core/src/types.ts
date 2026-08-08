@@ -927,7 +927,7 @@ export interface ModelOption {
 }
 
 // =============================================================================
-// Conversation assets (unchanged)
+// Conversation assets
 // =============================================================================
 
 export interface ConversationAsset {
