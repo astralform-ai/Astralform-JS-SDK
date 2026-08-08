@@ -184,6 +184,20 @@ export class ChatSession {
    */
   private jobsCreated = 0;
 
+  /**
+   * Ids of locally-created user messages the server has not acknowledged yet.
+   *
+   * Arrival time cannot answer "could the reply have included this?" on its
+   * own. Every `loadConversation` in `StreamManager` sits behind the
+   * active-job probe, so the ORDINARY ordering is that a send lands BEFORE the
+   * load starts — and an arrival-time rule drops exactly those, losing the
+   * prompt the user just sent while its stream is still running. Membership
+   * here is set by `send` and cleared when a server row turns up carrying the
+   * same turn, so the keep-decision no longer depends on which side of the
+   * fetch the push landed on.
+   */
+  private unacknowledgedMessageIds = new Set<string>();
+
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
   // is tracked by the consumer's own block store.
@@ -313,7 +327,12 @@ export class ChatSession {
         // in-flight restore reinstalls the right list, which is why the
         // manager-level tests never saw it.
         this.messages = [];
-        this.messagesConversationId = conversationId;
+        // NOT `conversationId`. After this the list holds at most this one
+        // turn, which is not that conversation's history — and
+        // `StreamManager.regenerate` trusts this field, so claiming it would
+        // let regenerate fire against a view missing everything before it.
+        // `null` keeps the claim honest and the gate closed until a real load.
+        this.messagesConversationId = null;
       }
       this.conversationId = conversationId;
     }
@@ -330,6 +349,7 @@ export class ChatSession {
       await this.storage.addMessage(userMessage, conversationId);
     }
     this.messages.push(userMessage);
+    if (conversationId) this.unacknowledgedMessageIds.add(userMessage.id);
 
     const request: ChatStreamRequest = {
       message: content,
@@ -885,10 +905,6 @@ export class ChatSession {
     const load = ++this.loadGeneration;
     this.conversationId = id;
     this.resetStreamingState();
-    // Snapshot which messages already existed when the fetch was ISSUED. What
-    // the server's reply cannot know about is exactly what arrived after that
-    // instant — see the merge below.
-    const knownBeforeFetch = new Set(this.messages.map((m) => m.id));
     const messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
@@ -904,52 +920,33 @@ export class ChatSession {
     // clobbers the fresh messages the second A load already installed. The id
     // says where the session is, not which load last spoke.
     if (load !== this.loadGeneration) return;
-    // The fetch is a SNAPSHOT taken before it resolved, so a send that lands
-    // while it is in flight is not in it. Assigning it straight over
-    // `this.messages` drops that message with nothing to restore it — the SSE
-    // handler only ever appends the assistant's reply, never the user turn
-    // again — so the send is posted correctly and then vanishes from the list,
-    // leaving `regenerate` with no last user message to resend.
+    // The reply is a SNAPSHOT of the server's state. A locally-created user
+    // message the server has not acknowledged yet is not in it, and assigning
+    // straight over `this.messages` drops it with nothing to restore it — the
+    // SSE handler only ever appends the assistant's reply, never the user turn
+    // again. So the send is posted correctly and then vanishes from the list,
+    // leaving `regenerate` to pick the PREVIOUS turn as the last user message.
     //
-    // Keep only what was appended AFTER the fetch was issued, and only for this
-    // conversation. Those two conditions are what make the server the source of
-    // truth for everything else.
-    //
-    // Deliberately NOT "absent from the reply by id": a locally-created message
-    // carries a client `generateId()` that is never sent to the server and never
-    // reconciled with the row the server assigns, so an id comparison can never
-    // match and would keep the local copy FOREVER. Revisiting the conversation
-    // would then show the last sent message twice — once from the server,
-    // correctly placed, once as a trailing duplicate carrying an id the server
-    // has never heard of. `regenerate` takes the LAST user message, so it would
-    // pick that duplicate and resend from a checkpoint id the server cannot
-    // resolve. Arrival time answers the real question ("could the reply have
-    // included this?"); identity cannot.
-    //
-    // Arrival time alone is necessary but NOT sufficient: a send that lands
-    // while the fetch is open may still be committed before the read, in which
-    // case the reply already carries it under the server's id and keeping the
-    // local copy duplicates it. Whether it does is pure timing, so the second
-    // condition compares the only fields both sides agree on — role and
-    // content. Two identical prompts sent within one fetch window would
-    // collapse to one; that is a far better failure than a phantom duplicate
-    // carrying an id the server never assigned, which `regenerate` would then
-    // pick as the last user message and `planRestore` would replay as a
-    // free-standing steer bubble.
-    const arrived = this.messages.filter(
-      (m) => m.conversationId === id && !knownBeforeFetch.has(m.id),
+    // Keyed on the unacknowledged set rather than on arrival time. Arrival
+    // time looks right and is not: every `loadConversation` here sits behind
+    // the active-job probe, so a send landing BEFORE the load starts is the
+    // ordinary case, and an arrival-time rule drops precisely those.
+    const pending = this.messages.filter(
+      (m) => this.unacknowledgedMessageIds.has(m.id) && m.conversationId === id,
     );
-    // Compare against the TAIL only — the newest `arrived.length` rows. If the
-    // server committed these sends they are necessarily the newest rows in the
-    // reply, so nothing older can be a match. Comparing against the whole
-    // history instead made any repeat of a prompt the conversation had EVER
-    // contained collapse: "continue", "yes", "retry" are the norm in an agent
-    // chat, and the just-sent copy would be dropped against a turn-3 row the
-    // server's read never saw — the very loss this filter exists to prevent.
-    const tail = messages.slice(Math.max(0, messages.length - arrived.length));
-    const stillPending = arrived.filter(
+    // Compare against the TAIL only — the newest `pending.length` rows. If the
+    // server has these turns they are necessarily its newest rows, so nothing
+    // older can match. Comparing against the whole history instead made any
+    // repeat of a prompt the conversation had ever contained collapse, and
+    // "continue" / "yes" / "retry" are the norm in an agent chat.
+    const tail = messages.slice(Math.max(0, messages.length - pending.length));
+    const stillPending = pending.filter(
       (m) => !tail.some((f) => f.role === m.role && f.content === m.content),
     );
+    // A server row carrying the same turn IS the acknowledgement.
+    for (const m of pending) {
+      if (!stillPending.includes(m)) this.unacknowledgedMessageIds.delete(m.id);
+    }
     this.messages = stillPending.length
       ? [...messages, ...stillPending]
       : messages;

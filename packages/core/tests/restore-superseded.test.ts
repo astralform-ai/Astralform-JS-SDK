@@ -947,8 +947,20 @@ describe("relocating the conversation tears the live turn down first", () => {
     await flush();
     expect(manager.state).toBe("streaming");
 
+    const tagged: (string | null)[] = [];
+    manager.on((e) => {
+      if (e.type === "event" && e.event.type === "disconnected")
+        tagged.push(e.conversationId);
+    });
+
     await manager.deleteConversation("conv-a");
     await flush();
+
+    // Tagged with the conversation being deleted. `session.deleteConversation`
+    // nulls `conversationId` and `onSessionEvent` tags from that field, so
+    // cancelling after it labels the teardown `null` — the mirror of the
+    // ordering fault already fixed in `createConversation`.
+    expect(tagged).toEqual(["conv-a"]);
 
     // The distinguishing behaviour: the job is CANCELLED, not parked. Merely
     // keeping the map clean is not enough — a detached job keeps running
@@ -1225,8 +1237,11 @@ describe("a send addressed elsewhere takes the message list with it", () => {
     await flush();
 
     expect(session.conversationId).toBe("conv-b");
-    expect(session.messagesConversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).toEqual(["hi"]);
+    // NOT "conv-b": the list holds one turn, not that conversation's history.
+    // Claiming otherwise would let `StreamManager.regenerate` — which trusts
+    // this field — fire against a view missing everything before it.
+    expect(session.messagesConversationId).toBeNull();
   });
 });
 
@@ -1431,8 +1446,9 @@ describe("a SUCCESSFUL addressed send keeps its relocation", () => {
 
     // The relocation stands: the send succeeded, so there is nothing to undo.
     expect(session.conversationId).toBe("conv-b");
-    expect(session.messagesConversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).toContain("hi");
+    // Still unclaimed — one turn is not the conversation's history.
+    expect(session.messagesConversationId).toBeNull();
     expect(session.messages.map((m) => m.content)).not.toContain("A's prompt");
   });
 });
@@ -1469,6 +1485,18 @@ describe("no path announces idle over a live stream", () => {
           await probe.wait; // fast path parks here, composer still live
           return json({ job_id: null, status: "none" });
         }
+        if (url.includes("/conv-b/messages"))
+          // NON-EMPTY, and without the just-sent turn: the server has not
+          // committed it yet. An empty list here is what hid the loss.
+          return json([
+            {
+              id: "m-hist",
+              conversation_id: "conv-b",
+              role: "user",
+              content: "an earlier turn",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
         if (url.includes("/active-job"))
           return json({ job_id: null, status: "none" });
         return json([]);

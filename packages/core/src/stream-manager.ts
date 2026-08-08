@@ -356,8 +356,20 @@ export class StreamManager {
   }
 
   async deleteConversation(id: string): Promise<void> {
+    // Evaluated up front, because the cancel below has to happen BEFORE the
+    // delete: `session.deleteConversation` nulls `conversationId` and empties
+    // `messages`, and `disconnect()` emits `disconnected`, which
+    // `onSessionEvent` tags from that same field — so cancelling afterwards
+    // labels the teardown `null`, before `conversationChanged` has fired. Same
+    // ordering fault as `createConversation` had. It also stops the job a
+    // round-trip sooner.
+    const wasActive = this._activeConversationId === id;
+    if (wasActive && this._state === "streaming") {
+      this.session.disconnect();
+      this._state = "idle"; // cancelled, not parked — recorded, not announced
+    }
     await this.session.deleteConversation(id);
-    if (this._activeConversationId === id) {
+    if (wasActive) {
       // CANCEL rather than park. `detachStreamingTurn` is right when the user
       // navigates away — the turn keeps running and can be rejoined — but this
       // conversation is gone, so its output has nowhere to land. Parking it
@@ -365,10 +377,6 @@ export class StreamManager {
       // a running-job indicator on a conversation no longer in the list, and
       // `switchTo` would compute `targetHadBackgroundJob` and force a full
       // restore of it.
-      if (this._state === "streaming") {
-        this.session.disconnect();
-        this._state = "idle"; // cancelled, not parked — same recording as above
-      }
       this.setActiveConversation(null);
       // Same reason as `createConversation`: this bumps the generation, so any
       // restore it supersedes goes quiet, and nothing else will announce.
