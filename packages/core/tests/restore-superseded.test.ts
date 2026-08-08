@@ -4109,3 +4109,153 @@ describe("a rejecting loadConversation does not strand the switch", () => {
     held.open();
   });
 });
+
+describe("every teardown path announces what it recorded", () => {
+  /** A storage whose fetch/create can be made to reject. */
+  function brittleStorage(opts: {
+    fetchThrows?: boolean;
+    createThrows?: boolean;
+  }) {
+    return {
+      createConversation: async (id: string) => {
+        if (opts.createThrows) throw new Error("quota exceeded");
+        return { id, title: "", createdAt: "", updatedAt: "", messageCount: 0 };
+      },
+      fetchConversations: async () => [],
+      fetchMessages: async () => {
+        if (opts.fetchThrows) throw new Error("storage unavailable");
+        return [];
+      },
+      addMessage: async () => {},
+      updateConversationTitle: async () => {},
+      deleteConversation: async () => {},
+      deleteMessage: async () => {},
+    } as never;
+  }
+
+  function liveTurnBackend(held: Promise<void>, brokenMessages: string) {
+    return async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs/") && url.includes("/events")) {
+        await held;
+        return new Response("data: [DONE]\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      if (url.includes("/v1/jobs"))
+        return json({
+          job_id: "job-a",
+          conversation_id: "conv-a",
+          message_id: "m1",
+          status: "queued",
+        });
+      if (url.includes(brokenMessages))
+        return new Response("nope", { status: 500 });
+      if (url.includes("/active-job"))
+        return json({ job_id: null, status: "none" });
+      return json([]);
+    };
+  }
+
+  it("the fast path settles when loadConversation rejects", async () => {
+    const held = gate();
+    const session = new ChatSession(
+      { ...baseConfig, fetch: liveTurnBackend(held.wait, "/conv-b/messages") },
+      brittleStorage({ fetchThrows: true }),
+    );
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn on A");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    const states: string[] = [];
+    manager.on((e) => {
+      if (e.type === "stateChange") states.push(e.state);
+    });
+
+    await manager
+      .switchTo("conv-b", { skipHistoryReplay: true })
+      .catch(() => {});
+    await flush();
+
+    // The turn was torn down, so `streaming` must not be the last thing the
+    // consumer heard — nothing else would ever clear it.
+    expect(states).toContain("idle");
+    expect(manager.state).not.toBe("streaming");
+    held.open();
+  });
+
+  it("createConversation settles when the storage create rejects", async () => {
+    const held = gate();
+    const session = new ChatSession(
+      { ...baseConfig, fetch: liveTurnBackend(held.wait, "/never/") },
+      brittleStorage({ createThrows: true }),
+    );
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn on A");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    const states: string[] = [];
+    manager.on((e) => {
+      if (e.type === "stateChange") states.push(e.state);
+    });
+
+    await expect(manager.createConversation()).rejects.toThrow("quota");
+    await flush();
+
+    expect(states).toContain("idle");
+    held.open();
+  });
+
+  it("parking a job stops stop() from cancelling it", async () => {
+    const held = gate();
+    const cancels: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/cancel")) {
+          cancels.push(url);
+          return json({});
+        }
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait;
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn on A");
+    await flush();
+    await manager.switchTo("conv-b"); // parks job-a
+    await flush();
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+
+    manager.stop(); // Stop pressed on B, where nothing is running
+
+    expect(cancels).toEqual([]); // A's parked job must survive
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+    held.open();
+  });
+});

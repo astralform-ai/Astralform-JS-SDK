@@ -337,9 +337,19 @@ export class StreamManager {
         // Consumer already holds the rendered blocks. Load the message list so
         // send/regenerate have their context, but skip the fetch + replay and
         // stay out of the ``restoring`` state.
-        await this.session.loadConversation(conversationId);
-        if (gen !== this.generation) return;
-        this.settleIdle();
+        // `finally`, for the same reason `restore`'s caller has one:
+        // `loadConversation` rejects when the API fetch and the
+        // `storage.fetchMessages` fallback both fail, and `detachStreamingTurn`
+        // above recorded `idle` WITHOUT announcing on the contract that the
+        // caller announces. Returning through a throw leaves the consumer's
+        // last `stateChange` at `streaming` with nothing able to clear it —
+        // `finalizeStream` and the `message_stop` branch both act only on
+        // `streaming`, so the composer stays disabled for the session.
+        try {
+          await this.session.loadConversation(conversationId);
+        } finally {
+          if (gen === this.generation) this.settleIdle();
+        }
         return;
       }
       // A live job is running — fall through to a full restore(), which
@@ -409,7 +419,18 @@ export class StreamManager {
     // before `conversationChanged` has fired. `switchTo` detaches while the
     // pointer is still the old one; this is the parity that comment claimed.
     this.detachStreamingTurn();
-    const id = await this.session.createNewConversation();
+    let id: string;
+    try {
+      id = await this.session.createNewConversation();
+    } catch (err) {
+      // `detachStreamingTurn` above tore the turn down and recorded `idle`
+      // without announcing; a rejecting `storage.createConversation` (quota, a
+      // network-backed store) would otherwise propagate past both settle
+      // points below and leave the composer disabled for good. Same shape
+      // `deleteConversation` uses: announce what happened, then rethrow.
+      this.settleIdle();
+      throw err;
+    }
     // A `switchTo` landing inside that await claimed the newer generation, and
     // relocating over it would bump the generation out from under its restore:
     // the consumer sees `conversationChanged: B` followed by this one, and B
@@ -569,6 +590,13 @@ export class StreamManager {
       this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
     }
     this.session.detach();
+    // `detach()` deliberately leaves `currentJobId`, but the job is parked now
+    // — it is no longer THIS pointer's turn. Left behind, `stop()` (which has
+    // no state guard) calls `cancelTurn()` and cancels the PARKED
+    // conversation's job, while `_backgroundJobs` still lists it and emits
+    // nothing, so the badge outlives the job. `cancelTurn` documents this
+    // exact hazard for its own path.
+    this.session.currentJobId = null;
     // Record — without announcing — that the manager no longer owns a live
     // turn. The caller announces, and this is what lets it use `settleIdle()`:
     // a `streaming` state seen there afterwards belongs to a NEW send that
