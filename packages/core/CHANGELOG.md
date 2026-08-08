@@ -60,6 +60,18 @@ Fixed along the same seam:
 - **Deleting a conversation with a parked background job emits
   `backgroundJobsChanged`,** so a running-job badge cannot outlive the
   conversation it points at.
+## 4.9.1
+
+**A dropped SSE stream can no longer hang a turn forever.** A dead HTTP/3 (QUIC) connection leaves `reader.read()` pending indefinitely — no bytes, no error, no FIN. The existing reconnect loop only engages on a *rejected* or *cleanly closed* stream, so it never fired: the turn sat on "working" with no recovery path and no way for a client to tell it apart from a slow model. Seen in production as `ERR_QUIC_PROTOCOL_ERROR` on `/v1/jobs/{id}/events`.
+
+`pumpStream` now runs a stall watchdog. The backend emits a keepalive every 15s, so a healthy stream never goes quiet for long; if no event arrives for **45s** the stream is treated as a zombie, the connection is aborted, and a `ConnectionError` feeds the existing reconnect-from-`lastSeq` loop. Recovery is transparent — the turn resumes from the last seq and completes.
+
+Two things worth knowing if you tune this:
+
+- **It depends on the keepalive's framing, not just its interval.** The backend sends `keepalive` as a typed wire event, so it reaches the SSE parser as a real `data:` line and resets the timer. A bare `: keepalive` SSE *comment* would be swallowed by the parser and the watchdog would fire on every healthy turn that thinks for 45s.
+- **Time-to-give-up is now ~5.5 min, not ~17s.** The 17.5s figure is the backoff sum (0.5+1+2+4+5+5). A stalled attempt burns 45s before it even registers as a failure, so all 7 attempts stalling is 7 × 45s + 17.5s. That is deliberate: a stalled stream is indistinguishable from a slow one until the watchdog fires, and a shorter window would kill healthy long-running turns.
+
+Also fixed: `disconnect()` / `detach()` during reconnect backoff could let one more `/events` request go out. The per-attempt `AbortController` is linked to the session signal by an `abort` *listener*, and a signal aborted while the loop was sleeping has already dispatched that event — so the listener never fired and the fresh controller stayed live. That attempt reached the network, emitted `ChatEvent`s to lingering handlers, and could run a client tool on a session the caller believed was gone. The loop now bails up front when the signal is already aborted, restoring the short-circuit that passing the outer signal straight to `fetch` used to provide.
 
 ## 4.9.0
 
