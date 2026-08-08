@@ -177,19 +177,6 @@ export class ChatSession {
   private loadGeneration = 0;
 
   /**
-   * Did THIS send reach the wire? Passed down and set by ``consumeJobStream``.
-   *
-   * Per-call, not a session counter: `send`'s `isStreaming` bail fires before
-   * `processStream` sets the flag, with an `await storage.addMessage` in
-   * between, so two sends can interleave. A shared counter then answers "did
-   * ANY job get created during my await", and a failed send running beside a
-   * successful one would skip its own cleanup.
-   *
-   * `currentJobId` cannot serve either — `message_stop` nulls it, so after any
-   * completed turn it reads exactly as it did before the send.
-   */
-
-  /**
    * Ids of locally-created user messages the server has not acknowledged yet.
    *
    * Arrival time cannot answer "could the reply have included this?" on its
@@ -314,7 +301,7 @@ export class ChatSession {
     const conversationId =
       options?.conversationId ?? this.conversationId ?? undefined;
     // Captured so a send that never reaches the wire can put the list back —
-    // see the restore in the catch below.
+    // see the put-back at the end of this method.
     let relocatedFrom: {
       messages: Message[];
       messagesId: string | null;
@@ -432,6 +419,12 @@ export class ChatSession {
     // so after any completed send it reads exactly as it did before, and a
     // put-back keyed on it would fire on the success path and revert a
     // relocation that worked.
+    // Did THIS send reach the wire? Per-call, not a session counter: the
+    // `isStreaming` bail above fires before `processStream` sets the flag,
+    // with an `await storage.addMessage` in between, so two sends can
+    // interleave and a shared counter would answer "did ANY job get created
+    // during my await". `currentJobId` cannot serve either — `message_stop`
+    // nulls it, so after a completed turn it reads as it did before the send.
     const wire: { reached: boolean } = { reached: false };
     await this.processStream(request, wire);
 

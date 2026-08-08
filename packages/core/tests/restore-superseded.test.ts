@@ -3370,3 +3370,87 @@ describe("the create halves agree in both directions", () => {
     held.open();
   });
 });
+
+describe("nothing detaches a turn without announcing it", () => {
+  it("settles when the create declines after detaching", async () => {
+    // `detachStreamingTurn` records `idle` silently on the contract that the
+    // caller announces. The decline path returned without doing so, and the
+    // decline is driven by `loadGeneration` — which the public
+    // `loadConversation` moves without touching any manager state, so no
+    // successor exists to cover the gap. The turn is torn down and the
+    // consumer's last `stateChange` is still `streaming`.
+    const held = gate();
+    const slowCreate = gate();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events")) {
+            await held.wait; // the turn is live when the create starts
+            return new Response("data: [DONE]\n\n", {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            });
+          }
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "job-a",
+              conversation_id: "conv-a",
+              message_id: "m1",
+              status: "queued",
+            });
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => {
+          await slowCreate.wait;
+          return {
+            id,
+            title: "",
+            createdAt: "",
+            updatedAt: "",
+            messageCount: 0,
+          };
+        },
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    const creating = manager.createConversation();
+    await flush(); // detached and parked; now inside storage.createConversation
+
+    const states: string[] = [];
+    manager.on((e) => {
+      if (e.type === "stateChange") states.push(e.state);
+    });
+
+    // A DIRECT session call — no manager state touched, so no successor
+    // restore exists to announce on this branch's behalf.
+    void session.loadConversation("conv-z");
+    await flush();
+
+    slowCreate.open();
+    await creating;
+    await flush();
+
+    expect(manager.state).toBe("idle");
+    expect(states).toContain("idle");
+
+    held.open();
+  });
+});

@@ -365,7 +365,18 @@ export class StreamManager {
     // manager and the session naming different conversations, which is worse
     // than either outcome alone: `switchTo` early-returns on the one it thinks
     // is active, so the user cannot click their way out.
-    if (this.session.conversationId !== id) return id;
+    if (this.session.conversationId !== id) {
+      // `detachStreamingTurn` above already parked the job, detached the
+      // stream and recorded `idle` WITHOUT announcing, on the contract that
+      // the caller announces. Every sibling path does — `settleIdle` below,
+      // `deleteConversation`'s catch, `switchTo`'s successor restore — and
+      // this one did not. When a `switchTo` caused the decline its restore
+      // covers the gap, but `loadGeneration` also moves via the public
+      // `loadConversation` / `switchConversation`, and then nothing announces
+      // and the composer stays disabled after the turn was torn down.
+      this.settleIdle();
+      return id;
+    }
     this.setActiveConversation(id);
     // Settle the state here. `setActiveConversation` bumps the generation, so
     // a restore this supersedes now returns WITHOUT emitting — including
