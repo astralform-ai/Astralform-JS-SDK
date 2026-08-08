@@ -3669,3 +3669,118 @@ describe("a restore does not announce restoring over a live turn", () => {
     held.open();
   });
 });
+
+describe("the auto-created target survives a re-entrant handler", () => {
+  it("posts to the conversation it created, not the one a handler switched to", async () => {
+    // `setActiveConversation` emits synchronously, so a handler routing on the
+    // pointer can `switchTo` from inside it. Re-reading `_activeConversationId`
+    // afterwards posts the text the user composed here into whichever
+    // conversation they landed on instead. Same door the generation counter
+    // closes for restores.
+    const seen: { convId?: string } = {};
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input, init) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events"))
+            return completedTurn("j");
+          if (url.includes("/v1/jobs") && init?.method === "POST") {
+            seen.convId = JSON.parse(String(init.body)).conversation_id;
+            return json({
+              job_id: "j",
+              conversation_id: seen.convId,
+              message_id: "m-server",
+              status: "queued",
+            });
+          }
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+        deleteMessage: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    let created: string | null = null;
+    manager.on((e) => {
+      if (e.type === "conversationChanged" && e.conversationId) {
+        if (created) return;
+        created = e.conversationId;
+        void manager.switchTo("conv-c"); // synchronous re-entry
+      }
+    });
+
+    await manager.send("hello"); // no active conversation → auto-create
+
+    expect(created).toBeTruthy();
+    expect(seen.convId).toBe(created);
+    expect(seen.convId).not.toBe("conv-c");
+  });
+});
+
+describe("a send that never reached the wire leaves nothing in storage either", () => {
+  it("deletes the storage copy written before createJob", async () => {
+    // `addMessage` runs BEFORE `createJob`, so on the failed path it has
+    // already landed — and `loadConversation` falls back to
+    // `storage.fetchMessages` whenever the API fetch rejects, which reinstalls
+    // the phantom on any later offline load.
+    const added: string[] = [];
+    const deleted: string[] = [];
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs"))
+            return new Response("boom", { status: 500 });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async (m: { id: string }) => {
+          added.push(m.id);
+        },
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+        deleteMessage: async (id: string) => {
+          deleted.push(id);
+        },
+      } as never,
+    );
+
+    await session.loadConversation("conv-a");
+    await session.send("never sent");
+
+    expect(added).toHaveLength(1);
+    // The same row, by the client id it was written under — the rename in
+    // `consumeJobStream` only runs after `createJob` resolves, which it did not.
+    expect(deleted).toEqual(added);
+  });
+});

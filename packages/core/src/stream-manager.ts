@@ -185,9 +185,16 @@ export class StreamManager {
     // unlike the sticky case, since the send's own `setState`/`finalizeStream`
     // announce and `_activeConversationId` is no longer that conversation, so
     // re-clicking it works.
-    if (!this._activeConversationId) {
-      const id = await this.session.createNewConversation();
-      this.setActiveConversation(id);
+    let target = this._activeConversationId;
+    if (!target) {
+      target = await this.session.createNewConversation();
+      // Captured, not re-read below: `setActiveConversation` emits
+      // `conversationChanged` synchronously, and a handler routing on the
+      // pointer can `switchTo` from inside it — so re-reading would post the
+      // text the user composed here into whichever conversation they landed
+      // on instead. Same door `setActiveConversation` returns its claimed
+      // generation to close.
+      this.setActiveConversation(target);
     }
 
     this.setState("streaming");
@@ -200,7 +207,7 @@ export class StreamManager {
         // `loadConversation` an await later, so between the two the session
         // still names the conversation the user left. The manager's pointer
         // moved the moment the user clicked; it is the authority.
-        conversationId: this._activeConversationId ?? undefined,
+        conversationId: target ?? undefined,
         agentName: options?.agentName,
         uploadIds: options?.uploadIds,
         planMode: options?.planMode,
@@ -341,6 +348,15 @@ export class StreamManager {
 
   // ── Create / rename / delete conversation ─────────────────────
 
+  /**
+   * Create a conversation and make it active.
+   *
+   * The returned id is NOT guaranteed to be the active conversation: if a
+   * switch lands inside the storage round-trip, this declines the pointer move
+   * so the newer one wins, and no `conversationChanged` fires for the new id.
+   * A caller that routes on the return value should `switchTo(id)` rather than
+   * assume it is current — that call is not a no-op in the declined case.
+   */
   async createConversation(): Promise<string> {
     // BEFORE `createNewConversation`, which is itself the relocation — it sets
     // `session.conversationId` and empties `session.messages`. `detach()`

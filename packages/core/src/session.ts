@@ -453,6 +453,15 @@ export class ChatSession {
       // has no business making.
       const at = this.messages.indexOf(userMessage);
       if (at !== -1) this.messages.splice(at, 1);
+      // And the STORAGE copy. `addMessage` above runs before `createJob`, so
+      // it has already landed on this path — and `loadConversation` falls back
+      // to `storage.fetchMessages` whenever the API fetch rejects, which would
+      // reinstall the phantom on any later offline load. Addressable because
+      // the id is still the client's: the rename in `consumeJobStream` only
+      // runs after `createJob` resolves, which by definition did not happen.
+      if (conversationId) {
+        await this.storage.deleteMessage(userMessage.id).catch(() => {});
+      }
     }
     if (
       relocatedFrom &&
