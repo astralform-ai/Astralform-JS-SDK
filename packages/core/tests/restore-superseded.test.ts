@@ -1037,6 +1037,7 @@ describe("relocating the conversation tears the live turn down first", () => {
         addMessage: async () => {},
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -1199,6 +1200,7 @@ describe("a rejected load does not leave the old list under the new id", () => {
         addMessage: async () => {},
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
 
@@ -1389,6 +1391,7 @@ describe("a load that is BOTH rejected and superseded stays out of the way", () 
         addMessage: async () => {},
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
 
@@ -2355,6 +2358,7 @@ describe("delete and create lose to a switch that lands in their await", () => {
       deleteConversation: async () => {
         await hold;
       },
+      deleteMessage: async () => {},
     } as never;
   }
 
@@ -2487,6 +2491,7 @@ describe("delete and create lose to a switch that lands in their await", () => {
         },
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
 
@@ -2737,6 +2742,7 @@ describe("both halves of a create consult a counter that has actually moved", ()
         addMessage: async () => {},
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -2862,6 +2868,7 @@ describe("a send that lands in the probe window keeps its own text", () => {
         },
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -2939,6 +2946,7 @@ describe("a rejecting storage does not strand the delete half-done", () => {
         deleteConversation: async () => {
           throw new Error("storage unavailable");
         },
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -3170,6 +3178,7 @@ describe("a restore never replays over a live turn", () => {
         },
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -3302,6 +3311,7 @@ describe("the create halves agree in both directions", () => {
         addMessage: async () => {},
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -3422,6 +3432,7 @@ describe("nothing detaches a turn without announcing it", () => {
         addMessage: async () => {},
         updateConversationTitle: async () => {},
         deleteConversation: async () => {},
+        deleteMessage: async () => {},
       } as never,
     );
     const manager = new StreamManager(session);
@@ -3782,5 +3793,131 @@ describe("a send that never reached the wire leaves nothing in storage either", 
     // The same row, by the client id it was written under — the rename in
     // `consumeJobStream` only runs after `createJob` resolves, which it did not.
     expect(deleted).toEqual(added);
+  });
+});
+
+describe("a superseded restore gives the parked job back", () => {
+  it("re-parks a background job it claimed but never took over", async () => {
+    // Clearing the entry on `switchTo` is a CLAIM that this switch will
+    // reconnect. A superseded restore bails without doing so, and before the
+    // guard existed the abandoned restore ran to completion and reconnected —
+    // so the guard is what makes the claim false. The job is then running with
+    // no local record: no badge, and `deleteConversation` can no longer cancel
+    // it, because `_backgroundJobs.get(id)` is undefined and `wasActive` is
+    // false so neither cancel path fires.
+    const held = gate();
+    const probeA = gate();
+    let aProbes = 0;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // A's turn stays live so the switch parks it
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/conv-a/active-job")) {
+          aProbes += 1;
+          // Only the SECOND probe parks — the first is the opening switch,
+          // which has to complete before there is a turn to park at all.
+          if (aProbes > 1) await probeA.wait;
+          return json({ job_id: null, status: "none" });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn on A");
+    await flush();
+    await manager.switchTo("conv-b"); // parks A's job
+    await flush();
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+
+    const backToA = manager.switchTo("conv-a"); // clears the entry, parks on probe
+    await flush();
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+
+    await manager.switchTo("conv-c"); // supersedes A's restore
+    probeA.open();
+    await backToA;
+    await flush();
+
+    // A's job is still running and nothing is showing it — the entry has to
+    // come back, or the badge is gone and the job is uncancellable.
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+
+    held.open();
+  });
+});
+
+describe("the id reconciliation reaches a serializing storage", () => {
+  it("rewrites the stored row under the server's id", async () => {
+    // `InMemoryStorage` holds the same object by reference, so the rename
+    // lands there for free and the divergence is invisible. A `ChatStorage`
+    // that serializes on write — IndexedDB, SQLite, the reason the interface
+    // is public — keeps the client id, and `loadConversation`'s fallback to
+    // `storage.fetchMessages` would reinstate it and hand `resend_from` an id
+    // the server never issued.
+    const rows = new Map<string, { id: string; content: string }>();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events"))
+            return completedTurn("j");
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "j",
+              conversation_id: "conv-a",
+              message_id: "m-server",
+              status: "queued",
+            });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        // Serializes: a COPY, so a later in-memory rename cannot reach it.
+        addMessage: async (m: { id: string; content: string }) => {
+          rows.set(m.id, { id: m.id, content: m.content });
+        },
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+        deleteMessage: async (id: string) => {
+          rows.delete(id);
+        },
+      } as never,
+    );
+
+    await session.loadConversation("conv-a");
+    await session.send("hello");
+
+    const userRows = [...rows.values()].filter((r) => r.content === "hello");
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0].id).toBe("m-server");
   });
 });

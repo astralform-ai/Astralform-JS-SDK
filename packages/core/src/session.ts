@@ -607,6 +607,7 @@ export class ChatSession {
       this.pendingUserMessages.has(lastMsg.id)
     ) {
       this.pendingUserMessages.delete(lastMsg.id);
+      const clientMintedId = lastMsg.id;
       lastMsg.id = promptMessageId;
       // Still 0 — the id is now the server's, but the ROW is not proven
       // committed. `POST /v1/jobs` mints the id and starts the loop as a
@@ -614,6 +615,19 @@ export class ChatSession {
       // persisted by the loop, not by the handler. `message_stop` is the
       // earliest point the row is certainly there.
       this.pendingUserMessages.set(promptMessageId, 0);
+      // Write the rename THROUGH to storage. In memory it lands either way,
+      // and with `InMemoryStorage` the stored copy is the same object by
+      // reference — so it silently picks the new id up and the divergence is
+      // invisible in tests. A `ChatStorage` that serializes on write
+      // (IndexedDB, SQLite — the reason the interface is public) keeps the
+      // client id forever, and `loadConversation`'s fallback to
+      // `storage.fetchMessages` would then reinstate it, handing
+      // `resend_from` an id the server never issued. No `updateMessage` on
+      // the interface, so delete + re-add.
+      if (conversationId && clientMintedId !== promptMessageId) {
+        await this.storage.deleteMessage(clientMintedId).catch(() => {});
+        await this.storage.addMessage(lastMsg, conversationId).catch(() => {});
+      }
       // A snapshot can resolve after the backend commits this row but before
       // the job response arrives, and until it does the local copy carries a
       // client id the server never saw — so there was no id to match on and

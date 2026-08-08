@@ -305,8 +305,11 @@ export class StreamManager {
     // If streaming, detach (job keeps running in background)
     this.detachStreamingTurn();
 
-    // Clear background job for target (we're viewing it now)
-    if (this._backgroundJobs.has(conversationId)) {
+    // Clear background job for target (we're viewing it now). Captured,
+    // because the delete is a CLAIM that this switch will take the job over —
+    // see the undo after `restore`.
+    const parkedJobId = this._backgroundJobs.get(conversationId);
+    if (parkedJobId !== undefined) {
       this._backgroundJobs.delete(conversationId);
       this.emit({
         type: "backgroundJobsChanged",
@@ -344,6 +347,26 @@ export class StreamManager {
     }
 
     await this.restore(conversationId, gen);
+
+    // A superseded restore bails without reconnecting, so the claim the delete
+    // above made is false: the job is still running with no local record of
+    // it. The badge vanishes for a live job, and `deleteConversation` can no
+    // longer cancel it — `_backgroundJobs.get(id)` is undefined and
+    // `wasActive` is false, so neither cancel path fires and the turn runs on
+    // with nowhere to land. Before the guard the abandoned restore ran to
+    // completion and reconnected, which is why this only appears alongside it.
+    //
+    // Not re-added when the switch that superseded us landed on this same
+    // conversation: it owns the display now, so a badge would point at what
+    // the user is looking at.
+    if (
+      parkedJobId !== undefined &&
+      gen !== this.generation &&
+      this._activeConversationId !== conversationId
+    ) {
+      this._backgroundJobs.set(conversationId, parkedJobId);
+      this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
+    }
   }
 
   // ── Create / rename / delete conversation ─────────────────────
