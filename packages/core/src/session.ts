@@ -123,6 +123,17 @@ export class ChatSession {
   /** True while ``loadMoreConversations`` is in flight. */
   isLoadingConversations = false;
   messages: Message[] = [];
+  /**
+   * Which conversation ``messages`` currently holds.
+   *
+   * Distinct from ``conversationId``, and the distinction is the point:
+   * ``loadConversation`` moves the POINTER synchronously and installs the LIST
+   * an await later, so for the whole duration of every load the two disagree.
+   * Anything pairing a message with a conversation — ``regenerate`` above all —
+   * has to read this one, or it will pair the previous conversation's last
+   * message with the new conversation's id.
+   */
+  messagesConversationId: string | null = null;
   isStreaming = false;
   agentStatus: AgentStatus | null = null;
   agents: AgentInfo[] = [];
@@ -157,6 +168,60 @@ export class ChatSession {
    * is discarded instead.
    */
   private conversationsGeneration = 0;
+
+  /**
+   * Bumped by every ``loadConversation`` call, so an out-of-order fetch can
+   * tell it is no longer the newest one and drop its result. Separate from
+   * ``conversationsGeneration``, which guards the conversation LIST.
+   */
+  private loadGeneration = 0;
+
+  /**
+   * Ids of locally-created user messages the server has not acknowledged yet.
+   *
+   * Arrival time cannot answer "could the reply have included this?" on its
+   * own. Every `loadConversation` in `StreamManager` sits behind the
+   * active-job probe, so the ORDINARY ordering is that a send lands BEFORE the
+   * load starts — and an arrival-time rule drops exactly those, losing the
+   * prompt the user just sent while its stream is still running. Membership
+   * here is set by `send` and cleared when a server row turns up carrying the
+   * same turn, so the keep-decision no longer depends on which side of the
+   * fetch the push landed on.
+   *
+   * The value is `serverRowsKnown` as of the `message_stop` that proved the
+   * row committed, or 0 until then — including after the job response, which
+   * hands back the id but starts the loop as a background task and so proves
+   * nothing about the row. That stamp is what separates "the snapshot predates
+   * the row" from "the server does not have this row" — see
+   * `loadConversation`.
+   *
+   * It is an ANNOTATION ON `this.messages`: reconciliation only ever consults
+   * entries of that array, so an id whose message has left it is dead weight.
+   * `setMessages` is the single place the array is replaced, and it prunes.
+   */
+  private pendingUserMessages = new Map<string, number>();
+
+  /**
+   * Bumped once per completed turn, at `message_stop`, so a fetch can record
+   * what was proven when it was ISSUED. A row proven committed before the
+   * fetch went out must appear in its snapshot; one proven after may
+   * legitimately be missing.
+   */
+  private serverRowsKnown = 0;
+
+  /**
+   * Replace the message list, keeping `pendingUserMessages` an annotation on
+   * it. Every removal from the array goes through here — `push` is the only
+   * other mutation and it cannot orphan an id.
+   */
+  private setMessages(next: Message[]): void {
+    this.messages = next;
+    if (this.pendingUserMessages.size === 0) return;
+    const present = new Set(next.map((m) => m.id));
+    for (const id of this.pendingUserMessages.keys()) {
+      if (!present.has(id)) this.pendingUserMessages.delete(id);
+    }
+  }
 
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
@@ -235,6 +300,64 @@ export class ChatSession {
 
     const conversationId =
       options?.conversationId ?? this.conversationId ?? undefined;
+    // Captured so a send that never reaches the wire can put the list back —
+    // see the put-back at the end of this method.
+    let relocatedFrom: {
+      messages: Message[];
+      messagesId: string | null;
+      conversationId: string | null;
+      generation: number;
+      target: string;
+    } | null = null;
+
+    // Sending to an explicit conversation makes it the session's — catch the
+    // pointer up now rather than waiting for an in-flight `loadConversation`
+    // to land. `onSessionEvent` tags every emitted event with this field, so
+    // leaving it behind would file this send's own stream events under the
+    // conversation the caller just addressed away from: the same mis-tagging
+    // the restore guards close, re-entering through the send path.
+    //
+    // A pointer move IS an event a load in flight must lose to — otherwise it
+    // passes its own guard and installs its list under a conversation the send
+    // has since relocated to. Same rule in `createNewConversation` and
+    // `deleteConversation`.
+    if (conversationId) {
+      // Only a MOVE invalidates a load in flight. Re-stating the conversation
+      // the session is already on — the ordinary case, since the manager
+      // passes the active id on every send — must leave a load for that same
+      // conversation alone, or sending while its history is still arriving
+      // would throw the history away.
+      if (conversationId !== this.conversationId) {
+        this.loadGeneration++;
+        // Both pointers, snapshotted separately: they are deliberately
+        // distinct everywhere else here, and during an in-flight
+        // `loadConversation` they disagree — restoring one into both would
+        // rewind `conversationId` to wherever the MESSAGES were rather than
+        // where the session pointed. The generation is claimed here too, so
+        // the put-back can tell whether it still owns the session.
+        relocatedFrom = {
+          messages: this.messages,
+          messagesId: this.messagesConversationId,
+          conversationId: this.conversationId,
+          generation: this.loadGeneration,
+          target: conversationId,
+        };
+        // Drop the old conversation's list with the pointer. Leaving it behind
+        // is the same one-conversation's-messages-under-another's-id pairing
+        // the load guard exists to prevent — and here nothing re-fetches, so
+        // for a direct `ChatSession` caller (this is a documented public
+        // option) it would simply persist. Through `StreamManager` the
+        // in-flight restore reinstalls the right list.
+        this.setMessages([]);
+        // NOT `conversationId`. After this the list holds at most this one
+        // turn, which is not that conversation's history — and
+        // `StreamManager.regenerate` trusts this field, so claiming it would
+        // let regenerate fire against a view missing everything before it.
+        // `null` keeps the claim honest and the gate closed until a real load.
+        this.messagesConversationId = null;
+      }
+      this.conversationId = conversationId;
+    }
 
     const userMessage: Message = {
       id: generateId(),
@@ -245,9 +368,30 @@ export class ChatSession {
       createdAt: new Date().toISOString(),
     };
     if (conversationId) {
-      await this.storage.addMessage(userMessage, conversationId);
+      // Best-effort, matching the sibling call in `consumeJobStream`. On the
+      // relocation path the session is ALREADY moved and the list already
+      // emptied by the time this runs, so an uncaught rejection escapes `send`
+      // before the put-back at the bottom and strands it there — pointed at
+      // the target with an empty list and `messagesConversationId` null, i.e.
+      // `regenerate` gated off with nothing left to reopen it.
+      await this.storage
+        .addMessage(userMessage, conversationId)
+        .catch(() => {});
     }
     this.messages.push(userMessage);
+    // 0: no job response yet, so the server may not hold this row at all.
+    //
+    // Unconditional. Gated on `conversationId`, the auto-created-conversation
+    // path (a direct `session.send("hi")` with no conversation anywhere) was
+    // the one branch outside this machinery: `consumeJobStream`'s
+    // reconciliation keys off membership here, so that row kept its client id
+    // even though the job response had just returned the server's — leaving it
+    // unprotected by the merge below and feeding `resendFromCheckpoint` an id
+    // the server never issued. The window where an entry would be wrong is
+    // already excluded: `loadConversation` filters on `m.conversationId === id`
+    // and this row's is `""` until `consumeJobStream` backfills it, which it
+    // does immediately before the reconciliation.
+    this.pendingUserMessages.set(userMessage.id, 0);
 
     const request: ChatStreamRequest = {
       message: content,
@@ -269,7 +413,84 @@ export class ChatSession {
       temperature: options?.temperature,
     };
 
-    await this.processStream(request);
+    // `processStream` never rejects — it catches and emits an `error` event —
+    // so a thrown-exception guard here would be dead code. The signal has to
+    // SURVIVE the turn, which `currentJobId` does not: `message_stop` nulls it,
+    // so after any completed send it reads exactly as it did before, and a
+    // put-back keyed on it would fire on the success path and revert a
+    // relocation that worked.
+    // Did THIS send reach the wire? Per-call, not a session counter: the
+    // `isStreaming` bail above fires before `processStream` sets the flag,
+    // with an `await storage.addMessage` in between, so two sends can
+    // interleave and a shared counter would answer "did ANY job get created
+    // during my await". `currentJobId` cannot serve either — `message_stop`
+    // nulls it, so after a completed turn it reads as it did before the send.
+    const wire: { reached: boolean } = { reached: false };
+    await this.processStream(request, wire);
+
+    // The relocation above emptied the list before anything was sent. If no job
+    // was created there is no new conversation's history to replace it and
+    // nothing that will re-fetch, so a direct `ChatSession` caller would be
+    // left holding nothing at all. Put it back.
+    // Guarded like every other post-await mutation in this file. `createJob`
+    // can hang and then fail, and the session can have moved on meanwhile — an
+    // unguarded put-back would rewind it to a conversation the user left, which
+    // is the failure this whole change exists to prevent, arriving through the
+    // one path that was still missing the check.
+    // No job means nothing can ever acknowledge this message, so its entry
+    // would sit at `knownAt === 0` forever and every later load would
+    // re-append a message the server never received. Unconditional, because
+    // the put-back below only runs when the send RELOCATED — not the ordinary
+    // shape. Keyed on the counter, not the throw: a job that WAS created has
+    // had `userMessage.id` replaced with the server's.
+    if (!wire.reached) {
+      this.pendingUserMessages.delete(userMessage.id);
+      // The ROW too, not just its map entry. A load resolving between the push
+      // and here has already merged this row into `messages` — correctly, for
+      // the success case — and it survives with a client-minted id, which
+      // `regenerate` then hands to `resend_from`. Nothing acknowledged it, and
+      // `status` says "complete" — a claim a send that never reached the wire
+      // has no business making.
+      const at = this.messages.indexOf(userMessage);
+      if (at !== -1) this.messages.splice(at, 1);
+      // And the STORAGE copy. `addMessage` above runs before `createJob`, so
+      // it has already landed on this path — and `loadConversation` falls back
+      // to `storage.fetchMessages` whenever the API fetch rejects, which would
+      // reinstall the phantom on any later offline load. Addressable because
+      // the id is still the client's: the rename in `consumeJobStream` only
+      // runs after `createJob` resolves, which by definition did not happen.
+      if (conversationId) {
+        await this.storage.deleteMessage(userMessage.id).catch(() => {});
+      }
+    }
+    if (
+      relocatedFrom &&
+      wire.reached &&
+      this.loadGeneration === relocatedFrom.generation
+    ) {
+      // A SUFFIX of the target conversation rather than its whole history,
+      // but it is that conversation's — and `regenerate`, the only consumer of
+      // this pairing, needs just the last user turn, whose id is now the
+      // server's. Left `null`, nothing here would ever reopen the gate.
+      // From the snapshot, not from `conversationId ?? null`: the relocation
+      // only runs under `if (conversationId)`, so that fallback was dead and
+      // read as though the id could be absent here.
+      this.messagesConversationId = relocatedFrom.target;
+    } else if (
+      relocatedFrom &&
+      !wire.reached &&
+      this.loadGeneration === relocatedFrom.generation
+    ) {
+      // No pending-id snapshot to restore alongside. `POST /v1/jobs` always
+      // returns `message_id` (required on both sides of the contract; the
+      // backend mints it with `uuid4()` before validating the request), so
+      // every id the relocation pruned had already been reconciled and carries
+      // a `knownAt` at or below any later fetch's issue point — meaning
+      // `loadConversation` would not re-append it even if it were restored.
+      this.setMessages(relocatedFrom.messages);
+      this.messagesConversationId = relocatedFrom.messagesId;
+      this.conversationId = relocatedFrom.conversationId;
+    }
   }
 
   async resendFromCheckpoint(
@@ -294,13 +515,17 @@ export class ChatSession {
     this.currentTextPath = null;
   }
 
-  private async processStream(request: ChatStreamRequest): Promise<void> {
+  private async processStream(
+    request: ChatStreamRequest,
+    wire?: { reached: boolean },
+  ): Promise<void> {
     this.isStreaming = true;
     this.resetStreamingState();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     try {
-      await this.consumeJobStream(request);
+      await this.consumeJobStream(request, wire);
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         this.emit({
@@ -311,8 +536,18 @@ export class ChatSession {
         });
       }
     } finally {
-      this.isStreaming = false;
-      this.abortController = null;
+      // Only if this invocation still OWNS the turn. `detach()` cannot
+      // interrupt a client tool — `executeClientTools` awaits arbitrary
+      // consumer code with no signal — so this `finally` can run long after a
+      // switch handed the session to a newer turn. Clearing unconditionally
+      // then nulls THAT turn's flag and controller: its stream keeps pumping
+      // while the session reports idle, `stop()` aborts nothing, and the next
+      // switch neither parks its job nor stops it emitting under the new
+      // conversation's id. The mirror of `ownsTurnState`, on the live side.
+      if (this.abortController === controller) {
+        this.isStreaming = false;
+        this.abortController = null;
+      }
     }
   }
 
@@ -330,13 +565,22 @@ export class ChatSession {
   /** Current job ID for cancellation */
   currentJobId: string | null = null;
 
-  private async consumeJobStream(request: ChatStreamRequest): Promise<void> {
+  private async consumeJobStream(
+    request: ChatStreamRequest,
+    wire?: { reached: boolean },
+  ): Promise<void> {
     const job = await this.client.createJob(request);
+    if (wire) wire.reached = true;
     this.currentJobId = job.job_id;
 
     const conversationId = job.conversation_id;
     if (!this.conversationId) {
       this.conversationId = conversationId;
+      // The list in hand is this conversation's — the backend just created it
+      // around the turn being sent. Without this the pairing never becomes
+      // valid and `regenerate` is a permanent no-op for a consumer that
+      // reached a conversation this way.
+      this.messagesConversationId = conversationId;
     }
     // Ensure the conversation exists in both the local array and
     // ChatStorage so title_generated, completeStream, and fallback
@@ -360,14 +604,62 @@ export class ChatSession {
       lastMsg.conversationId = conversationId;
       await this.storage.addMessage(lastMsg, conversationId).catch(() => {});
     }
-    const messageId = job.message_id;
+    const promptMessageId = job.message_id;
+    // Reconcile the local id with the server's. `send` minted a client id that
+    // the backend never sees, so nothing downstream could ever match the two —
+    // which forced acknowledgement to be guessed from role+content, and no
+    // content heuristic can tell a genuinely repeated prompt ("continue",
+    // "retry" — the norm in an agent chat) from one the server already holds.
+    // The job response carries the real id, so take it and the question
+    // becomes exact.
+    if (
+      promptMessageId &&
+      lastMsg?.role === "user" &&
+      this.pendingUserMessages.has(lastMsg.id)
+    ) {
+      this.pendingUserMessages.delete(lastMsg.id);
+      const clientMintedId = lastMsg.id;
+      lastMsg.id = promptMessageId;
+      // Still 0 — the id is now the server's, but the ROW is not proven
+      // committed. `POST /v1/jobs` mints the id and starts the loop as a
+      // BACKGROUND task (`start_job_task`) before returning, so the prompt is
+      // persisted by the loop, not by the handler. `message_stop` is the
+      // earliest point the row is certainly there.
+      this.pendingUserMessages.set(promptMessageId, 0);
+      // Write the rename THROUGH to storage. In memory it lands either way,
+      // and with `InMemoryStorage` the stored copy is the same object by
+      // reference — so it silently picks the new id up and the divergence is
+      // invisible in tests. A `ChatStorage` that serializes on write
+      // (IndexedDB, SQLite — the reason the interface is public) keeps the
+      // client id forever, and `loadConversation`'s fallback to
+      // `storage.fetchMessages` would then reinstate it, handing
+      // `resend_from` an id the server never issued. No `updateMessage` on
+      // the interface, so delete + re-add.
+      if (conversationId && clientMintedId !== promptMessageId) {
+        await this.storage.deleteMessage(clientMintedId).catch(() => {});
+        await this.storage.addMessage(lastMsg, conversationId).catch(() => {});
+      }
+      // A snapshot can resolve after the backend commits this row but before
+      // the job response arrives, and until it does the local copy carries a
+      // client id the server never saw — so there was no id to match on and
+      // `loadConversation` kept both. Renaming would then put two rows under
+      // one id, the state the assistant row's own id exists to prevent, and
+      // `planRestore`'s `byId` would resolve to the wrong one. The local copy
+      // is the survivor: it is the newest message, so the tail is where it
+      // belongs. Removing the other cannot orphan its map entry, since the
+      // survivor now carries the same id.
+      const dupe = this.messages.findIndex(
+        (m) => m !== lastMsg && m.id === promptMessageId,
+      );
+      if (dupe !== -1) this.messages.splice(dupe, 1);
+    }
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();
 
     await this.consumeEventStream(
       job.job_id,
       conversationId,
-      messageId,
+      promptMessageId,
       true, // executeClientTools
     );
   }
@@ -379,7 +671,7 @@ export class ChatSession {
   private async consumeEventStream(
     jobId: string,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
     // Capture the signal ONCE. detach()/disconnect() abort the controller and
@@ -417,7 +709,7 @@ export class ChatSession {
         sawTerminal = await this.pumpStream(
           stream,
           conversationId,
-          messageId,
+          promptMessageId,
           executeClientTools,
           () => attemptController.abort(),
         );
@@ -467,7 +759,7 @@ export class ChatSession {
   private async pumpStream(
     stream: AsyncGenerator<{ data: string }>,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
     executeClientTools: boolean,
     onStall?: () => void,
   ): Promise<boolean> {
@@ -535,7 +827,7 @@ export class ChatSession {
         await this.dispatchWireEvent(
           parsed,
           conversationId,
-          messageId,
+          promptMessageId,
           executeClientTools,
         );
       }
@@ -590,12 +882,12 @@ export class ChatSession {
   private async dispatchWireEvent(
     wire: WireEvent,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
     // Side effects that depend on mutable session state must run before the
     // ChatEvent is emitted so consumers see a consistent view.
-    this.applyWireSideEffects(wire, conversationId, messageId);
+    this.applyWireSideEffects(wire, conversationId, promptMessageId, true);
 
     const event = translateWireEvent(wire);
     if (event) {
@@ -629,7 +921,9 @@ export class ChatSession {
         // re-executing the tool on a transient network blip.
         await this.submitToolResultWithRetry({
           conversation_id: conversationId,
-          message_id: messageId,
+          // The message that TRIGGERED the tool calls, which is what the
+          // backend stores it against — the prompt id, correctly.
+          message_id: promptMessageId,
           tool_results: results,
         });
         // Marked only after a successful submit, so a drop mid-POST re-runs it.
@@ -646,7 +940,10 @@ export class ChatSession {
    * instead of re-typing the whole conversation event by event.
    */
   private replayWireEvent(wire: WireEvent, conversationId: string): void {
-    this.applyWireSideEffects(wire, conversationId, "");
+    // `live: false` — a replay must never touch the streaming lifecycle. It
+    // cannot be inferred from `promptMessageId` being empty, because
+    // `reconnectToJob` passes empty too and IS live.
+    this.applyWireSideEffects(wire, conversationId, "", false);
     const event = translateWireEvent(wire);
     if (event) {
       this.emit(event);
@@ -658,20 +955,36 @@ export class ChatSession {
    * the pure wire → ChatEvent mapping can live in translate.ts and be reused
    * by the replay path.
    *
-   * ``messageId`` is the server-assigned assistant message id for the current
-   * turn; empty in the reconnect and conversation-switch replay paths where
-   * messages have already been loaded from REST and shouldn't be re-pushed.
+   * ``promptMessageId`` is the id of the USER turn that started this job —
+   * `POST /v1/jobs` returns it and the backend tags the prompt with it
+   * (`HumanMessage(content=..., id=message_id)`), which is what lets a restore
+   * pair a job with its prompt by id instead of by position. It was previously
+   * documented here as the ASSISTANT's id and used as one; there is no
+   * server-assigned assistant id on the wire, so that row gets a local one.
+   * Empty in the reconnect and conversation-switch replay paths, where the
+   * messages have already been loaded from REST and must not be re-pushed —
+   * so it doubles as the "is this a live send?" gate.
    */
   private applyWireSideEffects(
     wire: WireEvent,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
+    live: boolean,
   ): void {
+    // `accumulatedText`, `currentTextPath`, `isStreaming` and `currentJobId`
+    // are ONE turn's state, and a restore replaying completed turns over a
+    // running one must not touch any of it. `send` bails only on the manager's
+    // `streaming`, so it runs during `restoring` and nothing bumps the
+    // generation — the replay loop's `superseded()` therefore stays false and
+    // the two overlap. A live event always owns this state; a replayed one
+    // only when nothing is running.
+    const ownsTurnState = live || !this.isStreaming;
+
     switch (wire.type) {
       case "message_start":
         // Reset per-turn accumulator so multi-turn replay doesn't concatenate
         // text from prior turns into the next assistant message.
-        this.resetStreamingState();
+        if (ownsTurnState) this.resetStreamingState();
         if (wire.model) {
           this.modelDisplayName = wire.model;
         }
@@ -681,6 +994,7 @@ export class ChatSession {
         // Track the currently open top-level text block so we can accumulate
         // its content for the assistant Message record.
         if (
+          ownsTurnState &&
           wire.kind === "text" &&
           (!wire.parent_path || wire.parent_path.length === 0)
         ) {
@@ -690,6 +1004,7 @@ export class ChatSession {
 
       case "block_delta":
         if (
+          ownsTurnState &&
           wire.delta.channel === "text" &&
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
@@ -700,6 +1015,7 @@ export class ChatSession {
 
       case "block_stop":
         if (
+          ownsTurnState &&
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
         ) {
@@ -708,11 +1024,24 @@ export class ChatSession {
         return;
 
       case "message_stop":
-        // Only record the assistant message when we have the server's
-        // message id. Reconnect/replay paths load messages via REST instead.
-        if (messageId) {
+        // The turn ran to completion, so the backend has persisted its prompt.
+        // This — not the job response — is the proof `loadConversation` needs
+        // before it may read "absent from the snapshot" as "the server does
+        // not have it".
+        if (promptMessageId && this.pendingUserMessages.has(promptMessageId)) {
+          this.pendingUserMessages.set(promptMessageId, ++this.serverRowsKnown);
+        }
+        // Only record the assistant message on a live send — a non-empty
+        // prompt id IS that signal. Reconnect/replay paths load messages via
+        // REST instead.
+        if (promptMessageId) {
           const assistantMessage: Message = {
-            id: messageId,
+            // NOT `promptMessageId` — that is the USER turn's id, which
+            // `consumeJobStream` stamps onto the user row. Sharing it puts two
+            // rows under one id, and `pendingUserMessages` is id-keyed. No
+            // server-assigned assistant id exists on the wire, so this row is
+            // local until a REST load replaces it.
+            id: generateId(),
             conversationId,
             role: "assistant",
             content: this.accumulatedText,
@@ -724,8 +1053,16 @@ export class ChatSession {
             .addMessage(assistantMessage, conversationId)
             .catch(() => {});
         }
-        this.isStreaming = false;
-        this.currentJobId = null;
+        // Only the LIVE stream owns these. A restore replaying a completed
+        // turn over a running one used to clear both: `currentJobId` null
+        // means the job can no longer be cancelled by `stop()` or parked by
+        // `detachStreamingTurn`, and `isStreaming` false means the next send
+        // passes its own guard and opens a second stream sharing this one's
+        // `abortController` and `lastSeq`.
+        if (ownsTurnState) {
+          this.isStreaming = false;
+          this.currentJobId = null;
+        }
         return;
 
       case "custom":
@@ -766,11 +1103,67 @@ export class ChatSession {
    * Used before reconnectToJob — SSE replay handles event replay.
    */
   async loadConversation(id: string): Promise<void> {
+    // Claimed BEFORE the await, so the check below is "am I still the newest
+    // load?" rather than "does the session still point where I left it?".
+    const load = ++this.loadGeneration;
     this.conversationId = id;
-    this.resetStreamingState();
-    this.messages = await this.client
+    // NOT while a turn is live. `resetStreamingState` nulls `currentTextPath`,
+    // and the live turn's `block_start` has already gone by — so every later
+    // `block_delta` fails the path check, accumulates nothing, and
+    // `message_stop` persists an EMPTY assistant row. Only reachable when a
+    // send lands in a switch's probe window (the normal switch path detaches
+    // first, which clears `isStreaming`), which is exactly the window this
+    // change is about.
+    if (!this.isStreaming) this.resetStreamingState();
+    // Read BEFORE the fetch goes out: the server evaluates it later still, so
+    // any row already proven committed at this point has to be in the reply.
+    const rowsKnownAtIssue = this.serverRowsKnown;
+    const messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
+    // Nothing serializes callers, and this fetch is not instant. Install these
+    // unconditionally and the session holds ONE conversation's id beside
+    // ANOTHER's messages — the pair `send` (which posts to `conversationId`)
+    // and `regenerate` (which resends `messages`' last user turn) read
+    // together.
+    //
+    // A monotonic token rather than `this.conversationId !== id`, because that
+    // comparison is ABA-blind: on A -> B -> A with A's FIRST fetch slow, the id
+    // is back to A by the time that fetch lands, so the check passes and it
+    // clobbers the fresh messages the second A load already installed. The id
+    // says where the session is, not which load last spoke.
+    if (load !== this.loadGeneration) return;
+    // The reply is a SNAPSHOT of the server's state. A user message the server
+    // has not persisted yet is not in it, and assigning straight over
+    // `this.messages` drops it with nothing to restore it — the SSE handler
+    // only ever appends the assistant's reply, never the user turn again. So
+    // the send is posted correctly and then vanishes, leaving `regenerate` to
+    // pick the PREVIOUS turn as the last user message.
+    //
+    // Matched on ID, which `consumeJobStream` reconciles with the server's as
+    // soon as the job response lands — so this is exact, not a heuristic over
+    // role/content/arrival order.
+    const pending = this.messages.filter(
+      (m) => this.pendingUserMessages.has(m.id) && m.conversationId === id,
+    );
+    const stillPending = pending.filter((m) => {
+      if (messages.some((f) => f.id === m.id)) return false;
+      const knownAt = this.pendingUserMessages.get(m.id) ?? 0;
+      // Absent from the snapshot has two causes needing opposite handling.
+      // 0 means the turn has not completed, so the row may not be committed —
+      // keep it, that is the race this set exists for. Otherwise the turn
+      // finished before this fetch was issued, so the snapshot HAD to contain
+      // it; missing means the server does not have it, and re-appending would
+      // resurrect it at the tail on every later load.
+      return knownAt === 0 || knownAt > rowsKnownAtIssue;
+    });
+    for (const m of pending) {
+      if (!stillPending.includes(m)) this.pendingUserMessages.delete(m.id);
+    }
+    this.setMessages(
+      stillPending.length ? [...messages, ...stillPending] : messages,
+    );
+    this.messagesConversationId = id;
   }
 
   /**
@@ -785,7 +1178,8 @@ export class ChatSession {
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();
     this.resetStreamingState();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     try {
       await this.consumeEventStream(
@@ -802,8 +1196,18 @@ export class ChatSession {
         blockPath: null,
       });
     } finally {
-      this.isStreaming = false;
-      this.abortController = null;
+      // Only if this invocation still OWNS the turn. `detach()` cannot
+      // interrupt a client tool — `executeClientTools` awaits arbitrary
+      // consumer code with no signal — so this `finally` can run long after a
+      // switch handed the session to a newer turn. Clearing unconditionally
+      // then nulls THAT turn's flag and controller: its stream keeps pumping
+      // while the session reports idle, `stop()` aborts nothing, and the next
+      // switch neither parks its job nor stops it emitting under the new
+      // conversation's id. The mirror of `ownsTurnState`, on the live side.
+      if (this.abortController === controller) {
+        this.isStreaming = false;
+        this.abortController = null;
+      }
     }
   }
 
@@ -816,26 +1220,82 @@ export class ChatSession {
     this.emit({ type: "disconnected" });
   }
 
-  /** Stop the job and disconnect (explicit user action). */
-  disconnect(): void {
+  /**
+   * Cancel the running turn: stop the job server-side and tear the stream
+   * down, WITHOUT ending the session. A turn-level cancel is not a
+   * session-level teardown, so unlike `disconnect()` this leaves the protocol
+   * registry alone — the SDK never auto-registers adapters, so clearing them
+   * on a Stop press would silently kill embedded-resource rendering for the
+   * rest of the session with nothing to re-register it.
+   */
+  cancelTurn(): void {
     if (this.currentJobId) {
       this.client.cancelJob(this.currentJobId).catch(() => {});
     }
     this.detach();
+    // `detach()` does not do this, and a cancelled job's id must not linger —
+    // a later `stop()` would re-issue `cancelJob` against it.
     this.currentJobId = null;
+    // A cancelled turn never reaches `message_stop`, so nothing can ever prove
+    // its prompt committed, and an entry left at `knownAt === 0` means every
+    // later load re-appends the row — forever, since `setMessages`'s prune
+    // only drops rows that LEFT the list. The server is authoritative from
+    // here: if it holds the prompt a load returns it, and if it does not (the
+    // loop runs as a background task, so a fast cancel can beat the write)
+    // the row correctly disappears. NOT done in `detach()`, where the job
+    // keeps running and will persist.
+    for (const [id, knownAt] of this.pendingUserMessages) {
+      if (knownAt === 0) this.pendingUserMessages.delete(id);
+    }
+  }
+
+  /** Stop the job and end the session's activity (explicit user action). */
+  disconnect(): void {
+    this.cancelTurn();
     // Drop all protocol adapters — lifecycle tied to the session.
     this.protocols.clear();
   }
 
+  /**
+   * A pointer move happened above this layer, so any `loadConversation` in
+   * flight must lose to it. `StreamManager` owns a pointer of its own and
+   * moves it before this one; without this the two halves would gate on
+   * counters that bump at different instants — `generation` synchronously in
+   * `setActiveConversation`, `loadGeneration` only once the switch's own load
+   * actually runs, which is behind the active-job probe.
+   */
+  invalidateLoadsInFlight(): void {
+    this.loadGeneration++;
+  }
+
   async createNewConversation(): Promise<string> {
     const id = generateId();
+    // Witness captured before the await, like `deleteConversation`'s re-test of
+    // its own pointer. `storage.createConversation` is a real round-trip for
+    // any non-memory `ChatStorage`, and anything that moves the pointer during
+    // it — a switch, a relocating send — bumps this.
+    const load = this.loadGeneration;
     const conversation = await this.storage.createConversation(
       id,
       "New Conversation",
     );
     this.conversations.unshift(conversation);
+    // Created and in the list either way; only the RELOCATION is conditional.
+    // Without this the manager could decline its own pointer move while the
+    // session had already taken this one — manager on B, session on the new
+    // id with an empty list, which is sticky: `regenerate` gates on that
+    // pairing and `switchTo` early-returns on B, so re-clicking B does
+    // nothing and the user has to visit a third conversation and come back.
+    if (load !== this.loadGeneration) return id;
+    // A pointer move — same rule as `send`'s relocation. Invisible from
+    // `restore`, which bails at its next `superseded()` check, while the
+    // session already holds the mismatched pairing.
+    this.loadGeneration++;
     this.conversationId = id;
-    this.messages = [];
+    this.setMessages([]);
+    // The empty list IS this conversation's list — say so, or every consumer
+    // of the pairing (regenerate) stays blocked on the previous conversation.
+    this.messagesConversationId = id;
     return id;
   }
 
@@ -861,7 +1321,11 @@ export class ChatSession {
     isSteer = false,
   ): void {
     this.conversationId = id;
-    this.resetStreamingState();
+    // Same rule as `loadConversation`: not while a turn is live. Nulling
+    // `currentTextPath` after the live turn's `block_start` has gone by makes
+    // every later delta accumulate nothing, and its `message_stop` then
+    // persists the REPLAYED turn's text as the assistant row.
+    if (!this.isStreaming) this.resetStreamingState();
 
     if (userMessageContent) {
       this.emit({
@@ -900,12 +1364,46 @@ export class ChatSession {
    * job's events.
    */
   async switchConversation(id: string, jobId?: string): Promise<void> {
-    const [messagesResult, eventsResult] = await Promise.allSettled([
-      this.client.getMessages(id).catch(() => this.storage.fetchMessages(id)),
+    // Load the messages through `loadConversation` rather than fetching and
+    // assigning them here: one implementation of the token check and the
+    // pending merge, so the two cannot drift apart. Still parallel — the two
+    // fetches start together.
+    // `loadConversation` claims its token synchronously, before its first
+    // await, so reading `loadGeneration` straight after the call gives the
+    // token THIS switch is operating under.
+    const loading = this.loadConversation(id);
+    const token = this.loadGeneration;
+    const [loadResult, eventsResult] = await Promise.allSettled([
+      loading,
       this.client.getConversationEvents(id, jobId),
     ]);
-    this.messages =
-      messagesResult.status === "fulfilled" ? messagesResult.value : [];
+    // Guarding the messages alone was not enough — and left this in a worse
+    // state than before. `replayTurn` opens by assigning `this.conversationId`
+    // and then emits the whole turn, so a superseded call still did both of
+    // the things this guard exists to stop: re-pointed the session at the
+    // conversation the caller left, and poured its events out of the stream.
+    // With the messages now correctly dropped, the id moved back alone —
+    // leaving one conversation's messages under another's id, precisely the
+    // pairing `loadConversation` documents itself as eliminating. Previously
+    // both moved together: still wrong, but at least coherent.
+    // Checked against the token, not against whether the load itself was
+    // superseded: on a plain A -> B the load for A COMPLETES before B starts,
+    // so it reports success, and only the events fetch is still open when B
+    // supersedes. The token catches both — the load losing mid-flight, and
+    // this whole call losing after it.
+    if (token !== this.loadGeneration) return;
+    // Ordered AFTER the token check, because a load can be both rejected AND
+    // superseded: blanking then wipes the NEWER conversation's freshly
+    // installed list and stamps it with this conversation's id — the same
+    // mismatch this whole guard exists to prevent, arriving through the
+    // failure path. A rejected load has already moved the pointer, so when
+    // this call does still own the session the list must not be left behind.
+    // Only reachable through a custom `ChatStorage` whose fallback throws
+    // (`InMemoryStorage` never does), but `ChatStorage` is a public interface.
+    if (loadResult.status === "rejected") {
+      this.setMessages([]);
+      this.messagesConversationId = id;
+    }
     this.replayTurn(
       id,
       eventsResult.status === "fulfilled" ? eventsResult.value : [],
@@ -1021,8 +1519,13 @@ export class ChatSession {
     }
     this.conversations = this.conversations.filter((c) => c.id !== id);
     if (this.conversationId === id) {
+      // Same pointer-move rule as `createNewConversation`. Worse here if
+      // skipped: `session.messages` is public, so the reinstalled list is the
+      // DELETED conversation's history rendered under a null id.
+      this.loadGeneration++;
       this.conversationId = null;
-      this.messages = [];
+      this.setMessages([]);
+      this.messagesConversationId = null;
     }
   }
 

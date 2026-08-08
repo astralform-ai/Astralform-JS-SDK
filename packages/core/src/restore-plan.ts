@@ -68,9 +68,23 @@ export type ReplayStep =
  */
 export function planRestore(args: {
   completedJobs: RestoreJob[];
+  /**
+   * Message ids claimed by ANY job, not just completed ones. A steer is a
+   * prompt no job started, so testing against completed jobs alone reads a
+   * prompt whose turn is still RUNNING as a steer — and replays it as a
+   * second, `steer`-flagged bubble on top of the one the live send already
+   * rendered. Optional so callers that only have the completed set keep the
+   * old behaviour.
+   */
+  claimedMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];
 }): ReplayStep[] {
   const { completedJobs, userMessages } = args;
+  const claimed = new Set(
+    (args.claimedMessageIds ?? completedJobs.map((j) => j.message_id)).filter(
+      (id): id is string => !!id,
+    ),
+  );
 
   const byId = new Map<string, number>();
   userMessages.forEach((m, i) => {
@@ -80,7 +94,10 @@ export function planRestore(args: {
   const linkOf = (j: RestoreJob): number | undefined =>
     j.message_id ? byId.get(j.message_id) : undefined;
 
-  const positional = (jobs: RestoreJob[], msgs: RestoreMessage[]): ReplayStep[] =>
+  const positional = (
+    jobs: RestoreJob[],
+    msgs: RestoreMessage[],
+  ): ReplayStep[] =>
     jobs.map((job, i) => ({
       kind: "turn" as const,
       jobId: job.job_id,
@@ -111,7 +128,7 @@ export function planRestore(args: {
 
   let cursor = cutover;
   const isSteer = (m: RestoreMessage | undefined): m is RestoreMessage =>
-    !!m?.id && !completedJobs.some((j) => j.message_id === m.id);
+    !!m?.id && !claimed.has(m.id);
 
   /** Emit every steer sitting before `stopAt`, and advance past it. */
   const drainTo = (stopAt: number) => {

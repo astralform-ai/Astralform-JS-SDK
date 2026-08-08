@@ -182,3 +182,62 @@ describe("replayed steers are distinguishable", () => {
     });
   });
 });
+
+describe("a prompt whose turn is still running is not a steer", () => {
+  it("does not replay a live send as a steer bubble", () => {
+    // `isSteer` asked only the COMPLETED jobs, so a prompt whose job is still
+    // running looked like a mid-run steer. The pending-message merge in
+    // `loadConversation` is what puts that prompt into `session.messages` in
+    // the first place, so a send landing in the probe window was replayed as a
+    // second, steer-flagged bubble on top of the one the consumer had already
+    // rendered from the live send.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "job-old", message_id: "m-old" }],
+      claimedMessageIds: ["m-old", "m-live"], // m-live's job is RUNNING
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-live", content: "just sent" },
+      ],
+    });
+
+    expect(plan.filter((s) => s.kind === "steer")).toEqual([]);
+  });
+
+  it("still reports a genuine steer — the control", () => {
+    // A prompt no job claims at all is a real mid-run steer and must survive.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "job-old", message_id: "m-old" }],
+      claimedMessageIds: ["m-old"],
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-steer", content: "actually, stop" },
+      ],
+    });
+
+    expect(plan.filter((s) => s.kind === "steer")).toHaveLength(1);
+  });
+});
+
+describe("a failed turn's prompt is not swallowed", () => {
+  it("still reports it as a steer when its job never completed", () => {
+    // Claiming EVERY job's id (rather than the non-terminal ones) removed the
+    // prompt from the restore entirely: a failed job produces no `turn` step,
+    // so claiming its id meant no `steer` step either and the user's text
+    // vanished from history on reload. Worse than the duplicate bubble the
+    // claim set was introduced to fix.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m-old" }],
+      claimedMessageIds: ["m-old"], // m-failed's job is terminal — not claimed
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-failed", content: "the one that errored" },
+      ],
+    });
+
+    const steers = plan.filter((s) => s.kind === "steer");
+    expect(steers).toHaveLength(1);
+    expect((steers[0] as { content: string }).content).toBe(
+      "the one that errored",
+    );
+  });
+});
