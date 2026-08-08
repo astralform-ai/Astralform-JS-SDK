@@ -1,5 +1,103 @@
 # Changelog
 
+## 5.0.0
+
+### BREAKING CHANGES
+
+**`send({ conversationId })` now relocates the session instead of addressing one turn.**
+
+Previously it posted a turn to another conversation and left the session where it
+was. It now sets `session.conversationId`, **discards `session.messages`**, and
+invalidates any `loadConversation` still in flight. A direct `ChatSession`
+consumer using the old semantics — send a turn to a side conversation, keep
+rendering the current one — loses its message list on upgrade, with no error.
+
+The old behaviour was not safe to keep: `onSessionEvent` tags every emitted
+event with `session.conversationId`, so leaving the pointer behind filed the
+send's OWN stream events under the conversation the caller had just addressed
+away from, and `regenerate` resent a list belonging to a different conversation
+than the one `send` posts to.
+
+**Migration** — if you need the target's history after the send:
+
+```ts
+await session.send(text, { conversationId: id });
+await session.loadConversation(id);
+```
+
+Callers going through `StreamManager` are unaffected **in the settled case**:
+it passes its own active conversation, which normally already matches. The two
+pointers deliberately diverge during a restore's active-job probe — the manager
+moves the moment the user clicks, `session.conversationId` only when that
+switch's own `loadConversation` runs — and a send landing in that window does
+relocate. The restore reinstalls the right list a moment later, so the end
+state is fine, but a consumer reading `session.messages` or
+`session.messagesConversationId` directly sees the gap.
+
+**TypeScript will not catch this for you.** The `SendOptions` exported from the
+package is `StreamManager`'s, which has no `conversationId`; the one that does
+is internal. So an affected caller is passing an inline object literal to
+`ChatSession.send`, and gets no error on upgrade — this entry is the only
+signal.
+
+**Assistant message ids are now client-generated.** `job.message_id` is the
+PROMPT's id; the assistant row was being pushed under it too. The user turn now
+carries it — which is what lets a restore pair a job to its prompt by id rather
+than by position — and the assistant row gets a local id until a REST load
+replaces it. A consumer keying rendered state off `message.id` for assistant
+rows will see a different value across the live → restored boundary; key off
+position or the block path instead.
+
+### Fixed
+
+**A conversation switch the user has moved on from now stops instead of
+finishing.** `restore` is a chain of awaits — the active-job probe, the message
+list, the job list, then every completed turn's events in parallel — and clicks
+are not serialized. A superseded restore ran to completion, re-pointed the
+session at the conversation being replayed, and poured its whole history out of
+the event stream into the one on screen. A monotonic generation, claimed
+synchronously by `setActiveConversation` and checked at every await boundary and
+per-turn inside the replay loop, ends it at the first check after the switch.
+
+Fixed along the same seam:
+
+- **Status, plan, and note documents no longer follow the user between
+  conversations.** Together with `@astralform/chat`'s per-conversation document
+  buckets, this is the client half of a status panel binding to the wrong
+  conversation.
+- **`createConversation` and `deleteConversation` invalidate a load in flight.**
+  Both move `conversationId`, so a fetch landing afterwards used to reinstall
+  the previous conversation's list under the new id — and because `regenerate`
+  gates on that pairing, nothing reopened it for the rest of the session.
+- **A restore no longer announces an idle composer over a live send.** On both
+  the fast path and the active-job branch, a send landing during the probe kept
+  the composer readable as ready for the whole turn, after which the next send
+  was swallowed by `ChatSession.send`'s own `isStreaming` bail with no error.
+- **A completed turn no longer puts two messages under one id.** `job.message_id`
+  is the PROMPT's id; the assistant row was being pushed under it too. The user
+  turn now carries it — which is what lets a restore pair a job to its prompt by
+  id rather than by position — and the assistant row gets its own.
+- **A send that never reached the wire no longer leaves its row behind.**
+  Previously the local user row stayed in `session.messages` with
+  `status: "complete"` — a claim it had no business making — and `regenerate`
+  would pick it and resend under a client-minted id the server never issued.
+  A consumer that rendered the failed message and expected it to persist should
+  read the `error` event instead.
+- **Pressing Stop no longer wipes the protocol registry.** `stop()` routed
+  through `session.disconnect()`, which ends in `protocols.clear()` — so the
+  first Stop dropped every registered `ProtocolAdapter` for the rest of the
+  session, and the SDK never re-registers them. Stop now cancels the TURN
+  (`session.cancelTurn()`), leaving the session's own state alone. Deleting a
+  conversation takes the same path, and a parked background job on a deleted
+  conversation is now cancelled rather than left billing tokens.
+- **A cancelled turn no longer strands its prompt.** A turn that reached the
+  wire and was then stopped never reaches `message_stop`, so nothing could
+  prove its prompt committed and every later load re-appended the row.
+  Cancelling now hands authority back to the server.
+- **Deleting a conversation with a parked background job emits
+  `backgroundJobsChanged`,** so a running-job badge cannot outlive the
+  conversation it points at.
+
 ## 4.9.1
 
 **A dropped SSE stream can no longer hang a turn forever.** A dead HTTP/3 (QUIC) connection leaves `reader.read()` pending indefinitely — no bytes, no error, no FIN. The existing reconnect loop only engages on a *rejected* or *cleanly closed* stream, so it never fired: the turn sat on "working" with no recovery path and no way for a client to tell it apart from a slow model. Seen in production as `ERR_QUIC_PROTOCOL_ERROR` on `/v1/jobs/{id}/events`.
