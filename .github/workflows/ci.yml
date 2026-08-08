@@ -25,8 +25,15 @@ on:
 # cancellation, merging two PRs a few minutes apart kills the first commit's run,
 # and main ends up carrying commits whose CI never completed. On a PR the newer
 # push genuinely supersedes the older one; on main each commit is its own subject.
+#
+# The push fallback is `github.sha`, NOT `github.ref`, and that is the second half
+# of the fix. `cancel-in-progress: false` only spares the RUNNING run — Actions
+# still keeps at most one PENDING run per group and evicts the older one. So with
+# every main push sharing `ci-refs/heads/main`, three commits landing together
+# still lose the middle one's run. Keying on the commit gives each main push its
+# own group, so nothing supersedes anything.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -69,11 +76,19 @@ jobs:
       # field — so the version CI runs is the version the repo asked for, rather
       # than whatever `npm i -g pnpm` would have resolved to today.
       #
-      # COREPACK_ENABLE_DOWNLOAD_PROMPT goes into $GITHUB_ENV rather than this
-      # step's env: corepack asks for confirmation the first time it fetches a
-      # pinned version, and that prompt appears when the NEXT step invokes pnpm,
-      # not here. Unset, the install stalls on a question nobody answers.
+      # COREPACK_ENABLE_DOWNLOAD_PROMPT is set BOTH ways on purpose, and the step
+      # env is the load-bearing half. Corepack asks for confirmation the first time
+      # it fetches a pinned version, and a `$GITHUB_ENV` write takes effect only for
+      # SUBSEQUENT steps — never the one performing the write. Since `pnpm --version`
+      # below is the first pnpm invocation in the job, it is the call that triggers
+      # the download, and with only the `$GITHUB_ENV` line it would sit on a prompt
+      # nobody answers until the job times out.
+      #
+      # The `$GITHUB_ENV` write still matters: it carries the setting to the install
+      # and script steps that follow.
       - name: Enable corepack so the repo's own package manager is used
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
           echo "COREPACK_ENABLE_DOWNLOAD_PROMPT=0" >> "$GITHUB_ENV"
