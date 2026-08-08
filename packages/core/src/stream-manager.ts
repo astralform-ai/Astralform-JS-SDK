@@ -410,22 +410,9 @@ export class StreamManager {
     const wasActive = this._activeConversationId === id;
     const cancelled = wasActive && this._state === "streaming";
     if (cancelled) {
-      // NOT `disconnect()`: it ends in `protocols.clear()`, dropping every
-      // registered `ProtocolAdapter` for the rest of the session. The SDK
-      // never auto-registers them — a consumer wires them up after `connect()`
-      // from `agentStatus.uiComponents` — so deleting one conversation would
-      // silently kill embedded-resource rendering everywhere. This branch
-      // wants only the two things `disconnect` does before that wipe.
-      if (this.session.currentJobId) {
-        this.session.client
-          .cancelJob(this.session.currentJobId)
-          .catch(() => {});
-      }
-      this.session.detach();
-      // `detach()` does not do this and `disconnect()` did — without it the
-      // session still names a job that was just cancelled on a conversation
-      // that no longer exists, so `stop()` re-issues `cancelJob` against it.
-      this.session.currentJobId = null;
+      // NOT `disconnect()`: it ends in `protocols.clear()`. Deleting one
+      // conversation is not a session teardown.
+      this.session.cancelTurn();
       this._state = "idle"; // cancelled, not parked — recorded, not announced
     }
     try {
@@ -468,9 +455,15 @@ export class StreamManager {
     // Emitted, or the consumer's last snapshot keeps a running-job badge on a
     // conversation no longer in the list — the same harm the `wasActive`
     // comment above argues against, on the branch that does not take that fix.
-    // Not also cancelling server-side: neither branch does today, so adding it
-    // to one would recreate the asymmetry this closes.
+    // Cancelled too, for parity with the active branch above: the conversation
+    // is gone either way, so a parked job left running bills tokens for output
+    // with nowhere to land. Whether you happened to be watching it when you
+    // pressed delete should not decide that.
+    const parkedJobId = this._backgroundJobs.get(id);
     if (this._backgroundJobs.delete(id)) {
+      if (parkedJobId) {
+        this.session.client.cancelJob(parkedJobId).catch(() => {});
+      }
       this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
     }
   }
@@ -478,7 +471,11 @@ export class StreamManager {
   // ── Stop (explicit cancel) ────────────────────────────────────
 
   stop(): void {
-    this.session.disconnect();
+    // `cancelTurn`, not `disconnect`: Stop ends the TURN. `disconnect` ends in
+    // `protocols.clear()`, so routing Stop through it dropped every registered
+    // `ProtocolAdapter` for the rest of the session — the same harm
+    // `deleteConversation` avoids, on the path users actually press.
+    this.session.cancelTurn();
     this.setState("idle");
   }
 
@@ -569,6 +566,14 @@ export class StreamManager {
      */
     const superseded = (): boolean => gen !== this.generation;
 
+    // Before the announce and the probe, not after. A handler routing on
+    // `conversationChanged` can call `switchTo` synchronously from inside
+    // `setActiveConversation`'s emit, so this restore can already be
+    // superseded on entry — and announcing here tags `restoring` with the
+    // NEWER conversation's id and burns a `getActiveJob` round-trip for one
+    // nobody is waiting on. Same re-entrancy door the per-turn check in the
+    // replay loop exists for.
+    if (superseded()) return;
     this.setState("restoring");
 
     // Check for active job

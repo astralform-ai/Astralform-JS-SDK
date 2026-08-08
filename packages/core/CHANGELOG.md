@@ -83,6 +83,17 @@ Fixed along the same seam:
   would pick it and resend under a client-minted id the server never issued.
   A consumer that rendered the failed message and expected it to persist should
   read the `error` event instead.
+- **Pressing Stop no longer wipes the protocol registry.** `stop()` routed
+  through `session.disconnect()`, which ends in `protocols.clear()` — so the
+  first Stop dropped every registered `ProtocolAdapter` for the rest of the
+  session, and the SDK never re-registers them. Stop now cancels the TURN
+  (`session.cancelTurn()`), leaving the session's own state alone. Deleting a
+  conversation takes the same path, and a parked background job on a deleted
+  conversation is now cancelled rather than left billing tokens.
+- **A cancelled turn no longer strands its prompt.** A turn that reached the
+  wire and was then stopped never reaches `message_stop`, so nothing could
+  prove its prompt committed and every later load re-appended the row.
+  Cancelling now hands authority back to the server.
 - **Deleting a conversation with a parked background job emits
   `backgroundJobsChanged`,** so a running-job badge cannot outlive the
   conversation it points at.

@@ -1175,13 +1175,38 @@ export class ChatSession {
     this.emit({ type: "disconnected" });
   }
 
-  /** Stop the job and disconnect (explicit user action). */
-  disconnect(): void {
+  /**
+   * Cancel the running turn: stop the job server-side and tear the stream
+   * down, WITHOUT ending the session. A turn-level cancel is not a
+   * session-level teardown, so unlike `disconnect()` this leaves the protocol
+   * registry alone — the SDK never auto-registers adapters, so clearing them
+   * on a Stop press would silently kill embedded-resource rendering for the
+   * rest of the session with nothing to re-register it.
+   */
+  cancelTurn(): void {
     if (this.currentJobId) {
       this.client.cancelJob(this.currentJobId).catch(() => {});
     }
     this.detach();
+    // `detach()` does not do this, and a cancelled job's id must not linger —
+    // a later `stop()` would re-issue `cancelJob` against it.
     this.currentJobId = null;
+    // A cancelled turn never reaches `message_stop`, so nothing can ever prove
+    // its prompt committed, and an entry left at `knownAt === 0` means every
+    // later load re-appends the row — forever, since `setMessages`'s prune
+    // only drops rows that LEFT the list. The server is authoritative from
+    // here: if it holds the prompt a load returns it, and if it does not (the
+    // loop runs as a background task, so a fast cancel can beat the write)
+    // the row correctly disappears. NOT done in `detach()`, where the job
+    // keeps running and will persist.
+    for (const [id, knownAt] of this.pendingUserMessages) {
+      if (knownAt === 0) this.pendingUserMessages.delete(id);
+    }
+  }
+
+  /** Stop the job and end the session's activity (explicit user action). */
+  disconnect(): void {
+    this.cancelTurn();
     // Drop all protocol adapters — lifecycle tied to the session.
     this.protocols.clear();
   }

@@ -3454,3 +3454,153 @@ describe("nothing detaches a turn without announcing it", () => {
     held.open();
   });
 });
+
+describe("cancelling a turn is not a session teardown", () => {
+  function streamingSession(held: Promise<void>, cancels: string[]) {
+    return new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/cancel")) {
+          cancels.push(url);
+          return json({});
+        }
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held;
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs") && init?.method === "POST")
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m-server",
+            status: "queued",
+          });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+  }
+
+  it("stop() keeps registered protocol adapters", async () => {
+    // `deleteConversation` was taught to avoid `disconnect()` for exactly this
+    // reason; `stop()` — the path a user actually presses — still routed
+    // through it, so the first Stop dropped every adapter for the session.
+    const held = gate();
+    const session = streamingSession(held.wait, []);
+    const manager = new StreamManager(session);
+    session.protocols.register({
+      mimeType: "application/vnd.astralform.a2ui+json",
+      render: () => null,
+    } as never);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    manager.stop();
+
+    expect(session.protocols.has("application/vnd.astralform.a2ui+json")).toBe(
+      true,
+    );
+    held.open();
+  });
+
+  it("does not leave a cancelled prompt pending forever", async () => {
+    // The turn reached the wire, so the `!wire.reached` cleanup does not fire,
+    // and it never reaches `message_stop`, so nothing ever stamps the entry.
+    // Left at `knownAt === 0` it is re-appended by EVERY later load — the
+    // phantom row the changelog claims to have closed, for the send that did
+    // reach the wire and was then cancelled.
+    const held = gate();
+    const session = streamingSession(held.wait, []);
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("hello");
+    await flush();
+
+    manager.stop();
+    await flush();
+
+    // The server never committed it (a fast cancel can beat the background
+    // loop's write), so a later load must not resurrect it.
+    await session.loadConversation("conv-a");
+    expect(
+      session.messages.filter((m) => m.role === "user").map((m) => m.content),
+    ).toEqual([]);
+
+    await session.loadConversation("conv-a");
+    expect(session.messages).toEqual([]);
+    held.open();
+  });
+
+  it("cancels a parked job when its conversation is deleted", async () => {
+    // The active branch cancels; the parked branch did not, so whether you
+    // happened to be watching the turn when you pressed delete decided whether
+    // it kept billing tokens for output with nowhere to land.
+    const held = gate();
+    const cancels: string[] = [];
+    const session = streamingSession(held.wait, cancels);
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn");
+    await flush();
+    await manager.switchTo("conv-b"); // parks A's job
+    await flush();
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+    cancels.length = 0;
+
+    await manager.deleteConversation("conv-a"); // B is active — the parked branch
+    await flush();
+
+    expect(cancels.some((u) => u.includes("job-a"))).toBe(true);
+    held.open();
+  });
+});
+
+describe("a restore superseded on entry does nothing at all", () => {
+  it("neither announces nor probes for the abandoned conversation", async () => {
+    // `setActiveConversation` emits `conversationChanged` synchronously, and a
+    // consumer routing on the pointer calls `switchTo` from inside it — the
+    // door `setActiveConversation` returns its claimed generation to close.
+    // The outer restore then resumed and announced `restoring` tagged with the
+    // NEWER conversation's id, and burned a `getActiveJob` round-trip for one
+    // nobody was waiting on, before its first check finally bailed.
+    const urls: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        urls.push(url);
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    let reentered = false;
+    manager.on((e) => {
+      if (e.type === "conversationChanged" && e.conversationId === "conv-a") {
+        if (reentered) return;
+        reentered = true;
+        void manager.switchTo("conv-b"); // synchronous re-entry
+      }
+    });
+
+    await manager.switchTo("conv-a");
+    await flush();
+
+    expect(reentered).toBe(true);
+    expect(manager.activeConversationId).toBe("conv-b");
+    // A's restore was superseded before it ran: no probe for it at all.
+    expect(urls.filter((u) => u.includes("/conv-a/active-job"))).toEqual([]);
+  });
+});
