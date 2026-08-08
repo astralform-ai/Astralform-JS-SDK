@@ -346,26 +346,46 @@ export class StreamManager {
       // reconnects to its stream.
     }
 
-    await this.restore(conversationId, gen);
-
-    // A superseded restore bails without reconnecting, so the claim the delete
-    // above made is false: the job is still running with no local record of
-    // it. The badge vanishes for a live job, and `deleteConversation` can no
-    // longer cancel it — `_backgroundJobs.get(id)` is undefined and
-    // `wasActive` is false, so neither cancel path fires and the turn runs on
-    // with nowhere to land. Before the guard the abandoned restore ran to
-    // completion and reconnected, which is why this only appears alongside it.
-    //
-    // Not re-added when the switch that superseded us landed on this same
-    // conversation: it owns the display now, so a badge would point at what
-    // the user is looking at.
-    if (
-      parkedJobId !== undefined &&
-      gen !== this.generation &&
-      this._activeConversationId !== conversationId
-    ) {
-      this._backgroundJobs.set(conversationId, parkedJobId);
-      this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
+    let tookOver = false;
+    try {
+      await this.restore(conversationId, gen);
+      tookOver = gen === this.generation;
+    } finally {
+      // In a `finally`, because `restore` awaits `loadConversation` unguarded
+      // and that rejects when the API fetch AND the `storage.fetchMessages`
+      // fallback both fail. `switchTo` then rejects and everything below would
+      // be skipped — losing the parked job permanently and leaving `_state` at
+      // `restoring` for good, since nothing else announces and neither the
+      // next switch nor a send resets it. `switchConversation` already defends
+      // this same case on the grounds that `ChatStorage` is public; this path
+      // was the inconsistency.
+      //
+      // Deleting the entry above was a CLAIM that this switch would take the
+      // job over. A superseded or throwing restore never does, so the job is
+      // left running with no local record: the badge vanishes and
+      // `deleteConversation` can no longer cancel it, because
+      // `_backgroundJobs.get(id)` is undefined and `wasActive` is false so
+      // neither cancel path fires. Not re-added when the switch that
+      // superseded us landed here — it owns the display now.
+      // Suppressed only when a NEWER switch landed on this same conversation
+      // and now owns its display — not merely because the pointer still names
+      // it, which is also true when `restore` threw and we are still here.
+      const supersededOntoSame =
+        gen !== this.generation &&
+        this._activeConversationId === conversationId;
+      if (parkedJobId !== undefined && !tookOver && !supersededOntoSame) {
+        this._backgroundJobs.set(conversationId, parkedJobId);
+        this.emit({
+          type: "backgroundJobsChanged",
+          jobs: this._backgroundJobs,
+        });
+      }
+      // A throw leaves `restoring` announced with no successor to clear it.
+      // Only when we are still the current generation: if a newer switch
+      // superseded us it owns the announcement.
+      if (!tookOver && gen === this.generation && this._state === "restoring") {
+        this.settleIdle();
+      }
     }
   }
 

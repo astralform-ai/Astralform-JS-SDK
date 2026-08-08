@@ -3921,3 +3921,191 @@ describe("the id reconciliation reaches a serializing storage", () => {
     expect(userRows[0].id).toBe("m-server");
   });
 });
+
+describe("a late-unwinding turn does not clobber the one that replaced it", () => {
+  it("leaves the newer turn's isStreaming and abortController alone", async () => {
+    // `detach()` cannot interrupt a client tool — `executeClientTools` awaits
+    // arbitrary consumer code with no signal — so the old turn's
+    // `processStream` stays pending across a switch. Its `finally` then
+    // cleared `isStreaming` and `abortController`, which by then belong to the
+    // turn that replaced it: that stream keeps pumping while the session
+    // reports idle, `stop()` aborts nothing, and the next switch neither parks
+    // its job nor stops it emitting under the new conversation's id.
+    const toolRunning = gate();
+    const holdB = gate();
+    const ev = (seq: number, event: string, d: object, job: string) =>
+      `event: ${event}\ndata: ${JSON.stringify({ seq, ts: 0, job_id: job, ...d })}\n\n`;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/job-a/events"))
+          return new Response(
+            ev(
+              0,
+              "message_start",
+              { type: "message_start", turn_id: "a", model: "m" },
+              "job-a",
+            ) +
+              ev(
+                1,
+                "block_start",
+                {
+                  type: "block_start",
+                  turn_id: "a",
+                  path: [0],
+                  kind: "tool_use",
+                  tool_name: "slow_tool",
+                  call_id: "c1",
+                  is_client_tool: true,
+                },
+                "job-a",
+              ) +
+              ev(
+                2,
+                "block_stop",
+                {
+                  type: "block_stop",
+                  turn_id: "a",
+                  path: [0],
+                  status: "awaiting_client_result",
+                  final: {
+                    tool_name: "slow_tool",
+                    call_id: "c1",
+                    input: {},
+                    is_client_tool: true,
+                  },
+                },
+                "job-a",
+              ) +
+              "data: [DONE]\n\n",
+            { status: 200, headers: { "Content-Type": "text/event-stream" } },
+          );
+        if (url.includes("/v1/jobs/job-b/events")) {
+          await holdB.wait; // B stays live
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/tool-result")) return json({});
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/conv-b/active-job"))
+          return json({ job_id: "job-b", status: "running" });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    // The one await `detach()` cannot interrupt.
+    session.toolRegistry.registerTool("slow_tool", "", {}, async () => {
+      await toolRunning.wait;
+      return { ok: true };
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    const sending = manager.send("run the slow tool");
+    await flush(); // A's turn is parked inside the client tool
+
+    void manager.switchTo("conv-b"); // detaches A, reconnects to job-b
+    await flush();
+    expect(session.isStreaming).toBe(true);
+    expect(session.currentJobId).toBe("job-b");
+
+    toolRunning.open(); // A finally unwinds
+    await sending;
+    await flush();
+
+    // B is still live. A's unwind must not have taken its lifecycle.
+    expect(session.isStreaming).toBe(true);
+    expect(session.currentJobId).toBe("job-b");
+
+    holdB.open();
+  });
+});
+
+describe("a rejecting loadConversation does not strand the switch", () => {
+  it("clears restoring and re-parks when restore throws", async () => {
+    // `restore` awaits `loadConversation` unguarded, and it rejects when the
+    // API fetch AND the `storage.fetchMessages` fallback both fail. `switchTo`
+    // then rejects, skipping the re-park and leaving `_state` at `restoring`
+    // with nothing to clear it. `switchConversation` already defends this same
+    // case on the grounds that `ChatStorage` is public.
+    const held = gate();
+    let bFetches = 0;
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events")) {
+            await held.wait; // B's turn stays live so switching away parks it
+            return new Response("data: [DONE]\n\n", {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            });
+          }
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "job-b",
+              conversation_id: "conv-b",
+              message_id: "m1",
+              status: "queued",
+            });
+          if (url.includes("/conv-b/messages")) {
+            bFetches += 1;
+            // Fails only on the way BACK, so B can be entered and parked first.
+            if (bFetches > 1) return new Response("nope", { status: 500 });
+            return json([]);
+          }
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => {
+          throw new Error("storage unavailable");
+        },
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+        deleteMessage: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-b");
+    void manager.send("start a turn on B");
+    await flush();
+    await manager.switchTo("conv-a"); // parks B's job
+    await flush();
+    expect(manager.backgroundJobs.get("conv-b")).toBe("job-b");
+
+    // Back into B, whose message fetch now fails on both paths.
+    await manager.switchTo("conv-b").catch(() => {});
+    await flush();
+
+    // Neither may be left claiming to be in progress or lost.
+    expect(manager.state).not.toBe("restoring");
+    expect(manager.backgroundJobs.get("conv-b")).toBe("job-b");
+
+    held.open();
+  });
+});

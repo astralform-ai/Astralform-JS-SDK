@@ -521,7 +521,8 @@ export class ChatSession {
   ): Promise<void> {
     this.isStreaming = true;
     this.resetStreamingState();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     try {
       await this.consumeJobStream(request, wire);
@@ -535,8 +536,18 @@ export class ChatSession {
         });
       }
     } finally {
-      this.isStreaming = false;
-      this.abortController = null;
+      // Only if this invocation still OWNS the turn. `detach()` cannot
+      // interrupt a client tool — `executeClientTools` awaits arbitrary
+      // consumer code with no signal — so this `finally` can run long after a
+      // switch handed the session to a newer turn. Clearing unconditionally
+      // then nulls THAT turn's flag and controller: its stream keeps pumping
+      // while the session reports idle, `stop()` aborts nothing, and the next
+      // switch neither parks its job nor stops it emitting under the new
+      // conversation's id. The mirror of `ownsTurnState`, on the live side.
+      if (this.abortController === controller) {
+        this.isStreaming = false;
+        this.abortController = null;
+      }
     }
   }
 
@@ -1167,7 +1178,8 @@ export class ChatSession {
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();
     this.resetStreamingState();
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.abortController = controller;
 
     try {
       await this.consumeEventStream(
@@ -1184,8 +1196,18 @@ export class ChatSession {
         blockPath: null,
       });
     } finally {
-      this.isStreaming = false;
-      this.abortController = null;
+      // Only if this invocation still OWNS the turn. `detach()` cannot
+      // interrupt a client tool — `executeClientTools` awaits arbitrary
+      // consumer code with no signal — so this `finally` can run long after a
+      // switch handed the session to a newer turn. Clearing unconditionally
+      // then nulls THAT turn's flag and controller: its stream keeps pumping
+      // while the session reports idle, `stop()` aborts nothing, and the next
+      // switch neither parks its job nor stops it emitting under the new
+      // conversation's id. The mirror of `ownsTurnState`, on the live side.
+      if (this.abortController === controller) {
+        this.isStreaming = false;
+        this.abortController = null;
+      }
     }
   }
 
