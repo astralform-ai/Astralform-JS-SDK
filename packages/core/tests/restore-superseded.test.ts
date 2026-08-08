@@ -1935,13 +1935,14 @@ describe("the pending-send set stays an annotation on the message list", () => {
     expect(pendingSize(session)).toBe(0);
   });
 
-  it("puts back the ids belonging to the messages it puts back", async () => {
-    // Relocating CLEARS the list, which prunes every id on it; the put-back
-    // then restores the messages, so it has to restore their ids too or they
-    // come back unprotected. Only observable against a backend that omits
-    // `message_id` — with one, the row is known to exist and any later fetch
-    // is entitled to drop it anyway.
-    let jobs = 0;
+  it("drops the id of a send that never created a job at all", async () => {
+    // The ordinary failure shape, and the one both put-back branches miss:
+    // they are gated on `relocatedFrom`, which is null whenever the send is
+    // addressed at the conversation the session is already on — which is what
+    // `StreamManager` always does. Left behind, the entry sits at
+    // `knownAt === 0` forever and every later load re-appends a message the
+    // server never received.
+    let failing = false;
     const session = new ChatSession({
       ...baseConfig,
       fetch: async (input) => {
@@ -1949,32 +1950,42 @@ describe("the pending-send set stays an annotation on the message list", () => {
         if (url.includes("/v1/jobs/") && url.includes("/events"))
           return completedTurn("j");
         if (url.includes("/v1/jobs")) {
-          jobs += 1;
-          // The first send lands; the relocating one fails and puts back.
-          if (jobs > 1) return new Response("boom", { status: 500 });
-          // No `message_id` — so nothing ever proves the row reached the
-          // server and the message stays pending for good.
+          if (failing) return new Response("boom", { status: 500 });
           return json({
             job_id: "j",
             conversation_id: "conv-a",
+            message_id: "m-server",
             status: "queued",
           });
         }
-        return json([]); // the snapshot never contains the local row
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-server",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "landed",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
       },
     });
 
     await session.loadConversation("conv-a");
-    await session.send("hello");
-    expect(pendingSize(session)).toBe(1);
+    await session.send("landed"); // reconciled to "m-server"
+    failing = true;
+    await session.send("never sent"); // no job, no relocation
 
-    await session.send("elsewhere", { conversationId: "conv-b" });
-    await flush();
+    // One, not zero: the landed turn is still legitimately pending — no
+    // snapshot has confirmed it yet. Only the unsent one is gone.
+    expect(pendingSize(session)).toBe(1);
 
     await session.loadConversation("conv-a");
     expect(
       session.messages.filter((m) => m.role === "user").map((m) => m.content),
-    ).toEqual(["hello"]);
+    ).toEqual(["landed"]);
+    expect(pendingSize(session)).toBe(0);
   });
 
   it("does not accumulate ids across conversations", async () => {

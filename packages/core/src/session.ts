@@ -313,7 +313,6 @@ export class ChatSession {
       messagesId: string | null;
       conversationId: string | null;
       generation: number;
-      pending: Map<string, number>;
       target: string;
     } | null = null;
 
@@ -351,7 +350,6 @@ export class ChatSession {
           messagesId: this.messagesConversationId,
           conversationId: this.conversationId,
           generation: this.loadGeneration,
-          pending: new Map(this.pendingUserMessages),
           target: conversationId,
         };
         // Drop the old conversation's list with the pointer. Leaving it behind
@@ -425,6 +423,20 @@ export class ChatSession {
     // unguarded put-back would rewind it to a conversation the user left, which
     // is the failure this whole change exists to prevent, arriving through the
     // one path that was still missing the check.
+    // Unconditional, and BEFORE the put-back, which only runs when the send
+    // RELOCATED — not the ordinary shape, since `StreamManager` passes the id
+    // the session is already on. With no job created, nothing on the server
+    // can ever acknowledge this message and `consumeJobStream` never
+    // reconciled its id, so the entry sits at `knownAt === 0` — the "keep it,
+    // the server may not have it yet" case — for the life of the session.
+    // Every later load of this conversation then re-appends a message that was
+    // never sent, and `regenerate` picks it and resends under a client-minted
+    // id the server never issued. Guarded on the counter rather than on the
+    // throw, because a job that WAS created has had `userMessage.id` replaced
+    // with the server's and this would delete the reconciled entry.
+    if (this.jobsCreated === jobsBefore) {
+      this.pendingUserMessages.delete(userMessage.id);
+    }
     if (
       relocatedFrom &&
       this.jobsCreated > jobsBefore &&
@@ -445,12 +457,13 @@ export class ChatSession {
       this.jobsCreated === jobsBefore &&
       this.loadGeneration === relocatedFrom.generation
     ) {
+      // No pending-id snapshot to restore alongside. `POST /v1/jobs` always
+      // returns `message_id` (required on both sides of the contract; the
+      // backend mints it with `uuid4()` before validating the request), so
+      // every id the relocation pruned had already been reconciled and carries
+      // a `knownAt` at or below any later fetch's issue point — meaning
+      // `loadConversation` would not re-append it even if it were restored.
       this.setMessages(relocatedFrom.messages);
-      // After `setMessages`, which would otherwise prune the restored map
-      // against the pre-restore list. The failed send's own id is absent from
-      // the snapshot, which is the point: its message is no longer in the
-      // array, so leaving the id behind would strand it there for the session.
-      this.pendingUserMessages = relocatedFrom.pending;
       this.messagesConversationId = relocatedFrom.messagesId;
       this.conversationId = relocatedFrom.conversationId;
     }
