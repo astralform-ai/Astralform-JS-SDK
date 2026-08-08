@@ -927,7 +927,7 @@ export interface ModelOption {
 }
 
 // =============================================================================
-// Conversation assets (unchanged)
+// Conversation assets
 // =============================================================================
 
 export interface ConversationAsset {
@@ -946,5 +946,19 @@ export interface ConversationAsset {
    * failed or the asset has no stored object.
    */
   url?: string;
+  /**
+   * The asset's PERMANENT address. Authorization is resolved per request
+   * against the caller's live session, so unlike `url` it never expires — but
+   * it needs an `Authorization` header, which a browser will not attach to an
+   * `<img src>`. Store and link this one; render from `url`.
+   */
+  contentUrl?: string;
+  /**
+   * A still to show for an asset the browser cannot draw from `url` alone.
+   * Present only for video: an `<img src>` pointed at an mp4 renders nothing,
+   * so a video row would otherwise have no thumbnail. Signed and expiring
+   * exactly like `url` — display, not identity, so never store it.
+   */
+  posterUrl?: string;
   createdAt: string;
 }

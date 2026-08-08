@@ -529,6 +529,76 @@ describe("AstralformClient", () => {
     expect(outputs[0]!.url).toBeUndefined();
   });
 
+  it("listOutputs carries the poster and the permanent address", async () => {
+    // The mapper is an allowlist: a field the API returns and it does not name
+    // is dropped, silently and without a type error. That is how `content_url`
+    // reached consumers as `undefined` while the API had been serving it for
+    // releases. So the assertion that matters is per FIELD, not "it maps".
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/outputs": {
+        status: 200,
+        body: [
+          {
+            id: "o1",
+            kind: "output",
+            original_name: "generated-e945823f.mp4",
+            media_type: "video/mp4",
+            size_bytes: 2048,
+            url: "https://minio.local/workspaces/c1/generated/o1.mp4?sig=abc",
+            content_url:
+              "https://api.astralform.ai/v1/conversations/c1/assets/o1/content",
+            poster_url:
+              "https://minio.local/workspaces/c1/generated/still.png?sig=def",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const outputs = await client.listOutputs("c1");
+
+    // The poster is a DIFFERENT object from the asset's own url — a mapper that
+    // aliased them would still be non-undefined here and still be wrong.
+    expect(outputs[0]!.posterUrl).toBe(
+      "https://minio.local/workspaces/c1/generated/still.png?sig=def",
+    );
+    expect(outputs[0]!.url).toBe(
+      "https://minio.local/workspaces/c1/generated/o1.mp4?sig=abc",
+    );
+    expect(outputs[0]!.contentUrl).toBe(
+      "https://api.astralform.ai/v1/conversations/c1/assets/o1/content",
+    );
+  });
+
+  it("listOutputs leaves poster and content urls undefined when absent", async () => {
+    // Most assets have neither: a non-video has no poster, and a response from
+    // an older backend has no content_url. Both must read as undefined rather
+    // than null, like `url` does.
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/outputs": {
+        status: 200,
+        body: [
+          {
+            id: "o1",
+            kind: "output",
+            original_name: "notes.md",
+            media_type: "text/markdown",
+            size_bytes: 64,
+            poster_url: null,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const outputs = await client.listOutputs("c1");
+
+    expect(outputs[0]!.posterUrl).toBeUndefined();
+    expect(outputs[0]!.contentUrl).toBeUndefined();
+  });
+
   it("getJob GETs /v1/jobs/{id} and maps snake_case to camelCase", async () => {
     let capturedUrl = "";
     const mockFetch: typeof globalThis.fetch = async (input) => {

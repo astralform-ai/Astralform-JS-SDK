@@ -634,6 +634,11 @@ export class AstralformClient {
       // undefined so it matches the `url?: string` type and consumers that
       // check `!== undefined` never receive a null.
       url: (raw.url as string | null) ?? undefined,
+      // This mapping is an ALLOWLIST — a field the API returns and this
+      // function does not name is dropped silently, and no type error says so.
+      // `content_url` shipped that way and was invisible to every consumer.
+      contentUrl: (raw.content_url as string | null) ?? undefined,
+      posterUrl: (raw.poster_url as string | null) ?? undefined,
       createdAt: raw.created_at as string,
     };
   }
