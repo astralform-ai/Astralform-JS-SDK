@@ -166,7 +166,19 @@ export class StreamManager {
     }
     if (this._state === "streaming") return;
 
-    // Auto-create conversation if none active
+    // Auto-create conversation if none active.
+    //
+    // Deliberately NOT guarded the way `createConversation` is, and the
+    // asymmetry is the point: that one is a navigation, so it loses to a
+    // switch that lands in its await. This one is not — `send` must have a
+    // target to send AT, and declining the pointer move would post the user's
+    // composed text into whichever conversation they clicked meanwhile.
+    // So `send` wins, and the two halves still agree: `session.send` relocates
+    // to the same id a moment later. What it costs is that the bump can
+    // supersede a `switchTo` that landed inside the await — recoverable,
+    // unlike the sticky case, since the send's own `setState`/`finalizeStream`
+    // announce and `_activeConversationId` is no longer that conversation, so
+    // re-clicking it works.
     if (!this._activeConversationId) {
       const id = await this.session.createNewConversation();
       this.setActiveConversation(id);

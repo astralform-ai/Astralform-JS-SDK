@@ -2584,3 +2584,54 @@ describe("the prompt survives exactly once across the commit/response window", (
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe("a send that never reached the wire leaves nothing behind", () => {
+  it("removes the row a concurrent load had already merged", async () => {
+    // The merge in `loadConversation` deliberately preserves an in-flight
+    // send's row across a concurrent fetch — right for the success case, but
+    // it is what keeps a FAILED send's row alive. Pre-PR the wholesale
+    // `this.messages = …` wiped it. Left there with a client-minted id,
+    // `regenerate` passes its gate and hands that id to `resend_from`.
+    const slowLoad = gate();
+    const failJob = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          await failJob.wait;
+          return new Response("boom", { status: 500 });
+        }
+        if (url.includes("/conv-a/messages")) return json([]);
+        if (url.includes("/conv-b/messages")) {
+          await slowLoad.wait;
+          return json([
+            {
+              id: "m-b",
+              conversation_id: "conv-b",
+              role: "user",
+              content: "B's history",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    const sending = session.send("never sent", { conversationId: "conv-b" });
+    await flush();
+
+    // The load resolves BEFORE the job fails, so the merge preserves the row.
+    const loading = session.loadConversation("conv-b");
+    await flush();
+    slowLoad.open();
+    await loading;
+    failJob.open();
+    await sending;
+    await flush();
+
+    expect(session.messages.map((m) => m.content)).toEqual(["B's history"]);
+  });
+});

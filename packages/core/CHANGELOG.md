@@ -71,6 +71,12 @@ Fixed along the same seam:
   is the PROMPT's id; the assistant row was being pushed under it too. The user
   turn now carries it — which is what lets a restore pair a job to its prompt by
   id rather than by position — and the assistant row gets its own.
+- **A send that never reached the wire no longer leaves its row behind.**
+  Previously the local user row stayed in `session.messages` with
+  `status: "complete"` — a claim it had no business making — and `regenerate`
+  would pick it and resend under a client-minted id the server never issued.
+  A consumer that rendered the failed message and expected it to persist should
+  read the `error` event instead.
 - **Deleting a conversation with a parked background job emits
   `backgroundJobsChanged`,** so a running-job badge cannot outlive the
   conversation it points at.

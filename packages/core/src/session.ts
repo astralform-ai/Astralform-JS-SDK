@@ -446,6 +446,16 @@ export class ChatSession {
     // had `userMessage.id` replaced with the server's.
     if (this.jobsCreated === jobsBefore) {
       this.pendingUserMessages.delete(userMessage.id);
+      // The ROW too, not just its map entry. A load resolving between the push
+      // and here has already merged this row into `messages` — correctly, for
+      // the success case — and it survives with a client-minted id, which
+      // `regenerate` then hands to `resend_from`. Pre-PR the wholesale
+      // `this.messages = …` wiped it; the merge that fixes the success case is
+      // what keeps it alive. Nothing acknowledged it, and `status` says
+      // "complete", which for a send that never reached the wire is a claim
+      // the row has no business making.
+      const at = this.messages.indexOf(userMessage);
+      if (at !== -1) this.messages.splice(at, 1);
     }
     if (
       relocatedFrom &&
