@@ -1,0 +1,95 @@
+name: CI
+
+# The gate. Until this existed, `claude-review` was the only check on a PR here —
+# and a reviewer that reads a diff and writes prose is not a gate: nothing can
+# branch-protect on it, and it could not reliably install dependencies to check
+# its own behavioural claims. That failure was measured most sharply in THIS repo:
+# roughly one review in three could not install, on a PR that ran to 23 rounds and
+# 59 findings, so whether any given finding was verified came down to luck.
+#
+# Companion to astralform-ai/Astralform#761, astralform-ai/astralform-chat#117 and
+# astralform-ai/astralform-auth#35. The shared reviewer
+# (astralform-ai/.github#15) drops its own gate-running once every caller has one
+# of these.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    # ubuntu-latest, and NOT `self-hosted` — this is the one place where copying
+    # the sibling repos' workflow would be a security bug rather than a style
+    # difference.
+    #
+    # This repository is PUBLIC, so anyone can open a pull request, and a
+    # `pull_request` run builds and tests that person's code. On the org's
+    # persistent self-hosted pool that means arbitrary code — an npm lifecycle
+    # script is enough — executing on a host that is not wiped between jobs and
+    # that also runs deployment work. GitHub-hosted runners are ephemeral and
+    # isolated, and they are free for public repositories, so there is no cost
+    # argument either.
+    #
+    # The same rule is why the shared reviewer's callers only pass
+    # `runner: self-hosted` from the private repos.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # 22 to match release.yml, which builds the artifact that actually ships.
+      # A gate on an older runtime than the release build can pass code that
+      # publishes broken.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # This repo declares `packageManager: pnpm@10.30.1`, and corepack reads that
+      # field — so the version CI runs is the version the repo asked for, rather
+      # than whatever `npm i -g pnpm` would have resolved to today.
+      #
+      # COREPACK_ENABLE_DOWNLOAD_PROMPT goes into $GITHUB_ENV rather than this
+      # step's env: corepack asks for confirmation the first time it fetches a
+      # pinned version, and that prompt appears when the NEXT step invokes pnpm,
+      # not here. Unset, the install stalls on a question nobody answers.
+      - name: Enable corepack so the repo's own package manager is used
+        run: |
+          corepack enable
+          echo "COREPACK_ENABLE_DOWNLOAD_PROMPT=0" >> "$GITHUB_ENV"
+          node --version
+          pnpm --version
+
+      # `--frozen-lockfile` is the pnpm equivalent of `npm ci`: install exactly
+      # what pnpm-lock.yaml says and fail if it disagrees with package.json,
+      # rather than quietly re-resolving. A lock that drifts is how a green PR
+      # publishes a package built against dependencies nobody reviewed.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      # Build before test: `packages/core` publishes via tsup, and a type-clean
+      # source tree can still fail to bundle. `prepublishOnly` runs this at
+      # release time, so a failure caught here is a failure that would otherwise
+      # surface mid-publish.
+      - name: Build
+        run: pnpm -r build
+
+      # 278 tests across 16 files, vitest, ~1s.
+      - name: Test
+        run: pnpm -r test
+
+      # NOTE: there is deliberately no separate `lint` step. `packages/core`
+      # defines `lint` as `tsc --noEmit` — the exact command `typecheck` already
+      # runs — so `pnpm -r lint` would be a second identical type-check. If a real
+      # linter is ever added to that script, add the step here.
