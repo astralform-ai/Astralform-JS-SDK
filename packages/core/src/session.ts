@@ -323,14 +323,10 @@ export class ChatSession {
     // conversation the caller just addressed away from: the same mis-tagging
     // the restore guards close, re-entering through the send path.
     //
-    // The `loadGeneration` bump is not optional bookkeeping. `loadConversation`
-    // reads its token as "am I still the newest load", and relies on that
-    // implying "the session still points where I left it". Moving the pointer
-    // here without bumping breaks the second half: an in-flight load would pass
-    // its guard and install its list under a conversation the send has since
-    // relocated to — one conversation's messages under another's id, the exact
-    // pairing that guard exists to prevent. A pointer move IS an event a load
-    // in flight must lose to.
+    // A pointer move IS an event a load in flight must lose to — otherwise it
+    // passes its own guard and installs its list under a conversation the send
+    // has since relocated to. Same rule in `createNewConversation` and
+    // `deleteConversation`.
     if (conversationId) {
       // Only a MOVE invalidates a load in flight. Re-stating the conversation
       // the session is already on — the ordinary case, since the manager
@@ -379,7 +375,15 @@ export class ChatSession {
       createdAt: new Date().toISOString(),
     };
     if (conversationId) {
-      await this.storage.addMessage(userMessage, conversationId);
+      // Best-effort, matching the sibling call in `consumeJobStream`. On the
+      // relocation path the session is ALREADY moved and the list already
+      // emptied by the time this runs, so an uncaught rejection escapes `send`
+      // before the put-back at the bottom and strands it there — pointed at
+      // the target with an empty list and `messagesConversationId` null, i.e.
+      // `regenerate` gated off with nothing left to reopen it.
+      await this.storage
+        .addMessage(userMessage, conversationId)
+        .catch(() => {});
     }
     this.messages.push(userMessage);
     // 0: no job response yet, so the server may not hold this row at all.
@@ -434,17 +438,12 @@ export class ChatSession {
     // unguarded put-back would rewind it to a conversation the user left, which
     // is the failure this whole change exists to prevent, arriving through the
     // one path that was still missing the check.
-    // Unconditional, and BEFORE the put-back, which only runs when the send
-    // RELOCATED — not the ordinary shape, since `StreamManager` passes the id
-    // the session is already on. With no job created, nothing on the server
-    // can ever acknowledge this message and `consumeJobStream` never
-    // reconciled its id, so the entry sits at `knownAt === 0` — the "keep it,
-    // the server may not have it yet" case — for the life of the session.
-    // Every later load of this conversation then re-appends a message that was
-    // never sent, and `regenerate` picks it and resends under a client-minted
-    // id the server never issued. Guarded on the counter rather than on the
-    // throw, because a job that WAS created has had `userMessage.id` replaced
-    // with the server's and this would delete the reconciled entry.
+    // No job means nothing can ever acknowledge this message, so its entry
+    // would sit at `knownAt === 0` forever and every later load would
+    // re-append a message the server never received. Unconditional, because
+    // the put-back below only runs when the send RELOCATED — not the ordinary
+    // shape. Keyed on the counter, not the throw: a job that WAS created has
+    // had `userMessage.id` replaced with the server's.
     if (this.jobsCreated === jobsBefore) {
       this.pendingUserMessages.delete(userMessage.id);
     }
@@ -453,12 +452,10 @@ export class ChatSession {
       this.jobsCreated > jobsBefore &&
       this.loadGeneration === relocatedFrom.generation
     ) {
-      // The send landed. The list is a SUFFIX of the target conversation
-      // rather than its whole history, but it is that conversation's — and the
-      // only consumer of this pairing, `regenerate`, needs just the last user
-      // turn, whose id `consumeJobStream` has now reconciled with the server's.
-      // Left `null`, nothing on this path would ever reopen the gate and
-      // regenerate would be dead for the rest of a direct caller's session.
+      // A SUFFIX of the target conversation rather than its whole history,
+      // but it is that conversation's — and `regenerate`, the only consumer of
+      // this pairing, needs just the last user turn, whose id is now the
+      // server's. Left `null`, nothing here would ever reopen the gate.
       // From the snapshot, not from `conversationId ?? null`: the relocation
       // only runs under `if (conversationId)`, so that fallback was dead and
       // read as though the id could be absent here.
@@ -951,14 +948,11 @@ export class ChatSession {
         // REST instead.
         if (promptMessageId) {
           const assistantMessage: Message = {
-            // NOT `promptMessageId`: that is the user turn's id, and
-            // `consumeJobStream` now stamps the local user message with it.
-            // Sharing it put two rows in `this.messages` under one id, which
-            // makes `pendingUserMessages` (id-keyed) match the assistant row
-            // as a pending PROMPT and leaves `regenerate` unable to tell the
-            // two apart. The server's own assistant id is not on the wire, so
-            // this row is local until a REST load replaces it — the same
-            // status every other locally-pushed row has.
+            // NOT `promptMessageId` — that is the USER turn's id, which
+            // `consumeJobStream` stamps onto the user row. Sharing it puts two
+            // rows under one id, and `pendingUserMessages` is id-keyed. No
+            // server-assigned assistant id exists on the wire, so this row is
+            // local until a REST load replaces it.
             id: generateId(),
             conversationId,
             role: "assistant",
@@ -1044,13 +1038,8 @@ export class ChatSession {
     // pick the PREVIOUS turn as the last user message.
     //
     // Matched on ID, which `consumeJobStream` reconciles with the server's as
-    // soon as the job response lands. Everything else was a proxy for this and
-    // each proxy had its own failure: arrival time dropped the ordinary case
-    // (a send lands BEFORE the load, since every load here sits behind the
-    // active-job probe); role+content over the whole history collapsed
-    // repeated prompts; a tail window sized by the pending count missed the
-    // acknowledgement entirely, because the server appends TWO rows per turn
-    // and the assistant reply pushes the user row out of the window.
+    // soon as the job response lands — so this is exact, not a heuristic over
+    // role/content/arrival order.
     const pending = this.messages.filter(
       (m) => this.pendingUserMessages.has(m.id) && m.conversationId === id,
     );
@@ -1131,19 +1120,26 @@ export class ChatSession {
 
   async createNewConversation(): Promise<string> {
     const id = generateId();
+    // Witness captured before the await, like `deleteConversation`'s re-test of
+    // its own pointer. `storage.createConversation` is a real round-trip for
+    // any non-memory `ChatStorage`, and anything that moves the pointer during
+    // it — a switch, a relocating send — bumps this.
+    const load = this.loadGeneration;
     const conversation = await this.storage.createConversation(
       id,
       "New Conversation",
     );
     this.conversations.unshift(conversation);
-    // A pointer move, so a `loadConversation` in flight has to lose to it —
-    // the same rule `send` applies when it relocates. Without it that fetch
-    // lands afterwards, passes its own guard because nothing bumped the token,
-    // and installs the OLD conversation's list under this one's id. The
-    // manager's `restore` bails at its next `superseded()` check, so the
-    // damage is invisible from there while the session state is already the
-    // mismatched pairing this file exists to rule out — and STICKY, because
-    // `regenerate` gates on the pairing and no path here reopens it.
+    // Created and in the list either way; only the RELOCATION is conditional.
+    // Without this the manager could decline its own pointer move while the
+    // session had already taken this one — manager on B, session on the new
+    // id with an empty list, which is sticky: `regenerate` gates on that
+    // pairing and `switchTo` early-returns on B, so re-clicking B does
+    // nothing and the user has to visit a third conversation and come back.
+    if (load !== this.loadGeneration) return id;
+    // A pointer move — same rule as `send`'s relocation. Invisible from
+    // `restore`, which bails at its next `superseded()` check, while the
+    // session already holds the mismatched pairing.
     this.loadGeneration++;
     this.conversationId = id;
     this.setMessages([]);

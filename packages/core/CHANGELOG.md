@@ -26,7 +26,17 @@ await session.loadConversation(id);
 ```
 
 Callers going through `StreamManager` are unaffected: it passes its own active
-conversation, so the value already matches and no relocation happens.
+conversation, so the value already matches and no relocation happens. Its
+`send` now takes `Omit<SendOptions, "conversationId">` — it always overwrote the
+value, and the type says so rather than dropping it silently.
+
+**Assistant message ids are now client-generated.** `job.message_id` is the
+PROMPT's id; the assistant row was being pushed under it too. The user turn now
+carries it — which is what lets a restore pair a job to its prompt by id rather
+than by position — and the assistant row gets a local id until a REST load
+replaces it. A consumer keying rendered state off `message.id` for assistant
+rows will see a different value across the live → restored boundary; key off
+position or the block path instead.
 
 ### Fixed
 

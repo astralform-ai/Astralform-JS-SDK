@@ -2428,6 +2428,74 @@ describe("delete and create lose to a switch that lands in their await", () => {
     // The conversation is still created and still returned — only the pointer
     // move is dropped.
     expect(created).toBeTruthy();
+    // And the SESSION half agrees. Asserting only the manager is what let this
+    // pass while the two disagreed: `session.createNewConversation` relocated
+    // unconditionally, so the manager sat on B with the session on the new id
+    // and an empty list — sticky, because `regenerate` gates on that pairing
+    // and `switchTo` early-returns on B, so re-clicking it does nothing.
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messagesConversationId).toBe("conv-b");
+  });
+
+  it("survives a storage layer that rejects the user message", async () => {
+    // On the relocation path the session is already moved and the list already
+    // emptied when `storage.addMessage` runs, so an uncaught rejection escapes
+    // `send` before the put-back and strands it: pointed at the target with an
+    // empty list and `messagesConversationId` null — `regenerate` gated off
+    // with nothing left to reopen it. `InMemoryStorage` never rejects, but
+    // `ChatStorage` is a public interface.
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events"))
+            return completedTurn("j");
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "j",
+              conversation_id: "conv-b",
+              message_id: "m-server",
+              status: "queued",
+            });
+          if (url.includes("/conv-a/messages"))
+            return json([
+              {
+                id: "m-a",
+                conversation_id: "conv-a",
+                role: "user",
+                content: "A's prompt",
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ]);
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {
+          throw new Error("storage unavailable");
+        },
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+
+    await session.loadConversation("conv-a");
+    await session.send("hi", { conversationId: "conv-b" });
+
+    // The relocation completed rather than throwing out of it half-done.
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messagesConversationId).toBe("conv-b");
   });
 });
 

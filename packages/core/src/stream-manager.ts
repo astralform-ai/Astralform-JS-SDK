@@ -158,7 +158,15 @@ export class StreamManager {
 
   // ── Send ──────────────────────────────────────────────────────
 
-  async send(content: string, options?: SendOptions): Promise<void> {
+  async send(
+    content: string,
+    // `conversationId` is omitted, not ignored. This method addresses the send
+    // at `_activeConversationId` — the manager's pointer is the authority, and
+    // it always overwrote a caller's value. Now that `SendOptions.conversationId`
+    // publicly documents relocating the session, silently dropping it would
+    // read as a bug rather than as the manager owning the address.
+    options?: Omit<SendOptions, "conversationId">,
+  ): Promise<void> {
     if ((options?.provider == null) !== (options?.model == null)) {
       throw new Error(
         "`provider` and `model` must be supplied together (client-side model selection).",
@@ -336,14 +344,16 @@ export class StreamManager {
     // `backgroundJobsChanged` is inside the same window.
     const gen = this.generation;
     const id = await this.session.createNewConversation();
-    // `createNewConversation` is awaited, and `ChatStorage` is a public
-    // interface — an IndexedDB implementation makes that a real round-trip. A
-    // `switchTo` landing inside it claimed the newer generation, and this
-    // relocation would overwrite it and then bump the generation out from
-    // under its restore: the consumer sees `conversationChanged: B` followed
-    // by this one, and B never restores. Last writer wins, everywhere. The
-    // conversation is still created and still in the list — only the pointer
-    // move is dropped.
+    // A `switchTo` landing inside that await claimed the newer generation, and
+    // relocating over it would bump the generation out from under its restore:
+    // the consumer sees `conversationChanged: B` followed by this one, and B
+    // never restores. Last writer wins, everywhere.
+    //
+    // `createNewConversation` declines its own relocation under the same
+    // condition, so the two halves agree. They have to: this check alone left
+    // the manager on B with the session on the new id, which is worse than
+    // either outcome because `switchTo` early-returns on B and the user cannot
+    // click their way out of it.
     if (gen !== this.generation) return id;
     this.setActiveConversation(id);
     // Settle the state here. `setActiveConversation` bumps the generation, so
@@ -381,16 +391,11 @@ export class StreamManager {
       this._state = "idle"; // cancelled, not parked — recorded, not announced
     }
     await this.session.deleteConversation(id);
-    // Re-tested, not `wasActive`: that was read before a real DELETE round-trip
-    // and this is the one relocation in the file that would otherwise act on a
-    // pointer from a network round-trip ago. "Delete the conversation I'm on,
-    // then pick another from the list" is ordinary, and the stale read makes
-    // `setActiveConversation(null)` overwrite the newer switch and bump the
-    // generation out from under its restore — so the consumer sees
-    // `conversationChanged: B` then `null`, and the user clicks B again.
-    // `session.deleteConversation` already re-tests its own pointer after its
-    // awaits, for the same reason. `wasActive` above is still the right read
-    // for the CANCEL, which has to happen before the delete.
+    // Re-tested, not `wasActive`: that was read before a real DELETE, and
+    // relocating on it would overwrite a switch that landed during the
+    // round-trip and bump the generation out from under its restore.
+    // `wasActive` is still the right read for the CANCEL, which must happen
+    // before the delete.
     if (this._activeConversationId === id) {
       // CANCEL rather than park. `detachStreamingTurn` is right when the user
       // navigates away — the turn keeps running and can be rejoined — but this
@@ -406,18 +411,11 @@ export class StreamManager {
     }
     // AFTER the branch above, so nothing can put the entry back.
     //
-    // Emitted, because this is the same stale-badge harm the `wasActive`
-    // comment above argues against, arriving on the branch that does not take
-    // that fix: streaming on A, switch to B (which parks A's job and emits),
-    // then delete A while B is active. `wasActive` is false, the session's own
-    // branch is skipped, and without this the consumer's last snapshot still
-    // holds A — a running-job indicator on a conversation no longer in the
-    // list. Pre-existing, but this method is where the invariant is stated.
-    //
-    // Not also cancelling the parked job: NEITHER branch cancels server-side
-    // today (`wasActive` calls `session.disconnect()`, which is local), so
-    // adding it here alone would recreate the asymmetry this closes. Whether a
-    // delete should kill a running job is a product call, not a state-sync one.
+    // Emitted, or the consumer's last snapshot keeps a running-job badge on a
+    // conversation no longer in the list — the same harm the `wasActive`
+    // comment above argues against, on the branch that does not take that fix.
+    // Not also cancelling server-side: neither branch does today, so adding it
+    // to one would recreate the asymmetry this closes.
     if (this._backgroundJobs.delete(id)) {
       this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
     }
@@ -542,16 +540,12 @@ export class StreamManager {
       // A switch during the stream already detached it and parked the job in
       // ``_backgroundJobs``; the newer switch owns the state from there.
       if (superseded()) return;
-      // Discriminated on the SESSION, not on `_state`. `_state === "streaming"`
-      // is also true when a `send` landed during the probe above and owns the
-      // stream — `reconnectToJob` opens with its own `isStreaming` bail, so it
-      // returned without reconnecting anything, and announcing `idle` here
-      // lands over a running turn. That is the unrecoverable shape `settleIdle`
-      // documents: `finalizeStream` and the `message_stop` branch both no-op
-      // off `streaming`, so the composer reads ready for the whole turn and the
-      // next send is swallowed by `ChatSession.send`'s bail with no error.
-      // `settleIdle` itself does not fit — this branch sets `streaming` itself,
-      // so its "am I still the announcer?" test cannot tell the two apart.
+      // Discriminated on the SESSION: `_state === "streaming"` is also what a
+      // `send` landing during the probe sets, and `reconnectToJob` bails on
+      // `isStreaming` without reconnecting anything — so announcing `idle` here
+      // lands over a running turn (see `settleIdle` for why that is
+      // unrecoverable). `settleIdle` itself does not fit; this branch sets
+      // `streaming` itself, so its test cannot tell the two cases apart.
       if (this._state === "streaming" && !this.session.isStreaming) {
         this.setState("idle");
       }
