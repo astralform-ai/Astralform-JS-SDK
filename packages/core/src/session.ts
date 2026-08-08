@@ -177,12 +177,17 @@ export class ChatSession {
   private loadGeneration = 0;
 
   /**
-   * Count of jobs this session has created. Monotonic on purpose:
-   * ``currentJobId`` is nulled again by ``message_stop``, so after any turn
-   * that completes it is back to what it was before the send — which makes it
-   * useless as an "did this send reach the wire" signal.
+   * Did THIS send reach the wire? Passed down and set by ``consumeJobStream``.
+   *
+   * Per-call, not a session counter: `send`'s `isStreaming` bail fires before
+   * `processStream` sets the flag, with an `await storage.addMessage` in
+   * between, so two sends can interleave. A shared counter then answers "did
+   * ANY job get created during my await", and a failed send running beside a
+   * successful one would skip its own cleanup.
+   *
+   * `currentJobId` cannot serve either — `message_stop` nulls it, so after any
+   * completed turn it reads exactly as it did before the send.
    */
-  private jobsCreated = 0;
 
   /**
    * Ids of locally-created user messages the server has not acknowledged yet.
@@ -196,10 +201,12 @@ export class ChatSession {
    * same turn, so the keep-decision no longer depends on which side of the
    * fetch the push landed on.
    *
-   * The value is `serverRowsKnown` as of the moment the job response told us
-   * the server's row id, or 0 while no response has come back. That timestamp
-   * is what separates "the snapshot predates the row" from "the server does
-   * not have this row" — see `loadConversation`.
+   * The value is `serverRowsKnown` as of the `message_stop` that proved the
+   * row committed, or 0 until then — including after the job response, which
+   * hands back the id but starts the loop as a background task and so proves
+   * nothing about the row. That stamp is what separates "the snapshot predates
+   * the row" from "the server does not have this row" — see
+   * `loadConversation`.
    *
    * It is an ANNOTATION ON `this.messages`: reconciliation only ever consults
    * entries of that array, so an id whose message has left it is dead weight.
@@ -208,10 +215,10 @@ export class ChatSession {
   private pendingUserMessages = new Map<string, number>();
 
   /**
-   * Bumped each time the server hands back a message id, so a fetch can record
-   * what was known when it was ISSUED. A row whose id we learned before the
-   * fetch went out must appear in that fetch's snapshot; one we learned after
-   * it may legitimately be missing.
+   * Bumped once per completed turn, at `message_stop`, so a fetch can record
+   * what was proven when it was ISSUED. A row proven committed before the
+   * fetch went out must appear in its snapshot; one proven after may
+   * legitimately be missing.
    */
   private serverRowsKnown = 0;
 
@@ -425,8 +432,8 @@ export class ChatSession {
     // so after any completed send it reads exactly as it did before, and a
     // put-back keyed on it would fire on the success path and revert a
     // relocation that worked.
-    const jobsBefore = this.jobsCreated;
-    await this.processStream(request);
+    const wire: { reached: boolean } = { reached: false };
+    await this.processStream(request, wire);
 
     // The relocation above emptied the list before anything was sent. If no job
     // was created there is no new conversation's history to replace it and
@@ -443,7 +450,7 @@ export class ChatSession {
     // the put-back below only runs when the send RELOCATED — not the ordinary
     // shape. Keyed on the counter, not the throw: a job that WAS created has
     // had `userMessage.id` replaced with the server's.
-    if (this.jobsCreated === jobsBefore) {
+    if (!wire.reached) {
       this.pendingUserMessages.delete(userMessage.id);
       // The ROW too, not just its map entry. A load resolving between the push
       // and here has already merged this row into `messages` — correctly, for
@@ -456,7 +463,7 @@ export class ChatSession {
     }
     if (
       relocatedFrom &&
-      this.jobsCreated > jobsBefore &&
+      wire.reached &&
       this.loadGeneration === relocatedFrom.generation
     ) {
       // A SUFFIX of the target conversation rather than its whole history,
@@ -469,7 +476,7 @@ export class ChatSession {
       this.messagesConversationId = relocatedFrom.target;
     } else if (
       relocatedFrom &&
-      this.jobsCreated === jobsBefore &&
+      !wire.reached &&
       this.loadGeneration === relocatedFrom.generation
     ) {
       // No pending-id snapshot to restore alongside. `POST /v1/jobs` always
@@ -506,13 +513,16 @@ export class ChatSession {
     this.currentTextPath = null;
   }
 
-  private async processStream(request: ChatStreamRequest): Promise<void> {
+  private async processStream(
+    request: ChatStreamRequest,
+    wire?: { reached: boolean },
+  ): Promise<void> {
     this.isStreaming = true;
     this.resetStreamingState();
     this.abortController = new AbortController();
 
     try {
-      await this.consumeJobStream(request);
+      await this.consumeJobStream(request, wire);
     } catch (err) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         this.emit({
@@ -542,9 +552,12 @@ export class ChatSession {
   /** Current job ID for cancellation */
   currentJobId: string | null = null;
 
-  private async consumeJobStream(request: ChatStreamRequest): Promise<void> {
+  private async consumeJobStream(
+    request: ChatStreamRequest,
+    wire?: { reached: boolean },
+  ): Promise<void> {
     const job = await this.client.createJob(request);
-    this.jobsCreated++;
+    if (wire) wire.reached = true;
     this.currentJobId = job.job_id;
 
     const conversationId = job.conversation_id;
@@ -1043,7 +1056,14 @@ export class ChatSession {
     // load?" rather than "does the session still point where I left it?".
     const load = ++this.loadGeneration;
     this.conversationId = id;
-    this.resetStreamingState();
+    // NOT while a turn is live. `resetStreamingState` nulls `currentTextPath`,
+    // and the live turn's `block_start` has already gone by — so every later
+    // `block_delta` fails the path check, accumulates nothing, and
+    // `message_stop` persists an EMPTY assistant row. Only reachable when a
+    // send lands in a switch's probe window (the normal switch path detaches
+    // first, which clears `isStreaming`), which is exactly the window this
+    // change is about.
+    if (!this.isStreaming) this.resetStreamingState();
     // Read BEFORE the fetch goes out: the server evaluates it later still, so
     // any row already proven committed at this point has to be in the reply.
     const rowsKnownAtIssue = this.serverRowsKnown;

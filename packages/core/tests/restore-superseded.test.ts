@@ -2763,3 +2763,197 @@ describe("both halves of a create consult a counter that has actually moved", ()
     await switching;
   });
 });
+
+describe("a send that lands in the probe window keeps its own text", () => {
+  it("does not reset a live turn's accumulator from loadConversation", async () => {
+    // `settleIdle` closes the ANNOUNCEMENT half of this window; the
+    // `loadConversation` beside it opens with `resetStreamingState()`, which
+    // nulls `currentTextPath`. The live turn's `block_start` has already gone
+    // by, so every later `block_delta` fails the path check and accumulates
+    // nothing — and `message_stop` persists an EMPTY assistant row and writes
+    // it to storage. Pre-existing, but the fast path is the widest window
+    // precisely because it leaves the composer live.
+    const probe = gate();
+    const afterStart = gate();
+    const stored: { content?: string } = {};
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events")) {
+            const ev = (seq: number, event: string, d: object) =>
+              `event: ${event}\ndata: ${JSON.stringify({ seq, ts: 0, job_id: "job-1", ...d })}\n\n`;
+            const enc = new TextEncoder();
+            return new Response(
+              new ReadableStream({
+                async start(c) {
+                  c.enqueue(
+                    enc.encode(
+                      ev(0, "message_start", {
+                        type: "message_start",
+                        turn_id: "t1",
+                        model: "m",
+                      }) +
+                        ev(1, "block_start", {
+                          type: "block_start",
+                          turn_id: "t1",
+                          path: [0],
+                          kind: "text",
+                        }),
+                    ),
+                  );
+                  await afterStart.wait; // the load lands HERE, mid-turn
+                  c.enqueue(
+                    enc.encode(
+                      ev(2, "block_delta", {
+                        type: "block_delta",
+                        turn_id: "t1",
+                        path: [0],
+                        delta: { channel: "text", text: "the answer" },
+                      }) +
+                        ev(3, "message_stop", {
+                          type: "message_stop",
+                          turn_id: "t1",
+                          stop_reason: "end_turn",
+                          usage: {},
+                        }) +
+                        "data: [DONE]\n\n",
+                    ),
+                  );
+                  c.close();
+                },
+              }),
+              {
+                status: 200,
+                headers: { "Content-Type": "text/event-stream" },
+              },
+            );
+          }
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "job-1",
+              conversation_id: "conv-b",
+              message_id: "m1",
+              status: "queued",
+            });
+          if (url.includes("/conv-b/active-job")) {
+            await probe.wait; // fast path parks here, composer live
+            return json({ job_id: null, status: "none" });
+          }
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async (m: { role: string; content: string }) => {
+          if (m.role === "assistant") stored.content = m.content;
+        },
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    const switching = manager.switchTo("conv-b", { skipHistoryReplay: true });
+    await flush();
+
+    const sending = manager.send("during the probe");
+    await flush(); // block_start has gone by; the turn is mid-stream
+
+    probe.open(); // the fast path resumes and calls loadConversation
+    await switching;
+    await flush();
+
+    afterStart.open(); // the rest of the turn arrives
+    await sending;
+    await flush();
+
+    const assistant = session.messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toBe("the answer");
+    expect(stored.content).toBe("the answer");
+  });
+});
+
+describe("a rejecting storage does not strand the delete half-done", () => {
+  it("still announces and cleans up when deleteConversation throws", async () => {
+    // The cancel now runs BEFORE the delete and records `_state = "idle"`
+    // without announcing. If the delete then throws, the consumer's last
+    // `stateChange` is still `streaming` on a conversation that is neither
+    // deleted nor streaming, and `_backgroundJobs` is never cleaned.
+    // `ChatStorage` is a public interface, so this is a consumer's to trip.
+    const held = gate();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/v1/jobs/") && url.includes("/events")) {
+            await held.wait; // the turn stays live, so the cancel branch runs
+            return new Response("data: [DONE]\n\n", {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            });
+          }
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "job-a",
+              conversation_id: "conv-a",
+              message_id: "m1",
+              status: "queued",
+            });
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {
+          throw new Error("storage unavailable");
+        },
+      } as never,
+    );
+    const manager = new StreamManager(session);
+    const seen: StreamManagerEvent[] = [];
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    manager.on((e) => seen.push(e));
+    await expect(manager.deleteConversation("conv-a")).resolves.toBeUndefined();
+
+    expect(manager.state).toBe("idle");
+    expect(
+      seen.some((e) => e.type === "stateChange" && e.state === "idle"),
+    ).toBe(true);
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+
+    held.open();
+  });
+});

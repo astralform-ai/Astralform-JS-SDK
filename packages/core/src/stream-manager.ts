@@ -394,7 +394,13 @@ export class StreamManager {
       this.session.disconnect();
       this._state = "idle"; // cancelled, not parked — recorded, not announced
     }
-    await this.session.deleteConversation(id);
+    // Swallowed, matching how the client-side failure is already treated
+    // ("may already be deleted"). The cancel above has run and recorded
+    // `_state = "idle"` WITHOUT announcing, so letting a rejecting
+    // `ChatStorage` propagate would leave the consumer's last `stateChange` at
+    // `streaming` on a conversation that is neither deleted nor streaming, and
+    // skip the `_backgroundJobs` cleanup below.
+    await this.session.deleteConversation(id).catch(() => {});
     // Re-tested, not `wasActive`: that was read before a real DELETE, and
     // relocating on it would overwrite a switch that landed during the
     // round-trip and bump the generation out from under its restore.
