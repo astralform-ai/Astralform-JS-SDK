@@ -574,7 +574,15 @@ export class StreamManager {
     // nobody is waiting on. Same re-entrancy door the per-turn check in the
     // replay loop exists for.
     if (superseded()) return;
-    this.setState("restoring");
+    // Not over a live turn — the `restoring` analogue of `settleIdle`. The
+    // fast path deliberately stays out of `restoring` and leaves the composer
+    // live for the whole probe, so a `send` can already own the streaming
+    // state by the time a non-null job sends us here. `switchTo`'s own doc
+    // says that path exists for "a consumer that clears its block view on
+    // `restoring`" — announcing it here makes that consumer wipe the turn
+    // still streaming into it. The state recovers (the active-job branch
+    // re-announces `streaming`); the rendered blocks do not.
+    if (!this.session.isStreaming) this.setState("restoring");
 
     // Check for active job
     let activeJobId: string | null = null;

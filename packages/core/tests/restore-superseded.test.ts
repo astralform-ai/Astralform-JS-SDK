@@ -3604,3 +3604,68 @@ describe("a restore superseded on entry does nothing at all", () => {
     expect(urls.filter((u) => u.includes("/conv-a/active-job"))).toEqual([]);
   });
 });
+
+describe("a restore does not announce restoring over a live turn", () => {
+  it("emits no restoring when the fast path falls through to an active job", async () => {
+    // The fast path stays out of `restoring` on purpose so the composer is
+    // live for the whole probe — and `manager.send` does not bump the
+    // generation, so a send landing there leaves `superseded()` false. A
+    // non-null probe result then falls through to `restore`, which announced
+    // `restoring` while the turn was streaming. A consumer that clears its
+    // block view on `restoring` — which is who the fast path exists for —
+    // wipes the blocks the live turn has already emitted.
+    const probe = gate();
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // neither the send's turn nor the reconnect ends
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-live",
+            conversation_id: "conv-b",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/conv-b/active-job")) {
+          await probe.wait; // fast path parks here, composer live
+          return json({ job_id: "other-tab", status: "running" });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    const switching = manager.switchTo("conv-b", { skipHistoryReplay: true });
+    await flush();
+
+    void manager.send("during the probe");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    const states: string[] = [];
+    manager.on((e) => {
+      if (e.type === "stateChange") states.push(e.state);
+    });
+
+    probe.open(); // resumes, finds a job, falls through to restore()
+    await switching;
+    await flush();
+
+    expect(states).not.toContain("restoring");
+    expect(manager.state).toBe("streaming");
+    expect(session.isStreaming).toBe(true);
+
+    held.open();
+  });
+});
