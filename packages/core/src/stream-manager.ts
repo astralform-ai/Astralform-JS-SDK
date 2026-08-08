@@ -289,9 +289,9 @@ export class StreamManager {
       });
     }
 
-    this.setActiveConversation(conversationId);
-    // Captured AFTER the bump above, so this is this switch's own generation.
-    const gen = this.generation;
+    // Captured from the call itself, not read back afterwards — see
+    // `setActiveConversation`.
+    const gen = this.setActiveConversation(conversationId);
 
     if (opts?.skipHistoryReplay && !targetHadBackgroundJob) {
       // Cached fast path — but a job started before this instance existed (page
@@ -632,12 +632,21 @@ export class StreamManager {
 
   // ── Internal: set active conversation ─────────────────────────
 
-  private setActiveConversation(id: string | null): void {
+  private setActiveConversation(id: string | null): number {
     this._activeConversationId = id;
     // EVERY move of the pointer bumps the generation, not just `switchTo`:
     // creating a conversation and deleting the active one relocate the user
     // just as much, and an in-flight restore has to yield to those too.
-    this.generation++;
+    const claimed = ++this.generation;
+    // Returned so callers capture the generation THIS move claimed, before the
+    // emit below. A handler reacting to `conversationChanged` by calling back
+    // into the manager — routing on the conversation pointer is the obvious
+    // consumer shape — bumps again synchronously, so a caller reading
+    // `this.generation` afterwards would capture the INNER value and never see
+    // itself as superseded. Both switches would then run to completion and the
+    // abandoned one would replay its whole history: the same re-entrancy door
+    // the replay loop already guards against.
     this.emit({ type: "conversationChanged", conversationId: id });
+    return claimed;
   }
 }

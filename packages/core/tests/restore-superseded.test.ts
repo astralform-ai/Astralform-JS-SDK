@@ -429,7 +429,9 @@ describe("a send during the probe window goes to the displayed conversation", ()
           seen.jobBody
             ? [
                 {
-                  id: "m-server-hello",
+                  id: "m-x", // SAME id the job response returned — a real
+                             // server does not invent a second one
+
                   conversation_id: "conv-b",
                   role: "user",
                   content: seen.jobBody.message,
@@ -811,11 +813,22 @@ describe("a send that MOVES the pointer invalidates a load in flight", () => {
               created_at: "2026-01-01T00:00:00Z",
             },
             {
-              id: "m-server-hello",
+              id: "m-x", // same row the job response identified
               conversation_id: "conv-b",
               role: "user",
               content: "hello",
               created_at: "2026-01-01T00:01:00Z",
+            },
+            {
+              // The server appends TWO rows per turn. A window sized by the
+              // pending count therefore never contains the user row it is
+              // looking for — the reply pushes it out — so the prompt is
+              // re-appended after its own answer.
+              id: "m-reply",
+              conversation_id: "conv-b",
+              role: "assistant",
+              content: "hi there",
+              created_at: "2026-01-01T00:01:01Z",
             },
           ]);
         }
@@ -836,6 +849,7 @@ describe("a send that MOVES the pointer invalidates a load in flight", () => {
     expect(session.messages.map((m) => m.content)).toEqual([
       "earlier turn",
       "hello",
+      "hi there",
     ]);
   });
 });
@@ -1447,8 +1461,12 @@ describe("a SUCCESSFUL addressed send keeps its relocation", () => {
     // The relocation stands: the send succeeded, so there is nothing to undo.
     expect(session.conversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).toContain("hi");
-    // Still unclaimed — one turn is not the conversation's history.
-    expect(session.messagesConversationId).toBeNull();
+    // Claimed, because the send SUCCEEDED: the list is a suffix of that
+    // conversation rather than its whole history, but it is that
+    // conversation's, and the last user turn now carries the server's own id.
+    // Left null, nothing on this path would reopen the gate and `regenerate`
+    // would be dead for the rest of a direct caller's session.
+    expect(session.messagesConversationId).toBe("conv-b");
     expect(session.messages.map((m) => m.content)).not.toContain("A's prompt");
   });
 });
@@ -1627,6 +1645,62 @@ describe("the put-back restores each pointer from its own snapshot", () => {
     expect(session.messages.map((m) => m.content)).toEqual(["X's prompt"]);
 
     parked.open();
+  });
+});
+
+describe("a handler that re-enters on conversationChanged", () => {
+  it("does not hand the outer switch the inner generation", async () => {
+    // `setActiveConversation` bumps and then emits synchronously. A handler
+    // reacting to `conversationChanged` by switching again — routing on the
+    // conversation pointer is the obvious consumer shape — bumps again before
+    // a caller reading `this.generation` back could capture its own value. The
+    // outer switch would then never see itself superseded, run to completion,
+    // and replay the abandoned conversation's whole history.
+    const slowA = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/events")) {
+          await slowA.wait;
+          return json(A_EVENTS);
+        }
+        if (url.includes("/events")) return json([]);
+        if (url.includes("/conv-a/jobs"))
+          return json([
+            { job_id: "job-a", status: "completed", message_id: "m-a" },
+          ]);
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    let reentered = false;
+    manager.on((e) => {
+      if (e.type === "conversationChanged" && e.conversationId === "conv-a") {
+        if (reentered) return;
+        reentered = true;
+        void manager.switchTo("conv-b"); // re-enter, synchronously, mid-emit
+      }
+    });
+
+    const switchingA = manager.switchTo("conv-a");
+    await flush();
+
+    const replayed: string[] = [];
+    manager.on((e) => {
+      if (e.type === "event") replayed.push(e.event.type);
+    });
+    slowA.open();
+    await switchingA;
+    await flush();
+
+    // conv-a was abandoned by the re-entrant switch; none of its history
+    // should reach the consumer.
+    expect(replayed).toEqual([]);
+    expect(manager.activeConversationId).toBe("conv-b");
   });
 });
 

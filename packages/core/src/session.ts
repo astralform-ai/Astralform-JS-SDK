@@ -391,6 +391,18 @@ export class ChatSession {
     // one path that was still missing the check.
     if (
       relocatedFrom &&
+      this.jobsCreated > jobsBefore &&
+      this.loadGeneration === relocatedFrom.generation
+    ) {
+      // The send landed. The list is a SUFFIX of the target conversation
+      // rather than its whole history, but it is that conversation's — and the
+      // only consumer of this pairing, `regenerate`, needs just the last user
+      // turn, whose id `consumeJobStream` has now reconciled with the server's.
+      // Left `null`, nothing on this path would ever reopen the gate and
+      // regenerate would be dead for the rest of a direct caller's session.
+      this.messagesConversationId = conversationId ?? null;
+    } else if (
+      relocatedFrom &&
       this.jobsCreated === jobsBefore &&
       this.loadGeneration === relocatedFrom.generation
     ) {
@@ -495,6 +507,22 @@ export class ChatSession {
       await this.storage.addMessage(lastMsg, conversationId).catch(() => {});
     }
     const messageId = job.message_id;
+    // Reconcile the local id with the server's. `send` minted a client id that
+    // the backend never sees, so nothing downstream could ever match the two —
+    // which forced acknowledgement to be guessed from role+content, and no
+    // content heuristic can tell a genuinely repeated prompt ("continue",
+    // "retry" — the norm in an agent chat) from one the server already holds.
+    // The job response carries the real id, so take it and the question
+    // becomes exact.
+    if (
+      messageId &&
+      lastMsg?.role === "user" &&
+      this.unacknowledgedMessageIds.has(lastMsg.id)
+    ) {
+      this.unacknowledgedMessageIds.delete(lastMsg.id);
+      lastMsg.id = messageId;
+      this.unacknowledgedMessageIds.add(messageId);
+    }
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();
 
@@ -920,30 +948,27 @@ export class ChatSession {
     // clobbers the fresh messages the second A load already installed. The id
     // says where the session is, not which load last spoke.
     if (load !== this.loadGeneration) return;
-    // The reply is a SNAPSHOT of the server's state. A locally-created user
-    // message the server has not acknowledged yet is not in it, and assigning
-    // straight over `this.messages` drops it with nothing to restore it — the
-    // SSE handler only ever appends the assistant's reply, never the user turn
-    // again. So the send is posted correctly and then vanishes from the list,
-    // leaving `regenerate` to pick the PREVIOUS turn as the last user message.
+    // The reply is a SNAPSHOT of the server's state. A user message the server
+    // has not persisted yet is not in it, and assigning straight over
+    // `this.messages` drops it with nothing to restore it — the SSE handler
+    // only ever appends the assistant's reply, never the user turn again. So
+    // the send is posted correctly and then vanishes, leaving `regenerate` to
+    // pick the PREVIOUS turn as the last user message.
     //
-    // Keyed on the unacknowledged set rather than on arrival time. Arrival
-    // time looks right and is not: every `loadConversation` here sits behind
-    // the active-job probe, so a send landing BEFORE the load starts is the
-    // ordinary case, and an arrival-time rule drops precisely those.
+    // Matched on ID, which `consumeJobStream` reconciles with the server's as
+    // soon as the job response lands. Everything else was a proxy for this and
+    // each proxy had its own failure: arrival time dropped the ordinary case
+    // (a send lands BEFORE the load, since every load here sits behind the
+    // active-job probe); role+content over the whole history collapsed
+    // repeated prompts; a tail window sized by the pending count missed the
+    // acknowledgement entirely, because the server appends TWO rows per turn
+    // and the assistant reply pushes the user row out of the window.
     const pending = this.messages.filter(
       (m) => this.unacknowledgedMessageIds.has(m.id) && m.conversationId === id,
     );
-    // Compare against the TAIL only — the newest `pending.length` rows. If the
-    // server has these turns they are necessarily its newest rows, so nothing
-    // older can match. Comparing against the whole history instead made any
-    // repeat of a prompt the conversation had ever contained collapse, and
-    // "continue" / "yes" / "retry" are the norm in an agent chat.
-    const tail = messages.slice(Math.max(0, messages.length - pending.length));
     const stillPending = pending.filter(
-      (m) => !tail.some((f) => f.role === m.role && f.content === m.content),
+      (m) => !messages.some((f) => f.id === m.id),
     );
-    // A server row carrying the same turn IS the acknowledgement.
     for (const m of pending) {
       if (!stillPending.includes(m)) this.unacknowledgedMessageIds.delete(m.id);
     }

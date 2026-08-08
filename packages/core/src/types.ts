@@ -853,10 +853,13 @@ export interface SendOptions extends ModelChoiceOptions {
    * Which conversation this turn belongs to. Defaults to the session's current
    * one.
    *
-   * ⚠️ BEHAVIOR CHANGE: passing this now RELOCATES the session — it sets
-   * `session.conversationId`, and a value different from the current one
-   * invalidates any `loadConversation` still in flight. Previously it addressed
-   * a single turn elsewhere and left the session where it was.
+   * ⚠️ BEHAVIOR CHANGE: passing this now RELOCATES the session. A value
+   * different from the current one sets `session.conversationId`, DISCARDS
+   * `session.messages` (the old conversation's list is not that conversation's
+   * history), and invalidates any `loadConversation` still in flight.
+   * Previously it addressed a single turn elsewhere and left the session where
+   * it was. After a successful send the list holds only that turn, so load the
+   * conversation if you need its history.
    *
    * The change is deliberate: `onSessionEvent` tags every emitted event with
    * `session.conversationId`, so a turn sent elsewhere without moving the
