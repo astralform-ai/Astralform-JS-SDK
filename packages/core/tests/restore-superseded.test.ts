@@ -2957,3 +2957,294 @@ describe("a rejecting storage does not strand the delete half-done", () => {
     held.open();
   });
 });
+
+describe("a restore never replays over a live turn", () => {
+  it("leaves the running turn's text, job id, and state intact", async () => {
+    // `send` only bails on `_state === "streaming"`, so it runs during
+    // `restoring` — and nothing in it bumps `generation`, so `superseded()`
+    // stays false and the replay loop runs on top of the live turn.
+    // `replayTurn` reset the accumulator and each replayed `message_stop`
+    // cleared `isStreaming` + `currentJobId`, so: the live turn persisted the
+    // REPLAYED text, its job became uncancellable and unparkable, and the
+    // manager announced idle mid-turn.
+    const jobsGate = gate();
+    const afterStart = gate();
+    const stored: { content?: string } = {};
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          const ev = (
+            seq: number,
+            event: string,
+            d: object,
+            job = "job-live",
+          ) =>
+            `event: ${event}\ndata: ${JSON.stringify({ seq, ts: 0, job_id: job, ...d })}\n\n`;
+
+          if (url.includes("/v1/jobs/job-live/events")) {
+            const enc = new TextEncoder();
+            return new Response(
+              new ReadableStream({
+                async start(c) {
+                  c.enqueue(
+                    enc.encode(
+                      ev(0, "message_start", {
+                        type: "message_start",
+                        turn_id: "live",
+                        model: "m",
+                      }) +
+                        ev(1, "block_start", {
+                          type: "block_start",
+                          turn_id: "live",
+                          path: [0],
+                          kind: "text",
+                        }),
+                    ),
+                  );
+                  await afterStart.wait; // the replay lands HERE
+                  c.enqueue(
+                    enc.encode(
+                      ev(2, "block_delta", {
+                        type: "block_delta",
+                        turn_id: "live",
+                        path: [0],
+                        delta: { channel: "text", text: "live answer" },
+                      }) +
+                        ev(3, "message_stop", {
+                          type: "message_stop",
+                          turn_id: "live",
+                          stop_reason: "end_turn",
+                          usage: {},
+                        }) +
+                        "data: [DONE]\n\n",
+                    ),
+                  );
+                  c.close();
+                },
+              }),
+              {
+                status: 200,
+                headers: { "Content-Type": "text/event-stream" },
+              },
+            );
+          }
+          if (url.includes("/v1/jobs"))
+            return json({
+              job_id: "job-live",
+              conversation_id: "conv-a",
+              message_id: "m-live",
+              status: "queued",
+            });
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          if (url.includes("/conv-a/jobs")) {
+            await jobsGate.wait; // restore parks here; the send lands inside
+            return json([
+              { job_id: "job-old", status: "completed", message_id: "m-old" },
+            ]);
+          }
+          if (url.includes("/conv-a/messages"))
+            return json([
+              {
+                id: "m-old",
+                conversation_id: "conv-a",
+                role: "user",
+                content: "an earlier turn",
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ]);
+          if (url.includes("/conv-a/events"))
+            // A completed turn whose own message_stop is what used to clear
+            // the LIVE turn's streaming state.
+            return json([
+              {
+                seq: 0,
+                event: "message_start",
+                data: {
+                  type: "message_start",
+                  turn_id: "old",
+                  model: "m",
+                  job_id: "job-old",
+                },
+              },
+              // A text block at a DIFFERENT path from the live turn's, so a
+              // replayed `block_start` that hijacked `currentTextPath` would
+              // strand the live deltas with nothing matching.
+              {
+                seq: 1,
+                event: "block_start",
+                data: {
+                  type: "block_start",
+                  turn_id: "old",
+                  job_id: "job-old",
+                  path: [1],
+                  kind: "text",
+                },
+              },
+              {
+                seq: 2,
+                event: "block_delta",
+                data: {
+                  type: "block_delta",
+                  turn_id: "old",
+                  job_id: "job-old",
+                  path: [1],
+                  delta: { channel: "text", text: "old answer" },
+                },
+              },
+              {
+                seq: 3,
+                event: "block_stop",
+                data: {
+                  type: "block_stop",
+                  turn_id: "old",
+                  job_id: "job-old",
+                  path: [1],
+                  status: "ok",
+                },
+              },
+              // ...and a second at the SAME path the live turn is using, so a
+              // replayed `block_stop` that nulled `currentTextPath` would stop
+              // the live turn accumulating from that point on.
+              {
+                seq: 4,
+                event: "block_start",
+                data: {
+                  type: "block_start",
+                  turn_id: "old",
+                  job_id: "job-old",
+                  path: [0],
+                  kind: "text",
+                },
+              },
+              {
+                seq: 5,
+                event: "block_stop",
+                data: {
+                  type: "block_stop",
+                  turn_id: "old",
+                  job_id: "job-old",
+                  path: [0],
+                  status: "ok",
+                },
+              },
+              {
+                seq: 6,
+                event: "message_stop",
+                data: {
+                  type: "message_stop",
+                  turn_id: "old",
+                  job_id: "job-old",
+                  stop_reason: "end_turn",
+                  usage: {},
+                },
+              },
+            ]);
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => ({
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        }),
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async (m: { role: string; content: string }) => {
+          if (m.role === "assistant") stored.content = m.content;
+        },
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+    const states: string[] = [];
+    manager.on((e) => {
+      if (e.type === "stateChange") states.push(e.state);
+    });
+
+    const restoring = manager.switchTo("conv-a");
+    await flush(); // parked on /conv-a/jobs, state "restoring"
+
+    const sending = manager.send("during the restore");
+    await flush(); // block_start has gone by; the turn is mid-stream
+    expect(session.currentJobId).toBe("job-live");
+
+    jobsGate.open(); // the restore resumes and replays job-old
+    await restoring;
+    await flush();
+
+    // The replay must not have touched the live turn.
+    expect(session.currentJobId).toBe("job-live");
+    expect(session.isStreaming).toBe(true);
+    expect(states).not.toContain("idle");
+
+    afterStart.open();
+    await sending;
+    await flush();
+
+    const assistant = session.messages.filter((m) => m.role === "assistant");
+    expect(assistant.at(-1)?.content).toBe("live answer");
+    expect(stored.content).toBe("live answer");
+  });
+});
+
+describe("deleting a conversation does not tear down the session", () => {
+  it("keeps registered protocol adapters", async () => {
+    // The cancel branch reached for `session.disconnect()`, which ends in
+    // `protocols.clear()`. The SDK never auto-registers adapters — a consumer
+    // wires them up after `connect()` from `agentStatus.uiComponents` — so
+    // deleting one conversation silently killed embedded-resource rendering
+    // for the rest of the session, with nothing short of another `connect()`
+    // to bring it back. The branch only wants cancel + detach.
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // the turn stays live so the cancel branch runs
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+    session.protocols.register({
+      mimeType: "application/vnd.astralform.a2ui+json",
+      render: () => null,
+    } as never);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    await manager.deleteConversation("conv-a");
+    await flush();
+
+    expect(session.protocols.has("application/vnd.astralform.a2ui+json")).toBe(
+      true,
+    );
+
+    held.open();
+  });
+});

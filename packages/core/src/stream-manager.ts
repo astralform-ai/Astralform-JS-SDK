@@ -150,7 +150,13 @@ export class StreamManager {
 
     // Handle completion — message_stop is the terminal turn event.
     if (event.type === ChatEventType.MessageStop) {
-      if (this._state === "streaming") {
+      // `!isStreaming` discriminates the LIVE stop from one a restore is
+      // replaying over a running turn. On the live path the side effects run
+      // before this emit, so the flag is already false by the time a real stop
+      // arrives; a replayed one leaves it true. Settling on a replayed stop
+      // announces idle mid-turn, after which `finalizeStream` and the real
+      // stop both no-op — the state `settleIdle` documents.
+      if (this._state === "streaming" && !this.session.isStreaming) {
         this.setState("idle");
       }
     }
@@ -391,7 +397,18 @@ export class StreamManager {
     // round-trip sooner.
     const wasActive = this._activeConversationId === id;
     if (wasActive && this._state === "streaming") {
-      this.session.disconnect();
+      // NOT `disconnect()`: it ends in `protocols.clear()`, dropping every
+      // registered `ProtocolAdapter` for the rest of the session. The SDK
+      // never auto-registers them — a consumer wires them up after `connect()`
+      // from `agentStatus.uiComponents` — so deleting one conversation would
+      // silently kill embedded-resource rendering everywhere. This branch
+      // wants only the two things `disconnect` does before that wipe.
+      if (this.session.currentJobId) {
+        this.session.client
+          .cancelJob(this.session.currentJobId)
+          .catch(() => {});
+      }
+      this.session.detach();
       this._state = "idle"; // cancelled, not parked — recorded, not announced
     }
     // Swallowed, matching how the client-side failure is already treated

@@ -860,7 +860,7 @@ export class ChatSession {
   ): Promise<void> {
     // Side effects that depend on mutable session state must run before the
     // ChatEvent is emitted so consumers see a consistent view.
-    this.applyWireSideEffects(wire, conversationId, promptMessageId);
+    this.applyWireSideEffects(wire, conversationId, promptMessageId, true);
 
     const event = translateWireEvent(wire);
     if (event) {
@@ -913,7 +913,10 @@ export class ChatSession {
    * instead of re-typing the whole conversation event by event.
    */
   private replayWireEvent(wire: WireEvent, conversationId: string): void {
-    this.applyWireSideEffects(wire, conversationId, "");
+    // `live: false` — a replay must never touch the streaming lifecycle. It
+    // cannot be inferred from `promptMessageId` being empty, because
+    // `reconnectToJob` passes empty too and IS live.
+    this.applyWireSideEffects(wire, conversationId, "", false);
     const event = translateWireEvent(wire);
     if (event) {
       this.emit(event);
@@ -939,12 +942,22 @@ export class ChatSession {
     wire: WireEvent,
     conversationId: string,
     promptMessageId: string,
+    live: boolean,
   ): void {
+    // `accumulatedText`, `currentTextPath`, `isStreaming` and `currentJobId`
+    // are ONE turn's state, and a restore replaying completed turns over a
+    // running one must not touch any of it. `send` bails only on the manager's
+    // `streaming`, so it runs during `restoring` and nothing bumps the
+    // generation — the replay loop's `superseded()` therefore stays false and
+    // the two overlap. A live event always owns this state; a replayed one
+    // only when nothing is running.
+    const ownsTurnState = live || !this.isStreaming;
+
     switch (wire.type) {
       case "message_start":
         // Reset per-turn accumulator so multi-turn replay doesn't concatenate
         // text from prior turns into the next assistant message.
-        this.resetStreamingState();
+        if (ownsTurnState) this.resetStreamingState();
         if (wire.model) {
           this.modelDisplayName = wire.model;
         }
@@ -954,6 +967,7 @@ export class ChatSession {
         // Track the currently open top-level text block so we can accumulate
         // its content for the assistant Message record.
         if (
+          ownsTurnState &&
           wire.kind === "text" &&
           (!wire.parent_path || wire.parent_path.length === 0)
         ) {
@@ -963,6 +977,7 @@ export class ChatSession {
 
       case "block_delta":
         if (
+          ownsTurnState &&
           wire.delta.channel === "text" &&
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
@@ -973,6 +988,7 @@ export class ChatSession {
 
       case "block_stop":
         if (
+          ownsTurnState &&
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
         ) {
@@ -1010,8 +1026,16 @@ export class ChatSession {
             .addMessage(assistantMessage, conversationId)
             .catch(() => {});
         }
-        this.isStreaming = false;
-        this.currentJobId = null;
+        // Only the LIVE stream owns these. A restore replaying a completed
+        // turn over a running one used to clear both: `currentJobId` null
+        // means the job can no longer be cancelled by `stop()` or parked by
+        // `detachStreamingTurn`, and `isStreaming` false means the next send
+        // passes its own guard and opens a second stream sharing this one's
+        // `abortController` and `lastSeq`.
+        if (ownsTurnState) {
+          this.isStreaming = false;
+          this.currentJobId = null;
+        }
         return;
 
       case "custom":
@@ -1234,7 +1258,11 @@ export class ChatSession {
     isSteer = false,
   ): void {
     this.conversationId = id;
-    this.resetStreamingState();
+    // Same rule as `loadConversation`: not while a turn is live. Nulling
+    // `currentTextPath` after the live turn's `block_start` has gone by makes
+    // every later delta accumulate nothing, and its `message_stop` then
+    // persists the REPLAYED turn's text as the assistant row.
+    if (!this.isStreaming) this.resetStreamingState();
 
     if (userMessageContent) {
       this.emit({
