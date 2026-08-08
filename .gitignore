@@ -13,9 +13,15 @@ test-*.mjs
 package-lock.json
 yarn.lock
 
-# `actions/setup-node` with `registry-url:` writes a registry auth token into
-# .npmrc on the runner, so a working tree mid-CI holds a real credential. Nothing
-# here is meant to be committed — ignore it so a stray `git add .` in a future
-# change can't publish one. (The repo publishes via OIDC trusted publishing and
-# needs no committed token.)
+# CI steps that configure registry auth can drop a real credential into a
+# working-tree .npmrc (this repo's runners get one pointing at
+# npm.pkg.github.com, written after checkout). Nothing here is meant to be
+# committed — ignore it so a stray `git add .` in a future change can't publish
+# one. (Releases use OIDC trusted publishing and need no committed token.)
+#
+# NOT `actions/setup-node` with `registry-url:` — that writes
+# $RUNNER_TEMP/.npmrc and points npm at it via NPM_CONFIG_USERCONFIG, outside
+# the work tree where `git add` can't reach it. The only such step here is
+# release.yml, tag-gated and pointed at registry.npmjs.org, which is a
+# different registry from the file that actually appears.
 .npmrc
