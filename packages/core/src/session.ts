@@ -587,6 +587,19 @@ export class ChatSession {
       this.pendingUserMessages.delete(lastMsg.id);
       lastMsg.id = promptMessageId;
       this.pendingUserMessages.set(promptMessageId, ++this.serverRowsKnown);
+      // A snapshot can resolve after the backend commits this row but before
+      // the job response arrives, and until it does the local copy carries a
+      // client id the server never saw — so there was no id to match on and
+      // `loadConversation` kept both. Renaming would then put two rows under
+      // one id, the state the assistant row's own id exists to prevent, and
+      // `planRestore`'s `byId` would resolve to the wrong one. The local copy
+      // is the survivor: it is the newest message, so the tail is where it
+      // belongs. Removing the other cannot orphan its map entry, since the
+      // survivor now carries the same id.
+      const dupe = this.messages.findIndex(
+        (m) => m !== lastMsg && m.id === promptMessageId,
+      );
+      if (dupe !== -1) this.messages.splice(dupe, 1);
     }
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();

@@ -158,15 +158,7 @@ export class StreamManager {
 
   // ── Send ──────────────────────────────────────────────────────
 
-  async send(
-    content: string,
-    // `conversationId` is omitted, not ignored. This method addresses the send
-    // at `_activeConversationId` — the manager's pointer is the authority, and
-    // it always overwrote a caller's value. Now that `SendOptions.conversationId`
-    // publicly documents relocating the session, silently dropping it would
-    // read as a bug rather than as the manager owning the address.
-    options?: Omit<SendOptions, "conversationId">,
-  ): Promise<void> {
+  async send(content: string, options?: SendOptions): Promise<void> {
     if ((options?.provider == null) !== (options?.model == null)) {
       throw new Error(
         "`provider` and `model` must be supplied together (client-side model selection).",

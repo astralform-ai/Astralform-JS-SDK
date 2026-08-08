@@ -2530,3 +2530,57 @@ describe("a send with no conversation is inside the machinery too", () => {
     );
   });
 });
+
+describe("the prompt survives exactly once across the commit/response window", () => {
+  it("drops the snapshot's copy when the rename would collide with it", async () => {
+    // The window is between the backend committing the prompt row and
+    // `POST /v1/jobs` returning its id. A snapshot resolving inside it carries
+    // the row under the SERVER's id while the local copy still has the
+    // client's — no id to match on, so both are kept. The rename then puts two
+    // rows under one id, which is the state the assistant row's own id exists
+    // to prevent, and `planRestore`'s `byId` resolves to the wrong one.
+    const holdJob = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return completedTurn("j");
+        if (url.includes("/v1/jobs")) {
+          await holdJob.wait; // the response is still in flight
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m-server",
+            status: "queued",
+          });
+        }
+        if (url.includes("/conv-a/messages"))
+          // The backend HAS committed the prompt — under its own id.
+          return json([
+            {
+              id: "m-server",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "hello",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+
+    const sending = session.send("hello");
+    await flush();
+    await session.loadConversation("conv-a"); // resolves inside the window
+    holdJob.open();
+    await sending;
+
+    const prompts = session.messages.filter((m) => m.role === "user");
+    expect(prompts.map((m) => m.content)).toEqual(["hello"]);
+    expect(prompts.map((m) => m.id)).toEqual(["m-server"]);
+    // No two rows share an id — the property, not just this instance of it.
+    const ids = session.messages.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});

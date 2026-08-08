@@ -26,9 +26,13 @@ await session.loadConversation(id);
 ```
 
 Callers going through `StreamManager` are unaffected: it passes its own active
-conversation, so the value already matches and no relocation happens. Its
-`send` now takes `Omit<SendOptions, "conversationId">` — it always overwrote the
-value, and the type says so rather than dropping it silently.
+conversation, so the value already matches and no relocation happens.
+
+**TypeScript will not catch this for you.** The `SendOptions` exported from the
+package is `StreamManager`'s, which has no `conversationId`; the one that does
+is internal. So an affected caller is passing an inline object literal to
+`ChatSession.send`, and gets no error on upgrade — this entry is the only
+signal.
 
 **Assistant message ids are now client-generated.** `job.message_id` is the
 PROMPT's id; the assistant row was being pushed under it too. The user turn now
