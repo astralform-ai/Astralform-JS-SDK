@@ -224,8 +224,8 @@ export class StreamManager {
     // incoherent, so the only correct move is not to act.
     //
     // Gated on which conversation the MESSAGES belong to, not on the session's
-    // conversation pointer. Pointer equality was the second attempt and is
-    // still wrong, in the widest case rather than an edge: `loadConversation`
+    // conversation pointer. Pointer equality is wrong in the widest case
+    // rather than an edge: `loadConversation`
     // assigns the pointer SYNCHRONOUSLY and installs the messages only when the
     // fetch returns, so for the whole duration of every ordinary load the two
     // pointers already agree while `messages` still holds the previous
@@ -679,6 +679,12 @@ export class StreamManager {
 
   private setActiveConversation(id: string | null): number {
     this._activeConversationId = id;
+    // The session's load token moves at the same instant as this one. Both
+    // halves of a create then consult a counter that has actually changed —
+    // otherwise `switchTo` bumps `generation` synchronously while
+    // `loadGeneration` waits on the active-job probe, and for that whole
+    // window the manager sees itself superseded and the session does not.
+    this.session.invalidateLoadsInFlight();
     // EVERY move of the pointer bumps the generation, not just `switchTo`:
     // creating a conversation and deleting the active one relocate the user
     // just as much, and an in-flight restore has to yield to those too.

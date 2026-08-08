@@ -353,8 +353,7 @@ export class ChatSession {
         // the load guard exists to prevent — and here nothing re-fetches, so
         // for a direct `ChatSession` caller (this is a documented public
         // option) it would simply persist. Through `StreamManager` the
-        // in-flight restore reinstalls the right list, which is why the
-        // manager-level tests never saw it.
+        // in-flight restore reinstalls the right list.
         this.setMessages([]);
         // NOT `conversationId`. After this the list holds at most this one
         // turn, which is not that conversation's history — and
@@ -449,11 +448,9 @@ export class ChatSession {
       // The ROW too, not just its map entry. A load resolving between the push
       // and here has already merged this row into `messages` — correctly, for
       // the success case — and it survives with a client-minted id, which
-      // `regenerate` then hands to `resend_from`. Pre-PR the wholesale
-      // `this.messages = …` wiped it; the merge that fixes the success case is
-      // what keeps it alive. Nothing acknowledged it, and `status` says
-      // "complete", which for a send that never reached the wire is a claim
-      // the row has no business making.
+      // `regenerate` then hands to `resend_from`. Nothing acknowledged it, and
+      // `status` says "complete" — a claim a send that never reached the wire
+      // has no business making.
       const at = this.messages.indexOf(userMessage);
       if (at !== -1) this.messages.splice(at, 1);
     }
@@ -596,7 +593,12 @@ export class ChatSession {
     ) {
       this.pendingUserMessages.delete(lastMsg.id);
       lastMsg.id = promptMessageId;
-      this.pendingUserMessages.set(promptMessageId, ++this.serverRowsKnown);
+      // Still 0 — the id is now the server's, but the ROW is not proven
+      // committed. `POST /v1/jobs` mints the id and starts the loop as a
+      // BACKGROUND task (`start_job_task`) before returning, so the prompt is
+      // persisted by the loop, not by the handler. `message_stop` is the
+      // earliest point the row is certainly there.
+      this.pendingUserMessages.set(promptMessageId, 0);
       // A snapshot can resolve after the backend commits this row but before
       // the job response arrives, and until it does the local copy carries a
       // client id the server never saw — so there was no id to match on and
@@ -966,6 +968,13 @@ export class ChatSession {
         return;
 
       case "message_stop":
+        // The turn ran to completion, so the backend has persisted its prompt.
+        // This — not the job response — is the proof `loadConversation` needs
+        // before it may read "absent from the snapshot" as "the server does
+        // not have it".
+        if (promptMessageId && this.pendingUserMessages.has(promptMessageId)) {
+          this.pendingUserMessages.set(promptMessageId, ++this.serverRowsKnown);
+        }
         // Only record the assistant message on a live send — a non-empty
         // prompt id IS that signal. Reconnect/replay paths load messages via
         // REST instead.
@@ -1036,7 +1045,7 @@ export class ChatSession {
     this.conversationId = id;
     this.resetStreamingState();
     // Read BEFORE the fetch goes out: the server evaluates it later still, so
-    // any row already known at this point has to be in the reply.
+    // any row already proven committed at this point has to be in the reply.
     const rowsKnownAtIssue = this.serverRowsKnown;
     const messages = await this.client
       .getMessages(id)
@@ -1069,13 +1078,12 @@ export class ChatSession {
     const stillPending = pending.filter((m) => {
       if (messages.some((f) => f.id === m.id)) return false;
       const knownAt = this.pendingUserMessages.get(m.id) ?? 0;
-      // Absent from the snapshot has two causes and they need opposite
-      // handling. 0 means no job response yet, so the row may not exist —
-      // keep it, that is the race this set exists for. Otherwise the server
-      // gave us its id before this fetch was issued, so the snapshot HAD to
-      // contain it; missing means the server no longer does. Re-appending
-      // then resurrects it at the tail on every later load and hands
-      // `regenerate` a turn the server cannot resend.
+      // Absent from the snapshot has two causes needing opposite handling.
+      // 0 means the turn has not completed, so the row may not be committed —
+      // keep it, that is the race this set exists for. Otherwise the turn
+      // finished before this fetch was issued, so the snapshot HAD to contain
+      // it; missing means the server does not have it, and re-appending would
+      // resurrect it at the tail on every later load.
       return knownAt === 0 || knownAt > rowsKnownAtIssue;
     });
     for (const m of pending) {
@@ -1139,6 +1147,18 @@ export class ChatSession {
     this.currentJobId = null;
     // Drop all protocol adapters — lifecycle tied to the session.
     this.protocols.clear();
+  }
+
+  /**
+   * A pointer move happened above this layer, so any `loadConversation` in
+   * flight must lose to it. `StreamManager` owns a pointer of its own and
+   * moves it before this one; without this the two halves would gate on
+   * counters that bump at different instants — `generation` synchronously in
+   * `setActiveConversation`, `loadGeneration` only once the switch's own load
+   * actually runs, which is behind the active-job probe.
+   */
+  invalidateLoadsInFlight(): void {
+    this.loadGeneration++;
   }
 
   async createNewConversation(): Promise<string> {
@@ -1234,12 +1254,9 @@ export class ChatSession {
    */
   async switchConversation(id: string, jobId?: string): Promise<void> {
     // Load the messages through `loadConversation` rather than fetching and
-    // assigning them here. This function had its own copy of that assignment
-    // and therefore its own copy of both bugs the guarded version fixes: no
-    // generation token, so two overlapping calls install out of order; and an
-    // unconditional overwrite, so a send landing mid-fetch is lost. One
-    // implementation of the rule means it cannot drift back apart. Still
-    // parallel — the two fetches start together, as before.
+    // assigning them here: one implementation of the token check and the
+    // pending merge, so the two cannot drift apart. Still parallel — the two
+    // fetches start together.
     // `loadConversation` claims its token synchronously, before its first
     // await, so reading `loadGeneration` straight after the call gives the
     // token THIS switch is operating under.

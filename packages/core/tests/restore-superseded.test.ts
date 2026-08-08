@@ -2635,3 +2635,131 @@ describe("a send that never reached the wire leaves nothing behind", () => {
     expect(session.messages.map((m) => m.content)).toEqual(["B's history"]);
   });
 });
+
+describe("the commit proof is the turn completing, not the job response", () => {
+  it("keeps a prompt the snapshot misses while the turn is still running", async () => {
+    // `POST /v1/jobs` mints `message_id` and starts the loop as a BACKGROUND
+    // task before returning, so the prompt row is persisted by the loop, not
+    // by the handler. A fetch issued after the response can therefore
+    // legitimately miss it — and reading that as "the server dropped it" would
+    // discard the user's just-sent prompt and leave `regenerate` picking the
+    // previous turn, the exact bug the rest of this guard closes.
+    const holdStream = gate();
+    const slowLoad = gate();
+    let firstLoad = true;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await holdStream.wait; // the turn has not completed
+          return completedTurn("j");
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m-server",
+            status: "queued",
+          });
+        if (url.includes("/conv-a/messages")) {
+          if (firstLoad) {
+            firstLoad = false;
+            return json([]);
+          }
+          await slowLoad.wait;
+          return json([]); // the loop has not committed the prompt yet
+        }
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    const sending = session.send("hello");
+    await flush(); // job response has landed; the turn is still streaming
+
+    const racing = session.loadConversation("conv-a");
+    await flush();
+    slowLoad.open();
+    await racing;
+
+    // Kept. The job response is not proof the row exists.
+    expect(
+      session.messages.filter((m) => m.role === "user").map((m) => m.content),
+    ).toEqual(["hello"]);
+
+    holdStream.open();
+    await sending;
+  });
+});
+
+describe("both halves of a create consult a counter that has actually moved", () => {
+  it("does not relocate the session while the manager declines", async () => {
+    // The two guards gate on different counters. `switchTo` bumps the
+    // manager's `generation` synchronously but reaches `loadConversation` —
+    // and so `loadGeneration` — only after the active-job probe. For that
+    // whole window the manager saw itself superseded and the session did not,
+    // so the create relocated the session while the manager stayed on B.
+    //
+    // Asserted INSIDE the window: it self-heals once B's own load runs, which
+    // is why the invariant looked like it held. That made it an accident of
+    // the caller's control flow rather than something the guards enforce.
+    const slowCreate = gate();
+    const probe = gate();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/conv-b/active-job")) {
+            await probe.wait; // B parks here, before its loadConversation
+            return json({ job_id: null, status: "none" });
+          }
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => {
+          await slowCreate.wait;
+          return {
+            id,
+            title: "",
+            createdAt: "",
+            updatedAt: "",
+            messageCount: 0,
+          };
+        },
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    const creating = manager.createConversation();
+    await flush();
+    const switching = manager.switchTo("conv-b");
+    await flush(); // B has claimed the manager's generation, parked on /active-job
+
+    slowCreate.open();
+    const created = await creating;
+    await flush();
+
+    // The manager declined its pointer move; the session must have declined
+    // its own. Anything else is "manager on B, session on the new id".
+    expect(manager.activeConversationId).toBe("conv-b");
+    expect(session.conversationId).not.toBe(created);
+    // Still null rather than "conv-b": B's `loadConversation` is what points
+    // the session, and it is parked behind the probe. That lag is the whole
+    // reason the two counters disagree.
+    expect(session.conversationId).toBeNull();
+
+    probe.open();
+    await switching;
+  });
+});
