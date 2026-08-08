@@ -2102,3 +2102,222 @@ describe("a row the server no longer has is not resurrected", () => {
     expect(session.messages.map((m) => m.content)).toEqual(["hello"]);
   });
 });
+
+describe("the active-job branch is the same path, one probe result later", () => {
+  it("leaves a send's streaming state alone when the probe finds a job", async () => {
+    // The sibling of the fast-path test above, and the untested half: the
+    // probe returns a NON-null job (one running in another tab, or from before
+    // this instance), so instead of settling, `switchTo` falls through to
+    // `restore`. There `reconnectToJob` opens with its own `isStreaming` bail
+    // and returns having reconnected nothing, and the branch then announced
+    // `idle` off `_state === "streaming"` — which is also what the live send
+    // set. Same unrecoverable end state as the fast path: manager idle,
+    // session still streaming, next send swallowed with no error.
+    const probe = gate();
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/other-tab/events")) {
+          // Never served: `reconnectToJob` bails before opening it.
+          await held.wait;
+          return json([]);
+        }
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // the send's own turn never finishes on its own
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-1",
+            conversation_id: "conv-b",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/conv-b/active-job")) {
+          await probe.wait; // fast path parks here, composer still live
+          return json({ job_id: "other-tab", status: "running" });
+        }
+        if (url.includes("/conv-b/messages")) return json([]);
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    const switching = manager.switchTo("conv-b", { skipHistoryReplay: true });
+    await flush();
+
+    void manager.send("during the probe");
+    await flush();
+    expect(manager.state).toBe("streaming");
+
+    probe.open(); // resumes, finds a job, and goes through `restore`
+    await switching;
+    await flush();
+
+    expect(manager.state).toBe("streaming");
+    expect(session.isStreaming).toBe(true);
+
+    held.open();
+  });
+});
+
+describe("one turn does not put two messages under one id", () => {
+  it("gives the assistant row its own id", async () => {
+    // `job.message_id` is the PROMPT's id — the backend tags the user turn with
+    // it (`HumanMessage(content=..., id=message_id)`) so a restore can pair a
+    // job to its prompt by id rather than by position. It was also being used
+    // as the assistant row's id here, which only became observable once
+    // `consumeJobStream` started stamping the user row with it too.
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return completedTurn("j");
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m-server",
+            status: "queued",
+          });
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    await session.send("hello");
+
+    const ids = session.messages.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // The prompt keeps the server's id — that reconciliation is the point.
+    expect(session.messages.find((m) => m.role === "user")?.id).toBe(
+      "m-server",
+    );
+    expect(session.messages.find((m) => m.role === "assistant")?.id).not.toBe(
+      "m-server",
+    );
+  });
+
+  it("carries forward the prompt alone, not the prompt and its reply", async () => {
+    // The consequence, and the reason a shared id is not merely untidy:
+    // `pendingUserMessages` is id-keyed, so the assistant row matched as a
+    // pending PROMPT and rode along with it.
+    //
+    // Note the snapshot must OMIT the row — with it present, both copies match
+    // it by id and both filter out, which is why the obvious version of this
+    // test passes against the shared id too. The case that separates them is
+    // the ordinary race this set exists for: a load issued before the job
+    // response, resolving against a snapshot taken before the row landed.
+    const slowLoad = gate();
+    const holdJob = gate();
+    let firstLoad = true;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return completedTurn("j");
+        if (url.includes("/v1/jobs")) {
+          await holdJob.wait;
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m-server",
+            status: "queued",
+          });
+        }
+        if (url.includes("/conv-a/messages")) {
+          if (firstLoad) {
+            firstLoad = false;
+            return json([]);
+          }
+          await slowLoad.wait; // issued before the job response
+          return json([
+            {
+              id: "m-old",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "an earlier turn",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        }
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    const sending = session.send("hello");
+    await flush();
+    const racing = session.loadConversation("conv-a");
+    await flush();
+    holdJob.open();
+    await sending;
+    slowLoad.open();
+    await racing;
+
+    // The snapshot plus the unacknowledged PROMPT. The assistant row is local
+    // and unreferenced, so it goes with the rest of the replaced list.
+    expect(session.messages.map((m) => m.id)).toEqual(["m-old", "m-server"]);
+  });
+});
+
+describe("deleting a conversation with a parked job tells the consumer", () => {
+  it("emits backgroundJobsChanged when the deleted one was not active", async () => {
+    // The `wasActive` branch argues that a job parked for a gone conversation
+    // renders a running-job indicator on a conversation no longer in the list.
+    // The other branch removes the same entry silently, so the consumer's last
+    // snapshot keeps it and the badge survives the delete.
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait; // A's turn stays live so the switch parks it
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+    const seen: StreamManagerEvent[] = [];
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn on A");
+    await flush();
+    await manager.switchTo("conv-b"); // parks A's job
+    await flush();
+    expect(manager.backgroundJobs.has("conv-a")).toBe(true);
+
+    manager.on((e) => seen.push(e));
+    await manager.deleteConversation("conv-a"); // B is active, so not wasActive
+    await flush();
+
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+    expect(seen.some((e) => e.type === "backgroundJobsChanged")).toBe(true);
+
+    held.open();
+  });
+});

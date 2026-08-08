@@ -383,7 +383,22 @@ export class StreamManager {
       this.settleIdle();
     }
     // AFTER the branch above, so nothing can put the entry back.
-    this._backgroundJobs.delete(id);
+    //
+    // Emitted, because this is the same stale-badge harm the `wasActive`
+    // comment above argues against, arriving on the branch that does not take
+    // that fix: streaming on A, switch to B (which parks A's job and emits),
+    // then delete A while B is active. `wasActive` is false, the session's own
+    // branch is skipped, and without this the consumer's last snapshot still
+    // holds A — a running-job indicator on a conversation no longer in the
+    // list. Pre-existing, but this method is where the invariant is stated.
+    //
+    // Not also cancelling the parked job: NEITHER branch cancels server-side
+    // today (`wasActive` calls `session.disconnect()`, which is local), so
+    // adding it here alone would recreate the asymmetry this closes. Whether a
+    // delete should kill a running job is a product call, not a state-sync one.
+    if (this._backgroundJobs.delete(id)) {
+      this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
+    }
   }
 
   // ── Stop (explicit cancel) ────────────────────────────────────
@@ -505,7 +520,17 @@ export class StreamManager {
       // A switch during the stream already detached it and parked the job in
       // ``_backgroundJobs``; the newer switch owns the state from there.
       if (superseded()) return;
-      if (this._state === "streaming") {
+      // Discriminated on the SESSION, not on `_state`. `_state === "streaming"`
+      // is also true when a `send` landed during the probe above and owns the
+      // stream — `reconnectToJob` opens with its own `isStreaming` bail, so it
+      // returned without reconnecting anything, and announcing `idle` here
+      // lands over a running turn. That is the unrecoverable shape `settleIdle`
+      // documents: `finalizeStream` and the `message_stop` branch both no-op
+      // off `streaming`, so the composer reads ready for the whole turn and the
+      // next send is swallowed by `ChatSession.send`'s bail with no error.
+      // `settleIdle` itself does not fit — this branch sets `streaming` itself,
+      // so its "am I still the announcer?" test cannot tell the two apart.
+      if (this._state === "streaming" && !this.session.isStreaming) {
         this.setState("idle");
       }
     } else {

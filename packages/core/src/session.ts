@@ -314,6 +314,7 @@ export class ChatSession {
       conversationId: string | null;
       generation: number;
       pending: Map<string, number>;
+      target: string;
     } | null = null;
 
     // Sending to an explicit conversation makes it the session's — catch the
@@ -351,6 +352,7 @@ export class ChatSession {
           conversationId: this.conversationId,
           generation: this.loadGeneration,
           pending: new Map(this.pendingUserMessages),
+          target: conversationId,
         };
         // Drop the old conversation's list with the pointer. Leaving it behind
         // is the same one-conversation's-messages-under-another's-id pairing
@@ -434,7 +436,10 @@ export class ChatSession {
       // turn, whose id `consumeJobStream` has now reconciled with the server's.
       // Left `null`, nothing on this path would ever reopen the gate and
       // regenerate would be dead for the rest of a direct caller's session.
-      this.messagesConversationId = conversationId ?? null;
+      // From the snapshot, not from `conversationId ?? null`: the relocation
+      // only runs under `if (conversationId)`, so that fallback was dead and
+      // read as though the id could be absent here.
+      this.messagesConversationId = relocatedFrom.target;
     } else if (
       relocatedFrom &&
       this.jobsCreated === jobsBefore &&
@@ -545,7 +550,7 @@ export class ChatSession {
       lastMsg.conversationId = conversationId;
       await this.storage.addMessage(lastMsg, conversationId).catch(() => {});
     }
-    const messageId = job.message_id;
+    const promptMessageId = job.message_id;
     // Reconcile the local id with the server's. `send` minted a client id that
     // the backend never sees, so nothing downstream could ever match the two —
     // which forced acknowledgement to be guessed from role+content, and no
@@ -554,13 +559,13 @@ export class ChatSession {
     // The job response carries the real id, so take it and the question
     // becomes exact.
     if (
-      messageId &&
+      promptMessageId &&
       lastMsg?.role === "user" &&
       this.pendingUserMessages.has(lastMsg.id)
     ) {
       this.pendingUserMessages.delete(lastMsg.id);
-      lastMsg.id = messageId;
-      this.pendingUserMessages.set(messageId, ++this.serverRowsKnown);
+      lastMsg.id = promptMessageId;
+      this.pendingUserMessages.set(promptMessageId, ++this.serverRowsKnown);
     }
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();
@@ -568,7 +573,7 @@ export class ChatSession {
     await this.consumeEventStream(
       job.job_id,
       conversationId,
-      messageId,
+      promptMessageId,
       true, // executeClientTools
     );
   }
@@ -580,7 +585,7 @@ export class ChatSession {
   private async consumeEventStream(
     jobId: string,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
     // Capture the signal ONCE. detach()/disconnect() abort the controller and
@@ -618,7 +623,7 @@ export class ChatSession {
         sawTerminal = await this.pumpStream(
           stream,
           conversationId,
-          messageId,
+          promptMessageId,
           executeClientTools,
           () => attemptController.abort(),
         );
@@ -668,7 +673,7 @@ export class ChatSession {
   private async pumpStream(
     stream: AsyncGenerator<{ data: string }>,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
     executeClientTools: boolean,
     onStall?: () => void,
   ): Promise<boolean> {
@@ -736,7 +741,7 @@ export class ChatSession {
         await this.dispatchWireEvent(
           parsed,
           conversationId,
-          messageId,
+          promptMessageId,
           executeClientTools,
         );
       }
@@ -791,12 +796,12 @@ export class ChatSession {
   private async dispatchWireEvent(
     wire: WireEvent,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
     executeClientTools: boolean,
   ): Promise<void> {
     // Side effects that depend on mutable session state must run before the
     // ChatEvent is emitted so consumers see a consistent view.
-    this.applyWireSideEffects(wire, conversationId, messageId);
+    this.applyWireSideEffects(wire, conversationId, promptMessageId);
 
     const event = translateWireEvent(wire);
     if (event) {
@@ -830,7 +835,9 @@ export class ChatSession {
         // re-executing the tool on a transient network blip.
         await this.submitToolResultWithRetry({
           conversation_id: conversationId,
-          message_id: messageId,
+          // The message that TRIGGERED the tool calls, which is what the
+          // backend stores it against — the prompt id, correctly.
+          message_id: promptMessageId,
           tool_results: results,
         });
         // Marked only after a successful submit, so a drop mid-POST re-runs it.
@@ -859,14 +866,20 @@ export class ChatSession {
    * the pure wire → ChatEvent mapping can live in translate.ts and be reused
    * by the replay path.
    *
-   * ``messageId`` is the server-assigned assistant message id for the current
-   * turn; empty in the reconnect and conversation-switch replay paths where
-   * messages have already been loaded from REST and shouldn't be re-pushed.
+   * ``promptMessageId`` is the id of the USER turn that started this job —
+   * `POST /v1/jobs` returns it and the backend tags the prompt with it
+   * (`HumanMessage(content=..., id=message_id)`), which is what lets a restore
+   * pair a job with its prompt by id instead of by position. It was previously
+   * documented here as the ASSISTANT's id and used as one; there is no
+   * server-assigned assistant id on the wire, so that row gets a local one.
+   * Empty in the reconnect and conversation-switch replay paths, where the
+   * messages have already been loaded from REST and must not be re-pushed —
+   * so it doubles as the "is this a live send?" gate.
    */
   private applyWireSideEffects(
     wire: WireEvent,
     conversationId: string,
-    messageId: string,
+    promptMessageId: string,
   ): void {
     switch (wire.type) {
       case "message_start":
@@ -909,11 +922,20 @@ export class ChatSession {
         return;
 
       case "message_stop":
-        // Only record the assistant message when we have the server's
-        // message id. Reconnect/replay paths load messages via REST instead.
-        if (messageId) {
+        // Only record the assistant message on a live send — a non-empty
+        // prompt id IS that signal. Reconnect/replay paths load messages via
+        // REST instead.
+        if (promptMessageId) {
           const assistantMessage: Message = {
-            id: messageId,
+            // NOT `promptMessageId`: that is the user turn's id, and
+            // `consumeJobStream` now stamps the local user message with it.
+            // Sharing it put two rows in `this.messages` under one id, which
+            // makes `pendingUserMessages` (id-keyed) match the assistant row
+            // as a pending PROMPT and leaves `regenerate` unable to tell the
+            // two apart. The server's own assistant id is not on the wire, so
+            // this row is local until a REST load replaces it — the same
+            // status every other locally-pushed row has.
+            id: generateId(),
             conversationId,
             role: "assistant",
             content: this.accumulatedText,

@@ -80,7 +80,10 @@ export function planRestore(args: {
   const linkOf = (j: RestoreJob): number | undefined =>
     j.message_id ? byId.get(j.message_id) : undefined;
 
-  const positional = (jobs: RestoreJob[], msgs: RestoreMessage[]): ReplayStep[] =>
+  const positional = (
+    jobs: RestoreJob[],
+    msgs: RestoreMessage[],
+  ): ReplayStep[] =>
     jobs.map((job, i) => ({
       kind: "turn" as const,
       jobId: job.job_id,

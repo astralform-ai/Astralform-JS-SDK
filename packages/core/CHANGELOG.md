@@ -1,5 +1,66 @@
 # Changelog
 
+## 5.0.0
+
+### BREAKING CHANGES
+
+**`send({ conversationId })` now relocates the session instead of addressing one turn.**
+
+Previously it posted a turn to another conversation and left the session where it
+was. It now sets `session.conversationId`, **discards `session.messages`**, and
+invalidates any `loadConversation` still in flight. A direct `ChatSession`
+consumer using the old semantics — send a turn to a side conversation, keep
+rendering the current one — loses its message list on upgrade, with no error.
+
+The old behaviour was not safe to keep: `onSessionEvent` tags every emitted
+event with `session.conversationId`, so leaving the pointer behind filed the
+send's OWN stream events under the conversation the caller had just addressed
+away from, and `regenerate` resent a list belonging to a different conversation
+than the one `send` posts to.
+
+**Migration** — if you need the target's history after the send:
+
+```ts
+await session.send(text, { conversationId: id });
+await session.loadConversation(id);
+```
+
+Callers going through `StreamManager` are unaffected: it passes its own active
+conversation, so the value already matches and no relocation happens.
+
+### Fixed
+
+**A conversation switch the user has moved on from now stops instead of
+finishing.** `restore` is a chain of awaits — the active-job probe, the message
+list, the job list, then every completed turn's events in parallel — and clicks
+are not serialized. A superseded restore ran to completion, re-pointed the
+session at the conversation being replayed, and poured its whole history out of
+the event stream into the one on screen. A monotonic generation, claimed
+synchronously by `setActiveConversation` and checked at every await boundary and
+per-turn inside the replay loop, ends it at the first check after the switch.
+
+Fixed along the same seam:
+
+- **Status, plan, and note documents no longer follow the user between
+  conversations.** Together with `@astralform/chat`'s per-conversation document
+  buckets, this is the client half of a status panel binding to the wrong
+  conversation.
+- **`createConversation` and `deleteConversation` invalidate a load in flight.**
+  Both move `conversationId`, so a fetch landing afterwards used to reinstall
+  the previous conversation's list under the new id — and because `regenerate`
+  gates on that pairing, nothing reopened it for the rest of the session.
+- **A restore no longer announces an idle composer over a live send.** On both
+  the fast path and the active-job branch, a send landing during the probe kept
+  the composer readable as ready for the whole turn, after which the next send
+  was swallowed by `ChatSession.send`'s own `isStreaming` bail with no error.
+- **A completed turn no longer puts two messages under one id.** `job.message_id`
+  is the PROMPT's id; the assistant row was being pushed under it too. The user
+  turn now carries it — which is what lets a restore pair a job to its prompt by
+  id rather than by position — and the assistant row gets its own.
+- **Deleting a conversation with a parked background job emits
+  `backgroundJobsChanged`,** so a running-job badge cannot outlive the
+  conversation it points at.
+
 ## 4.9.0
 
 **A turn can now be put in video mode.** The backend has accepted `video_mode` on `POST /v1/jobs` since Astralform 0.67.0, but `send()` builds the request body field by field — so a client passing `videoMode` had it silently dropped, ran an ordinary turn, and waited for a clip nobody had requested. There was nothing on the wire to explain why.
