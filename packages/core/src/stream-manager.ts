@@ -350,21 +350,22 @@ export class StreamManager {
     // before `conversationChanged` has fired. `switchTo` detaches while the
     // pointer is still the old one; this is the parity that comment claimed.
     this.detachStreamingTurn();
-    // Read after `detachStreamingTurn`, which emits — a handler re-entering on
-    // `backgroundJobsChanged` is inside the same window.
-    const gen = this.generation;
     const id = await this.session.createNewConversation();
     // A `switchTo` landing inside that await claimed the newer generation, and
     // relocating over it would bump the generation out from under its restore:
     // the consumer sees `conversationChanged: B` followed by this one, and B
     // never restores. Last writer wins, everywhere.
     //
-    // `createNewConversation` declines its own relocation under the same
-    // condition, so the two halves agree. They have to: this check alone left
-    // the manager on B with the session on the new id, which is worse than
-    // either outcome because `switchTo` early-returns on B and the user cannot
-    // click their way out of it.
-    if (gen !== this.generation) return id;
+    // Read the SESSION's outcome rather than deriving a second opinion from
+    // our own counter. The two are not equivalent in both directions:
+    // `setActiveConversation` bumps both, so a superseded manager implies a
+    // declining session — but `loadConversation` and a relocating `send` bump
+    // `loadGeneration` ALONE, so the session can decline while our generation
+    // is untouched and we would relocate over it. Either mismatch leaves the
+    // manager and the session naming different conversations, which is worse
+    // than either outcome alone: `switchTo` early-returns on the one it thinks
+    // is active, so the user cannot click their way out.
+    if (this.session.conversationId !== id) return id;
     this.setActiveConversation(id);
     // Settle the state here. `setActiveConversation` bumps the generation, so
     // a restore this supersedes now returns WITHOUT emitting — including
@@ -396,7 +397,8 @@ export class StreamManager {
     // ordering fault as `createConversation` had. It also stops the job a
     // round-trip sooner.
     const wasActive = this._activeConversationId === id;
-    if (wasActive && this._state === "streaming") {
+    const cancelled = wasActive && this._state === "streaming";
+    if (cancelled) {
       // NOT `disconnect()`: it ends in `protocols.clear()`, dropping every
       // registered `ProtocolAdapter` for the rest of the session. The SDK
       // never auto-registers them — a consumer wires them up after `connect()`
@@ -409,15 +411,29 @@ export class StreamManager {
           .catch(() => {});
       }
       this.session.detach();
+      // `detach()` does not do this and `disconnect()` did — without it the
+      // session still names a job that was just cancelled on a conversation
+      // that no longer exists, so `stop()` re-issues `cancelJob` against it.
+      this.session.currentJobId = null;
       this._state = "idle"; // cancelled, not parked — recorded, not announced
     }
-    // Swallowed, matching how the client-side failure is already treated
-    // ("may already be deleted"). The cancel above has run and recorded
-    // `_state = "idle"` WITHOUT announcing, so letting a rejecting
-    // `ChatStorage` propagate would leave the consumer's last `stateChange` at
-    // `streaming` on a conversation that is neither deleted nor streaming, and
-    // skip the `_backgroundJobs` cleanup below.
-    await this.session.deleteConversation(id).catch(() => {});
+    try {
+      await this.session.deleteConversation(id);
+    } catch (err) {
+      // The delete did NOT happen: `ChatSession.deleteConversation` guards only
+      // the API call, so a rejecting `ChatStorage` throws before it filters
+      // `conversations` or nulls the pointer. Relocating here would announce a
+      // deletion that never occurred, against a session that still lists the
+      // conversation and still holds its messages.
+      //
+      // But the cancel above already tore the stream down and recorded `idle`
+      // WITHOUT announcing, so that much has to be announced or the composer
+      // stays spinning on a conversation that is neither deleted nor
+      // streaming. Announce, relocate nothing, and let the caller see the
+      // failure — swallowing it reports success for work that did not happen.
+      if (cancelled) this.setState("idle");
+      throw err;
+    }
     // Re-tested, not `wasActive`: that was read before a real DELETE, and
     // relocating on it would overwrite a switch that landed during the
     // round-trip and bump the generation out from under its restore.

@@ -2888,12 +2888,16 @@ describe("a send that lands in the probe window keeps its own text", () => {
 });
 
 describe("a rejecting storage does not strand the delete half-done", () => {
-  it("still announces and cleans up when deleteConversation throws", async () => {
-    // The cancel now runs BEFORE the delete and records `_state = "idle"`
-    // without announcing. If the delete then throws, the consumer's last
-    // `stateChange` is still `streaming` on a conversation that is neither
-    // deleted nor streaming, and `_backgroundJobs` is never cleaned.
-    // `ChatStorage` is a public interface, so this is a consumer's to trip.
+  it("announces the cancelled stream but reports the failure", async () => {
+    // Two failures to avoid at once. The cancel runs BEFORE the delete and
+    // records `_state = "idle"` without announcing, so letting the rejection
+    // through untouched leaves the consumer's last `stateChange` at
+    // `streaming` on a conversation that is neither deleted nor streaming.
+    // But swallowing it reports success for a delete that did not happen —
+    // `ChatSession.deleteConversation` guards only the API call, so the
+    // conversation is still listed and still holds its messages.
+    //
+    // So: announce what actually changed, relocate nothing, and rethrow.
     const held = gate();
     const session = new ChatSession(
       {
@@ -2946,13 +2950,18 @@ describe("a rejecting storage does not strand the delete half-done", () => {
     expect(manager.state).toBe("streaming");
 
     manager.on((e) => seen.push(e));
-    await expect(manager.deleteConversation("conv-a")).resolves.toBeUndefined();
+    await expect(manager.deleteConversation("conv-a")).rejects.toThrow(
+      "storage unavailable",
+    );
 
+    // The stream really was torn down, so that much is announced...
     expect(manager.state).toBe("idle");
     expect(
       seen.some((e) => e.type === "stateChange" && e.state === "idle"),
     ).toBe(true);
-    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+    // ...but nothing claims the conversation is gone, because it is not.
+    expect(manager.activeConversationId).toBe("conv-a");
+    expect(seen.some((e) => e.type === "conversationChanged")).toBe(false);
 
     held.open();
   });
@@ -3244,6 +3253,119 @@ describe("deleting a conversation does not tear down the session", () => {
     expect(session.protocols.has("application/vnd.astralform.a2ui+json")).toBe(
       true,
     );
+
+    held.open();
+  });
+});
+
+describe("the create halves agree in both directions", () => {
+  it("declines the manager's move when the session declined its own", async () => {
+    // The counters are not equivalent. `setActiveConversation` bumps both, so
+    // a superseded manager implies a declining session — but `loadConversation`
+    // bumps `loadGeneration` ALONE, so the session can decline while the
+    // manager's generation is untouched, and the manager relocates over it.
+    //
+    // Ordinary two-click sequence: switch to A, then "New chat" while A's
+    // restore is still on its probe. A's `loadConversation` fires inside the
+    // storage create and bumps `loadGeneration`; the session then declines and
+    // the manager, reading only its own counter, did not.
+    const probe = gate();
+    const slowCreate = gate();
+    const session = new ChatSession(
+      {
+        ...baseConfig,
+        fetch: async (input) => {
+          const url =
+            typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/conv-a/active-job")) {
+            await probe.wait;
+            return json({ job_id: null, status: "none" });
+          }
+          if (url.includes("/active-job"))
+            return json({ job_id: null, status: "none" });
+          return json([]);
+        },
+      },
+      {
+        createConversation: async (id: string) => {
+          await slowCreate.wait;
+          return {
+            id,
+            title: "",
+            createdAt: "",
+            updatedAt: "",
+            messageCount: 0,
+          };
+        },
+        fetchConversations: async () => [],
+        fetchMessages: async () => [],
+        addMessage: async () => {},
+        updateConversationTitle: async () => {},
+        deleteConversation: async () => {},
+      } as never,
+    );
+    const manager = new StreamManager(session);
+
+    const restoring = manager.switchTo("conv-a");
+    await flush(); // parked on A's active-job probe
+
+    const creating = manager.createConversation();
+    await flush(); // parked inside storage.createConversation
+
+    probe.open(); // A's restore resumes → loadConversation(A) bumps loadGeneration
+    await flush();
+
+    slowCreate.open();
+    const created = await creating;
+    await flush();
+
+    // The session declined, so the manager must have too.
+    expect(session.conversationId).toBe("conv-a");
+    expect(manager.activeConversationId).toBe("conv-a");
+    expect(manager.activeConversationId).not.toBe(created);
+
+    await restoring;
+  });
+
+  it("nulls the job id when deleting the streaming conversation", async () => {
+    // `detach()` does not clear `currentJobId` and `disconnect()` did, so
+    // dropping to the narrower pair left the session naming a job that was
+    // just cancelled on a conversation that no longer exists.
+    const held = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait;
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn");
+    await flush();
+    expect(session.currentJobId).toBe("job-a");
+
+    await manager.deleteConversation("conv-a");
+    await flush();
+
+    expect(session.currentJobId).toBeNull();
 
     held.open();
   });
