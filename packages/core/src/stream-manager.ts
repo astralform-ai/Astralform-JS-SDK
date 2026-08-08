@@ -383,7 +383,22 @@ export class StreamManager {
       const supersededOntoSame =
         gen !== this.generation &&
         this._activeConversationId === conversationId;
-      if (parkedJobId !== undefined && !tookOver && !supersededOntoSame) {
+      // ...and not for a conversation that was DELETED while we were parked.
+      // `deleteConversation` cancels the parked job by reading
+      // `_backgroundJobs.get(id)`, which this switch had already emptied — so
+      // it found nothing to cancel, and putting the entry back afterwards
+      // leaves a running job nothing can stop plus a badge on a conversation
+      // no longer in the list. Exactly the harm the cancel branch argues
+      // against, reached through the delete path.
+      const stillExists = this.session.conversations.some(
+        (c) => c.id === conversationId,
+      );
+      if (
+        parkedJobId !== undefined &&
+        !tookOver &&
+        !supersededOntoSame &&
+        stillExists
+      ) {
         this._backgroundJobs.set(conversationId, parkedJobId);
         this.emit({
           type: "backgroundJobsChanged",
@@ -736,11 +751,16 @@ export class StreamManager {
             job_id: j.job_id,
             message_id: j.message_id,
           })),
-          // EVERY job, not just the completed ones. A send landing in the probe
-          // window has a RUNNING job, so its prompt is claimed — without this
-          // it reads as a steer and replays as a duplicate bubble over the one
-          // the live send already rendered.
-          claimedMessageIds: jobs.map((j) => j.message_id),
+          // Completed jobs PLUS the ones still going. A send landing in the
+          // probe window has a running job, so its prompt is claimed and does
+          // not read as a steer replayed over the bubble the live send already
+          // rendered. Failed and cancelled jobs are deliberately NOT claimed:
+          // they produce no `turn` step, so claiming them would delete the
+          // user's prompt from the restore entirely rather than show it as a
+          // steer.
+          claimedMessageIds: jobs
+            .filter((j) => j.status !== "failed" && j.status !== "cancelled")
+            .map((j) => j.message_id),
           userMessages: userMessages.map((m) => ({
             id: m.id,
             content: m.content,

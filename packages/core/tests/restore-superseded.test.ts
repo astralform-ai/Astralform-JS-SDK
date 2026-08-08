@@ -4259,3 +4259,118 @@ describe("every teardown path announces what it recorded", () => {
     held.open();
   });
 });
+
+describe("a deleted conversation gets no badge back", () => {
+  it("does not re-park a job for a conversation deleted mid-restore", async () => {
+    // `deleteConversation` cancels the parked job by reading
+    // `_backgroundJobs.get(id)` — which the switch had already emptied, so it
+    // found nothing. Putting the entry back afterwards leaves a job nothing
+    // can stop and a badge on a conversation no longer in the list.
+    const held = gate();
+    const probeA = gate();
+    let aProbes = 0;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events")) {
+          await held.wait;
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "job-a",
+            conversation_id: "conv-a",
+            message_id: "m1",
+            status: "queued",
+          });
+        if (url.includes("/conv-a/active-job")) {
+          aProbes += 1;
+          if (aProbes > 1) await probeA.wait; // the return trip parks here
+          return json({ job_id: null, status: "none" });
+        }
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-a");
+    void manager.send("start a turn on A");
+    await flush();
+    await manager.switchTo("conv-b"); // parks job-a
+    await flush();
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+
+    const backToA = manager.switchTo("conv-a"); // clears the entry, parks on probe
+    await flush();
+
+    await manager.deleteConversation("conv-a"); // A is gone
+    probeA.open();
+    await backToA;
+    await flush();
+
+    // Nothing may point at a conversation that no longer exists.
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+    held.open();
+  });
+});
+
+describe("the restore claim set is built from the right jobs", () => {
+  it("still replays the prompt of a failed turn", async () => {
+    // Call-site coverage for `claimedMessageIds`. Claiming EVERY job's id
+    // removed a failed turn's prompt from the restore entirely: no `turn` step
+    // (it never completed) and no `steer` step (its id was claimed), so the
+    // user's text vanished on reload. The unit test in restore-plan.test.ts
+    // pins the rule; this pins the argument the manager actually passes.
+    const events: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/active-job"))
+          return json({ job_id: null, status: "none" });
+        if (url.includes("/conv-a/jobs"))
+          return json([
+            { job_id: "j-ok", status: "completed", message_id: "m-old" },
+            { job_id: "j-bad", status: "failed", message_id: "m-failed" },
+          ]);
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-old",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "first turn",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "m-failed",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "the one that errored",
+              created_at: "2026-01-01T00:00:01Z",
+            },
+          ]);
+        if (url.includes("/conv-a/events")) return json([]);
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+    manager.on((e) => {
+      if (e.type === "event" && e.event.type === "user_message") {
+        events.push((e.event as { content: string }).content);
+      }
+    });
+
+    await manager.switchTo("conv-a");
+    await flush();
+
+    // The failed turn's prompt must survive the reload.
+    expect(events).toContain("the one that errored");
+  });
+});

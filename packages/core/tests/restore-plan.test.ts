@@ -217,3 +217,27 @@ describe("a prompt whose turn is still running is not a steer", () => {
     expect(plan.filter((s) => s.kind === "steer")).toHaveLength(1);
   });
 });
+
+describe("a failed turn's prompt is not swallowed", () => {
+  it("still reports it as a steer when its job never completed", () => {
+    // Claiming EVERY job's id (rather than the non-terminal ones) removed the
+    // prompt from the restore entirely: a failed job produces no `turn` step,
+    // so claiming its id meant no `steer` step either and the user's text
+    // vanished from history on reload. Worse than the duplicate bubble the
+    // claim set was introduced to fix.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m-old" }],
+      claimedMessageIds: ["m-old"], // m-failed's job is terminal — not claimed
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-failed", content: "the one that errored" },
+      ],
+    });
+
+    const steers = plan.filter((s) => s.kind === "steer");
+    expect(steers).toHaveLength(1);
+    expect((steers[0] as { content: string }).content).toBe(
+      "the one that errored",
+    );
+  });
+});
