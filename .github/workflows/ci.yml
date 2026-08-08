@@ -18,9 +18,16 @@ on:
   push:
     branches: [main]
 
+#
+# Cancelling is PR-ONLY, and the condition is load-bearing. On `push: main` the
+# group key falls back to `github.ref` — `ci-refs/heads/main` for every main push,
+# since `github.event.pull_request.number` is empty there. With unconditional
+# cancellation, merging two PRs a few minutes apart kills the first commit's run,
+# and main ends up carrying commits whose CI never completed. On a PR the newer
+# push genuinely supersedes the older one; on main each commit is its own subject.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -42,6 +49,11 @@ jobs:
     # The same rule is why the shared reviewer's callers only pass
     # `runner: self-hosted` from the private repos.
     runs-on: ubuntu-latest
+    # GitHub's default is 360 minutes. Less urgent here than on the private repos
+    # — a hosted runner is elastic and nobody else is waiting behind it — but a
+    # job that hangs for six hours is never the outcome anyone wanted, and this
+    # one finishes in about twenty seconds.
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v6
