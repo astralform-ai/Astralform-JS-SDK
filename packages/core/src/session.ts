@@ -383,7 +383,18 @@ export class ChatSession {
     }
     this.messages.push(userMessage);
     // 0: no job response yet, so the server may not hold this row at all.
-    if (conversationId) this.pendingUserMessages.set(userMessage.id, 0);
+    //
+    // Unconditional. Gated on `conversationId`, the auto-created-conversation
+    // path (a direct `session.send("hi")` with no conversation anywhere) was
+    // the one branch outside this machinery: `consumeJobStream`'s
+    // reconciliation keys off membership here, so that row kept its client id
+    // even though the job response had just returned the server's — leaving it
+    // unprotected by the merge below and feeding `resendFromCheckpoint` an id
+    // the server never issued. The window where an entry would be wrong is
+    // already excluded: `loadConversation` filters on `m.conversationId === id`
+    // and this row's is `""` until `consumeJobStream` backfills it, which it
+    // does immediately before the reconciliation.
+    this.pendingUserMessages.set(userMessage.id, 0);
 
     const request: ChatStreamRequest = {
       message: content,

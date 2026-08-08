@@ -60,18 +60,19 @@ Fixed along the same seam:
 - **Deleting a conversation with a parked background job emits
   `backgroundJobsChanged`,** so a running-job badge cannot outlive the
   conversation it points at.
+
 ## 4.9.1
 
-**A dropped SSE stream can no longer hang a turn forever.** A dead HTTP/3 (QUIC) connection leaves `reader.read()` pending indefinitely — no bytes, no error, no FIN. The existing reconnect loop only engages on a *rejected* or *cleanly closed* stream, so it never fired: the turn sat on "working" with no recovery path and no way for a client to tell it apart from a slow model. Seen in production as `ERR_QUIC_PROTOCOL_ERROR` on `/v1/jobs/{id}/events`.
+**A dropped SSE stream can no longer hang a turn forever.** A dead HTTP/3 (QUIC) connection leaves `reader.read()` pending indefinitely — no bytes, no error, no FIN. The existing reconnect loop only engages on a _rejected_ or _cleanly closed_ stream, so it never fired: the turn sat on "working" with no recovery path and no way for a client to tell it apart from a slow model. Seen in production as `ERR_QUIC_PROTOCOL_ERROR` on `/v1/jobs/{id}/events`.
 
 `pumpStream` now runs a stall watchdog. The backend emits a keepalive every 15s, so a healthy stream never goes quiet for long; if no event arrives for **45s** the stream is treated as a zombie, the connection is aborted, and a `ConnectionError` feeds the existing reconnect-from-`lastSeq` loop. Recovery is transparent — the turn resumes from the last seq and completes.
 
 Two things worth knowing if you tune this:
 
-- **It depends on the keepalive's framing, not just its interval.** The backend sends `keepalive` as a typed wire event, so it reaches the SSE parser as a real `data:` line and resets the timer. A bare `: keepalive` SSE *comment* would be swallowed by the parser and the watchdog would fire on every healthy turn that thinks for 45s.
+- **It depends on the keepalive's framing, not just its interval.** The backend sends `keepalive` as a typed wire event, so it reaches the SSE parser as a real `data:` line and resets the timer. A bare `: keepalive` SSE _comment_ would be swallowed by the parser and the watchdog would fire on every healthy turn that thinks for 45s.
 - **Time-to-give-up is now ~5.5 min, not ~17s.** The 17.5s figure is the backoff sum (0.5+1+2+4+5+5). A stalled attempt burns 45s before it even registers as a failure, so all 7 attempts stalling is 7 × 45s + 17.5s. That is deliberate: a stalled stream is indistinguishable from a slow one until the watchdog fires, and a shorter window would kill healthy long-running turns.
 
-Also fixed: `disconnect()` / `detach()` during reconnect backoff could let one more `/events` request go out. The per-attempt `AbortController` is linked to the session signal by an `abort` *listener*, and a signal aborted while the loop was sleeping has already dispatched that event — so the listener never fired and the fresh controller stayed live. That attempt reached the network, emitted `ChatEvent`s to lingering handlers, and could run a client tool on a session the caller believed was gone. The loop now bails up front when the signal is already aborted, restoring the short-circuit that passing the outer signal straight to `fetch` used to provide.
+Also fixed: `disconnect()` / `detach()` during reconnect backoff could let one more `/events` request go out. The per-attempt `AbortController` is linked to the session signal by an `abort` _listener_, and a signal aborted while the loop was sleeping has already dispatched that event — so the listener never fired and the fresh controller stayed live. That attempt reached the network, emitted `ChatEvent`s to lingering handlers, and could run a client tool on a session the caller believed was gone. The loop now bails up front when the signal is already aborted, restoring the short-circuit that passing the outer signal straight to `fetch` used to provide.
 
 ## 4.9.0
 
@@ -84,11 +85,11 @@ Also fixed: `disconnect()` / `detach()` during reconnect backoff could let one m
 
 **Which backend you need, precisely** — `video_mode` being accepted is not the same as a clip arriving:
 
-| Needs | Backend |
-|---|---|
-| `video_mode` accepted on `POST /v1/jobs` | ≥ 0.67.0 |
-| A clip that actually completes | **> 0.67.0** — a ~232 s generation cannot cross Cloudflare's ~126 s origin timeout, so on 0.67.0 it fails with a 524. Fixed by the submit+poll transport, unreleased at time of writing. |
-| `AgentStatus.capabilities` reporting `video`, to gate the affordance | **> 0.67.0** — also unreleased at time of writing. |
+| Needs                                                                | Backend                                                                                                                                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `video_mode` accepted on `POST /v1/jobs`                             | ≥ 0.67.0                                                                                                                                                                                 |
+| A clip that actually completes                                       | **> 0.67.0** — a ~232 s generation cannot cross Cloudflare's ~126 s origin timeout, so on 0.67.0 it fails with a 524. Fixed by the submit+poll transport, unreleased at time of writing. |
+| `AgentStatus.capabilities` reporting `video`, to gate the affordance | **> 0.67.0** — also unreleased at time of writing.                                                                                                                                       |
 
 Gate on the capability the same way image mode does. Until a backend carrying it ships, the key is simply absent, which reads as hidden — so a client written against this is correct now and lights up on its own when the backend catches up.
 
@@ -127,7 +128,7 @@ The write is server-first rather than optimistic, unlike `deleteConversation`. A
 
 ## 4.6.0
 
-**A client could learn an agent has image generation but had no way to ask for it.** 4.5.0 forwarded `AgentStatus.capabilities`, so a UI could finally tell whether to offer image generation — but `send()` mapped its options field by field and had no image flag, so the request went out as an ordinary turn. The backend attaches the image tool *only* on a turn that asks for it, so the agent had nothing to call and the affordance did nothing.
+**A client could learn an agent has image generation but had no way to ask for it.** 4.5.0 forwarded `AgentStatus.capabilities`, so a UI could finally tell whether to offer image generation — but `send()` mapped its options field by field and had no image flag, so the request went out as an ordinary turn. The backend attaches the image tool _only_ on a turn that asks for it, so the agent had nothing to call and the affordance did nothing.
 
 - `SendOptions.imageMode` → `image_mode` on the job request. Needs Astralform ≥ 0.59.0, where the backend began accepting the field.
 - Off by default and per-message: generating costs the developer real money at a third-party provider, so the agent does not get to decide on its own that a picture would be nice. An unset flag is omitted from the body rather than sent as `false`.
@@ -139,7 +140,7 @@ Gate the affordance on `AgentStatus.capabilities` (4.5.0) — an agent with no p
 **The agent's capability list never reached consumers.** The backend reports which capabilities an agent actually has — so a client can offer image generation only where a provider is configured, rather than rendering a control that fails on send — but `getAgentStatus()` mapped the response field by field and `capabilities` was not one of them. The field was dropped in the mapper, which downstream is indistinguishable from the agent not having the capability at all.
 
 - `AgentStatus.capabilities: AgentCapability[]` — `{ key, enabled }`, exported as `AgentCapability`. Needs Astralform ≥ 0.61.0; older servers omit the field.
-- Defaults to `[]`, never `undefined`, so a caller can iterate without a guard and a server predating the field reads as *reports nothing* rather than throwing.
+- Defaults to `[]`, never `undefined`, so a caller can iterate without a guard and a server predating the field reads as _reports nothing_ rather than throwing.
 - Entries with no usable `key` are dropped and `enabled` is coerced. `""` counts as no key: a capability with no name cannot be matched against and would render as an unlabelled row.
 
 Treat an **absent key as "not reported", never as disabled.** The backend only reports capabilities with a real per-agent gate — always-on ones are deliberately omitted, since a constant tells a client nothing. A consumer that reads a missing key as `false` will hide a working feature on any server that does not report it.
@@ -220,15 +221,15 @@ The offset is derived from the ids the **server** has returned, not from `conver
 
 **Breaking: project → agent rename.** Astralform no longer has a project level — the hierarchy is account → team → **agents**. The SDK surface renames accordingly, with no deprecated aliases (clean cut, matching backend `0.14.0+` which serves `GET /v1/teams/{team_id}/agents` only):
 
-| 1.x | 2.0 |
-|-----|-----|
-| `listProjects(teamId)` | `listAgents(teamId)` |
-| `ProjectSummary` | `TeamAgentSummary` |
-| `projectId` (config option + getter) | `agentId` |
-| `updateProjectId(id)` | `updateAgentId(id)` |
-| `getProjectStatus()` | `getAgentStatus()` |
-| `ProjectStatus` | `AgentStatus` |
-| `session.projectStatus` | `session.agentStatus` |
+| 1.x                                  | 2.0                   |
+| ------------------------------------ | --------------------- |
+| `listProjects(teamId)`               | `listAgents(teamId)`  |
+| `ProjectSummary`                     | `TeamAgentSummary`    |
+| `projectId` (config option + getter) | `agentId`             |
+| `updateProjectId(id)`                | `updateAgentId(id)`   |
+| `getProjectStatus()`                 | `getAgentStatus()`    |
+| `ProjectStatus`                      | `AgentStatus`         |
+| `session.projectStatus`              | `session.agentStatus` |
 
 Wire compatibility: the HTTP surface the SDK speaks is unchanged except discovery — `listAgents()` calls `/v1/teams/{team_id}/agents` (the 1.x `/projects` path no longer exists on the backend, which is why 1.x's picker flow 404s). `X-Project-ID` and `/v1/project/status` remain the wire names for agent scoping/readiness until a coordinated protocol rename.
 
@@ -251,15 +252,18 @@ Because the 0.2.x line exposed an unstable preview, this version does include br
 new AstralformClient({ apiKey: "sk_live_...", userId: "<end-user-id>" });
 
 // User-token mode (apps acting on behalf of an Astralform account holder):
-new AstralformClient({ accessToken: "<OIDC access token>", projectId: "<project>" });
+new AstralformClient({
+  accessToken: "<OIDC access token>",
+  projectId: "<project>",
+});
 ```
 
 Header shape per mode:
 
-| Mode | `Authorization` | Identity header |
-|------|-----------------|-----------------|
-| API-key | `Bearer sk_...` | `X-End-User-ID` |
-| User-token | `Bearer <JWT>` | `X-Project-ID` |
+| Mode       | `Authorization` | Identity header |
+| ---------- | --------------- | --------------- |
+| API-key    | `Bearer sk_...` | `X-End-User-ID` |
+| User-token | `Bearer <JWT>`  | `X-Project-ID`  |
 
 New instance methods on user-token clients:
 

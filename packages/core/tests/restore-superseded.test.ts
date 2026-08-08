@@ -2332,3 +2332,133 @@ describe("deleting a conversation with a parked job tells the consumer", () => {
     held.open();
   });
 });
+
+describe("delete and create lose to a switch that lands in their await", () => {
+  /** Storage whose create/delete are real round-trips, as any non-memory
+   *  `ChatStorage` implementation would be. */
+  function slowStorage(hold: Promise<void>) {
+    return {
+      createConversation: async (id: string) => {
+        await hold;
+        return {
+          id,
+          title: "",
+          createdAt: "",
+          updatedAt: "",
+          messageCount: 0,
+        };
+      },
+      fetchConversations: async () => [],
+      fetchMessages: async () => [],
+      addMessage: async () => {},
+      updateConversationTitle: async () => {},
+      deleteConversation: async () => {
+        await hold;
+      },
+    } as never;
+  }
+
+  const plainBackend: typeof globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : (input as Request).url;
+    if (url.includes("/active-job"))
+      return json({ job_id: null, status: "none" });
+    return json([]);
+  };
+
+  it("deleting the active conversation does not cancel a newer switch", async () => {
+    // `wasActive` is read before a real DELETE and acted on after it, so this
+    // is the one relocation that is not last-writer-wins. "Delete the one I'm
+    // on, then pick another from the list" is ordinary: the stale read makes
+    // `setActiveConversation(null)` overwrite the newer switch AND bump the
+    // generation out from under its restore, so B never restores and the user
+    // clicks it again.
+    const held = gate();
+    const session = new ChatSession(
+      { ...baseConfig, fetch: plainBackend },
+      slowStorage(held.wait),
+    );
+    const manager = new StreamManager(session);
+    const seen: StreamManagerEvent[] = [];
+
+    await manager.switchTo("conv-a");
+    manager.on((e) => seen.push(e));
+
+    const deleting = manager.deleteConversation("conv-a");
+    await flush();
+    const switching = manager.switchTo("conv-b"); // lands inside the DELETE
+    await flush();
+
+    held.open();
+    await deleting;
+    await switching;
+    await flush();
+
+    expect(manager.activeConversationId).toBe("conv-b");
+    // ...and B's own restore was allowed to finish rather than being
+    // superseded by a pointer move decided before it existed.
+    expect(
+      seen
+        .filter((e) => e.type === "conversationChanged")
+        .map((e) => (e as { conversationId: string | null }).conversationId),
+    ).toEqual(["conv-b"]);
+  });
+
+  it("creating a conversation does not cancel a newer switch", async () => {
+    // Same shape, shorter window: `createNewConversation` is awaited, and
+    // `ChatStorage` is a public interface — an IndexedDB implementation makes
+    // that a real round-trip.
+    const held = gate();
+    const session = new ChatSession(
+      { ...baseConfig, fetch: plainBackend },
+      slowStorage(held.wait),
+    );
+    const manager = new StreamManager(session);
+
+    const creating = manager.createConversation();
+    await flush();
+    const switching = manager.switchTo("conv-b"); // lands inside the create
+    await flush();
+
+    held.open();
+    const created = await creating;
+    await switching;
+    await flush();
+
+    expect(manager.activeConversationId).toBe("conv-b");
+    // The conversation is still created and still returned — only the pointer
+    // move is dropped.
+    expect(created).toBeTruthy();
+  });
+});
+
+describe("a send with no conversation is inside the machinery too", () => {
+  it("reconciles the id on an auto-created conversation", async () => {
+    // The one branch registration used to skip: with `conversationId`
+    // undefined no entry was made, so `consumeJobStream`'s reconciliation —
+    // which keys off membership — could not fire, and the row kept a client id
+    // the server never issued while `resendFromCheckpoint` went on to send it.
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return completedTurn("j");
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-new",
+            message_id: "m-server",
+            status: "queued",
+          });
+        return json([]);
+      },
+    });
+
+    await session.send("first ever message"); // no conversation anywhere
+
+    expect(session.conversationId).toBe("conv-new");
+    expect(session.messages.find((m) => m.role === "user")?.id).toBe(
+      "m-server",
+    );
+  });
+});

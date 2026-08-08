@@ -332,7 +332,19 @@ export class StreamManager {
     // before `conversationChanged` has fired. `switchTo` detaches while the
     // pointer is still the old one; this is the parity that comment claimed.
     this.detachStreamingTurn();
+    // Read after `detachStreamingTurn`, which emits — a handler re-entering on
+    // `backgroundJobsChanged` is inside the same window.
+    const gen = this.generation;
     const id = await this.session.createNewConversation();
+    // `createNewConversation` is awaited, and `ChatStorage` is a public
+    // interface — an IndexedDB implementation makes that a real round-trip. A
+    // `switchTo` landing inside it claimed the newer generation, and this
+    // relocation would overwrite it and then bump the generation out from
+    // under its restore: the consumer sees `conversationChanged: B` followed
+    // by this one, and B never restores. Last writer wins, everywhere. The
+    // conversation is still created and still in the list — only the pointer
+    // move is dropped.
+    if (gen !== this.generation) return id;
     this.setActiveConversation(id);
     // Settle the state here. `setActiveConversation` bumps the generation, so
     // a restore this supersedes now returns WITHOUT emitting — including
@@ -369,7 +381,17 @@ export class StreamManager {
       this._state = "idle"; // cancelled, not parked — recorded, not announced
     }
     await this.session.deleteConversation(id);
-    if (wasActive) {
+    // Re-tested, not `wasActive`: that was read before a real DELETE round-trip
+    // and this is the one relocation in the file that would otherwise act on a
+    // pointer from a network round-trip ago. "Delete the conversation I'm on,
+    // then pick another from the list" is ordinary, and the stale read makes
+    // `setActiveConversation(null)` overwrite the newer switch and bump the
+    // generation out from under its restore — so the consumer sees
+    // `conversationChanged: B` then `null`, and the user clicks B again.
+    // `session.deleteConversation` already re-tests its own pointer after its
+    // awaits, for the same reason. `wasActive` above is still the right read
+    // for the CANCEL, which has to happen before the delete.
+    if (this._activeConversationId === id) {
       // CANCEL rather than park. `detachStreamingTurn` is right when the user
       // navigates away — the turn keeps running and can be rejoined — but this
       // conversation is gone, so its output has nowhere to land. Parking it
