@@ -182,3 +182,38 @@ describe("replayed steers are distinguishable", () => {
     });
   });
 });
+
+describe("a prompt whose turn is still running is not a steer", () => {
+  it("does not replay a live send as a steer bubble", () => {
+    // `isSteer` asked only the COMPLETED jobs, so a prompt whose job is still
+    // running looked like a mid-run steer. The pending-message merge in
+    // `loadConversation` is what puts that prompt into `session.messages` in
+    // the first place, so a send landing in the probe window was replayed as a
+    // second, steer-flagged bubble on top of the one the consumer had already
+    // rendered from the live send.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "job-old", message_id: "m-old" }],
+      claimedMessageIds: ["m-old", "m-live"], // m-live's job is RUNNING
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-live", content: "just sent" },
+      ],
+    });
+
+    expect(plan.filter((s) => s.kind === "steer")).toEqual([]);
+  });
+
+  it("still reports a genuine steer — the control", () => {
+    // A prompt no job claims at all is a real mid-run steer and must survive.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "job-old", message_id: "m-old" }],
+      claimedMessageIds: ["m-old"],
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-steer", content: "actually, stop" },
+      ],
+    });
+
+    expect(plan.filter((s) => s.kind === "steer")).toHaveLength(1);
+  });
+});

@@ -736,6 +736,11 @@ export class StreamManager {
             job_id: j.job_id,
             message_id: j.message_id,
           })),
+          // EVERY job, not just the completed ones. A send landing in the probe
+          // window has a RUNNING job, so its prompt is claimed — without this
+          // it reads as a steer and replays as a duplicate bubble over the one
+          // the live send already rendered.
+          claimedMessageIds: jobs.map((j) => j.message_id),
           userMessages: userMessages.map((m) => ({
             id: m.id,
             content: m.content,
