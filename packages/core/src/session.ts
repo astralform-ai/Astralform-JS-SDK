@@ -195,8 +195,39 @@ export class ChatSession {
    * here is set by `send` and cleared when a server row turns up carrying the
    * same turn, so the keep-decision no longer depends on which side of the
    * fetch the push landed on.
+   *
+   * The value is `serverRowsKnown` as of the moment the job response told us
+   * the server's row id, or 0 while no response has come back. That timestamp
+   * is what separates "the snapshot predates the row" from "the server does
+   * not have this row" — see `loadConversation`.
+   *
+   * It is an ANNOTATION ON `this.messages`: reconciliation only ever consults
+   * entries of that array, so an id whose message has left it is dead weight.
+   * `setMessages` is the single place the array is replaced, and it prunes.
    */
-  private unacknowledgedMessageIds = new Set<string>();
+  private pendingUserMessages = new Map<string, number>();
+
+  /**
+   * Bumped each time the server hands back a message id, so a fetch can record
+   * what was known when it was ISSUED. A row whose id we learned before the
+   * fetch went out must appear in that fetch's snapshot; one we learned after
+   * it may legitimately be missing.
+   */
+  private serverRowsKnown = 0;
+
+  /**
+   * Replace the message list, keeping `pendingUserMessages` an annotation on
+   * it. Every removal from the array goes through here — `push` is the only
+   * other mutation and it cannot orphan an id.
+   */
+  private setMessages(next: Message[]): void {
+    this.messages = next;
+    if (this.pendingUserMessages.size === 0) return;
+    const present = new Set(next.map((m) => m.id));
+    for (const id of this.pendingUserMessages.keys()) {
+      if (!present.has(id)) this.pendingUserMessages.delete(id);
+    }
+  }
 
   // Minimal in-session accumulation for the assistant message record.
   // Only top-level ``text`` blocks contribute; subagent / tool output
@@ -282,6 +313,7 @@ export class ChatSession {
       messagesId: string | null;
       conversationId: string | null;
       generation: number;
+      pending: Map<string, number>;
     } | null = null;
 
     // Sending to an explicit conversation makes it the session's — catch the
@@ -318,6 +350,7 @@ export class ChatSession {
           messagesId: this.messagesConversationId,
           conversationId: this.conversationId,
           generation: this.loadGeneration,
+          pending: new Map(this.pendingUserMessages),
         };
         // Drop the old conversation's list with the pointer. Leaving it behind
         // is the same one-conversation's-messages-under-another's-id pairing
@@ -326,7 +359,7 @@ export class ChatSession {
         // option) it would simply persist. Through `StreamManager` the
         // in-flight restore reinstalls the right list, which is why the
         // manager-level tests never saw it.
-        this.messages = [];
+        this.setMessages([]);
         // NOT `conversationId`. After this the list holds at most this one
         // turn, which is not that conversation's history — and
         // `StreamManager.regenerate` trusts this field, so claiming it would
@@ -349,7 +382,8 @@ export class ChatSession {
       await this.storage.addMessage(userMessage, conversationId);
     }
     this.messages.push(userMessage);
-    if (conversationId) this.unacknowledgedMessageIds.add(userMessage.id);
+    // 0: no job response yet, so the server may not hold this row at all.
+    if (conversationId) this.pendingUserMessages.set(userMessage.id, 0);
 
     const request: ChatStreamRequest = {
       message: content,
@@ -406,7 +440,12 @@ export class ChatSession {
       this.jobsCreated === jobsBefore &&
       this.loadGeneration === relocatedFrom.generation
     ) {
-      this.messages = relocatedFrom.messages;
+      this.setMessages(relocatedFrom.messages);
+      // After `setMessages`, which would otherwise prune the restored map
+      // against the pre-restore list. The failed send's own id is absent from
+      // the snapshot, which is the point: its message is no longer in the
+      // array, so leaving the id behind would strand it there for the session.
+      this.pendingUserMessages = relocatedFrom.pending;
       this.messagesConversationId = relocatedFrom.messagesId;
       this.conversationId = relocatedFrom.conversationId;
     }
@@ -517,11 +556,11 @@ export class ChatSession {
     if (
       messageId &&
       lastMsg?.role === "user" &&
-      this.unacknowledgedMessageIds.has(lastMsg.id)
+      this.pendingUserMessages.has(lastMsg.id)
     ) {
-      this.unacknowledgedMessageIds.delete(lastMsg.id);
+      this.pendingUserMessages.delete(lastMsg.id);
       lastMsg.id = messageId;
-      this.unacknowledgedMessageIds.add(messageId);
+      this.pendingUserMessages.set(messageId, ++this.serverRowsKnown);
     }
     this.lastSeq = -1;
     this.submittedToolCallIds.clear();
@@ -933,6 +972,9 @@ export class ChatSession {
     const load = ++this.loadGeneration;
     this.conversationId = id;
     this.resetStreamingState();
+    // Read BEFORE the fetch goes out: the server evaluates it later still, so
+    // any row already known at this point has to be in the reply.
+    const rowsKnownAtIssue = this.serverRowsKnown;
     const messages = await this.client
       .getMessages(id)
       .catch(() => this.storage.fetchMessages(id));
@@ -964,17 +1006,26 @@ export class ChatSession {
     // acknowledgement entirely, because the server appends TWO rows per turn
     // and the assistant reply pushes the user row out of the window.
     const pending = this.messages.filter(
-      (m) => this.unacknowledgedMessageIds.has(m.id) && m.conversationId === id,
+      (m) => this.pendingUserMessages.has(m.id) && m.conversationId === id,
     );
-    const stillPending = pending.filter(
-      (m) => !messages.some((f) => f.id === m.id),
-    );
+    const stillPending = pending.filter((m) => {
+      if (messages.some((f) => f.id === m.id)) return false;
+      const knownAt = this.pendingUserMessages.get(m.id) ?? 0;
+      // Absent from the snapshot has two causes and they need opposite
+      // handling. 0 means no job response yet, so the row may not exist —
+      // keep it, that is the race this set exists for. Otherwise the server
+      // gave us its id before this fetch was issued, so the snapshot HAD to
+      // contain it; missing means the server no longer does. Re-appending
+      // then resurrects it at the tail on every later load and hands
+      // `regenerate` a turn the server cannot resend.
+      return knownAt === 0 || knownAt > rowsKnownAtIssue;
+    });
     for (const m of pending) {
-      if (!stillPending.includes(m)) this.unacknowledgedMessageIds.delete(m.id);
+      if (!stillPending.includes(m)) this.pendingUserMessages.delete(m.id);
     }
-    this.messages = stillPending.length
-      ? [...messages, ...stillPending]
-      : messages;
+    this.setMessages(
+      stillPending.length ? [...messages, ...stillPending] : messages,
+    );
     this.messagesConversationId = id;
   }
 
@@ -1039,8 +1090,17 @@ export class ChatSession {
       "New Conversation",
     );
     this.conversations.unshift(conversation);
+    // A pointer move, so a `loadConversation` in flight has to lose to it —
+    // the same rule `send` applies when it relocates. Without it that fetch
+    // lands afterwards, passes its own guard because nothing bumped the token,
+    // and installs the OLD conversation's list under this one's id. The
+    // manager's `restore` bails at its next `superseded()` check, so the
+    // damage is invisible from there while the session state is already the
+    // mismatched pairing this file exists to rule out — and STICKY, because
+    // `regenerate` gates on the pairing and no path here reopens it.
+    this.loadGeneration++;
     this.conversationId = id;
-    this.messages = [];
+    this.setMessages([]);
     // The empty list IS this conversation's list — say so, or every consumer
     // of the pairing (regenerate) stays blocked on the previous conversation.
     this.messagesConversationId = id;
@@ -1148,7 +1208,7 @@ export class ChatSession {
     // Only reachable through a custom `ChatStorage` whose fallback throws
     // (`InMemoryStorage` never does), but `ChatStorage` is a public interface.
     if (loadResult.status === "rejected") {
-      this.messages = [];
+      this.setMessages([]);
       this.messagesConversationId = id;
     }
     this.replayTurn(
@@ -1266,8 +1326,12 @@ export class ChatSession {
     }
     this.conversations = this.conversations.filter((c) => c.id !== id);
     if (this.conversationId === id) {
+      // Same pointer-move rule as `createNewConversation`. Worse here if
+      // skipped: `session.messages` is public, so the reinstalled list is the
+      // DELETED conversation's history rendered under a null id.
+      this.loadGeneration++;
       this.conversationId = null;
-      this.messages = [];
+      this.setMessages([]);
       this.messagesConversationId = null;
     }
   }

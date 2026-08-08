@@ -430,7 +430,7 @@ describe("a send during the probe window goes to the displayed conversation", ()
             ? [
                 {
                   id: "m-x", // SAME id the job response returned — a real
-                             // server does not invent a second one
+                  // server does not invent a second one
 
                   conversation_id: "conv-b",
                   role: "user",
@@ -1414,10 +1414,10 @@ describe("a SUCCESSFUL addressed send keeps its relocation", () => {
     // fixes comes back. Earlier fixtures never emitted `message_stop`, which
     // is precisely why they missed it.
     const sse = [
-      'event: message_start',
+      "event: message_start",
       'data: {"type":"message_start","turn_id":"t1","model":"m","job_id":"j","seq":0,"ts":0}',
       "",
-      'event: message_stop',
+      "event: message_stop",
       'data: {"type":"message_stop","turn_id":"t1","job_id":"j","stop_reason":"end_turn","usage":{},"total_ms":1,"stall_count":0,"seq":1,"ts":0}',
       "",
       "data: [DONE]",
@@ -1798,5 +1798,307 @@ describe("loadConversation does not install a left conversation's messages", () 
 
     expect(session.conversationId).toBe("conv-a");
     expect(session.messages.map((m) => m.content)).toEqual(["A fresh"]);
+  });
+});
+
+/** A turn the client will treat as finished. A bare `[DONE]` is NOT enough —
+ *  a stream that ends without a terminal event is a dropped connection to the
+ *  reconnect logic, which then retries until the test times out. */
+function completedTurn(jobId: string): Response {
+  const ev = (seq: number, event: string, data: Record<string, unknown>) =>
+    `event: ${event}\ndata: ${JSON.stringify({ seq, ts: 0, job_id: jobId, ...data })}\n\n`;
+  return new Response(
+    ev(0, "message_start", {
+      type: "message_start",
+      turn_id: "t1",
+      model: "m",
+    }) +
+      ev(1, "message_stop", {
+        type: "message_stop",
+        turn_id: "t1",
+        stop_reason: "end_turn",
+        usage: {},
+      }) +
+      "data: [DONE]\n\n",
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  );
+}
+
+describe("createConversation and deleteConversation are pointer moves too", () => {
+  /** A backend whose `/conv-a/messages` parks until released. */
+  function parkedA(hold: Promise<void>): typeof globalThis.fetch {
+    return async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/conv-a/messages")) {
+        await hold;
+        return json([
+          {
+            id: "m-a",
+            conversation_id: "conv-a",
+            role: "user",
+            content: "A's prompt",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]);
+      }
+      return json([]);
+    };
+  }
+
+  it("createNewConversation makes an in-flight load lose", async () => {
+    // Found in review of this PR. `send` bumps `loadGeneration` when it
+    // relocates and says why: a pointer move IS an event a load in flight must
+    // lose to. These two move the same pointers and did not. The manager's
+    // `restore` bails at its next `superseded()` check, so nothing downstream
+    // reports it while the session already holds A's list under the new id.
+    const slowA = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: parkedA(slowA.wait),
+    });
+
+    const loadingA = session.loadConversation("conv-a");
+    await flush();
+    const newId = await session.createNewConversation();
+    slowA.open();
+    await loadingA;
+
+    expect(session.conversationId).toBe(newId);
+    expect(session.messages).toEqual([]);
+    // And the pairing stays coherent, which is what keeps regenerate alive:
+    // left on "conv-a", `StreamManager.regenerate` is a no-op on this
+    // conversation for the rest of the session, with no path reopening it.
+    expect(session.messagesConversationId).toBe(newId);
+  });
+
+  it("deleteConversation makes an in-flight load lose", async () => {
+    // Worse than the create case if skipped: `session.messages` is public, so
+    // the reinstalled list is the DELETED conversation's history rendered
+    // under a null id.
+    const slowA = gate();
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: parkedA(slowA.wait),
+    });
+
+    const loadingA = session.loadConversation("conv-a");
+    await flush();
+    await session.deleteConversation("conv-a");
+    slowA.open();
+    await loadingA;
+
+    expect(session.conversationId).toBeNull();
+    expect(session.messages).toEqual([]);
+    expect(session.messagesConversationId).toBeNull();
+  });
+});
+
+describe("the pending-send set stays an annotation on the message list", () => {
+  /** Read the private map — a memory invariant has no public surface, and
+   *  asserting the consequence instead would just restate the code. */
+  function pendingSize(session: ChatSession): number {
+    return (session as unknown as { pendingUserMessages: Map<string, number> })
+      .pendingUserMessages.size;
+  }
+
+  it("drops the id of a send whose job never reached the wire", async () => {
+    // The put-back restores the message list from its snapshot, which does not
+    // contain the failed send's message — leaving its id in the set with
+    // nothing behind it for the life of the session.
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs"))
+          return new Response("boom", { status: 500 });
+        if (url.includes("/conv-a/messages"))
+          return json([
+            {
+              id: "m-a",
+              conversation_id: "conv-a",
+              role: "user",
+              content: "A's prompt",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    expect(pendingSize(session)).toBe(0);
+
+    await session.send("hi", { conversationId: "conv-b" });
+    await flush();
+
+    expect(session.messages.map((m) => m.content)).toEqual(["A's prompt"]);
+    expect(pendingSize(session)).toBe(0);
+  });
+
+  it("puts back the ids belonging to the messages it puts back", async () => {
+    // Relocating CLEARS the list, which prunes every id on it; the put-back
+    // then restores the messages, so it has to restore their ids too or they
+    // come back unprotected. Only observable against a backend that omits
+    // `message_id` — with one, the row is known to exist and any later fetch
+    // is entitled to drop it anyway.
+    let jobs = 0;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return completedTurn("j");
+        if (url.includes("/v1/jobs")) {
+          jobs += 1;
+          // The first send lands; the relocating one fails and puts back.
+          if (jobs > 1) return new Response("boom", { status: 500 });
+          // No `message_id` — so nothing ever proves the row reached the
+          // server and the message stays pending for good.
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            status: "queued",
+          });
+        }
+        return json([]); // the snapshot never contains the local row
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    await session.send("hello");
+    expect(pendingSize(session)).toBe(1);
+
+    await session.send("elsewhere", { conversationId: "conv-b" });
+    await flush();
+
+    await session.loadConversation("conv-a");
+    expect(
+      session.messages.filter((m) => m.role === "user").map((m) => m.content),
+    ).toEqual(["hello"]);
+  });
+
+  it("does not accumulate ids across conversations", async () => {
+    // Every `loadConversation` reached through `StreamManager` runs while the
+    // list still holds the PREVIOUS conversation's messages, so the eviction
+    // loop matches nothing and the set only ever grew.
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs/") && url.includes("/events"))
+          return completedTurn("j");
+        if (url.includes("/v1/jobs"))
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            status: "queued",
+          });
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    // Awaited, not fired-and-forgotten: `send` bails while a stream is live,
+    // so overlapping them would leave one pending id and pass this trivially.
+    for (let i = 0; i < 3; i++) await session.send(`turn ${i}`);
+    await flush();
+    expect(pendingSize(session)).toBe(3);
+
+    await session.loadConversation("conv-b");
+
+    // A's messages left the list, so their ids can never be matched again.
+    expect(pendingSize(session)).toBe(0);
+  });
+});
+
+describe("a row the server no longer has is not resurrected", () => {
+  /**
+   * `job.message_id` is proof the row exists. So a snapshot fetched AFTER that
+   * proof and still missing the row means the server dropped it — and
+   * re-appending then puts it back at the tail on every later load, handing
+   * `regenerate` a turn the server cannot resend. A snapshot fetched BEFORE
+   * the proof is just the ordinary race and must still keep it.
+   */
+  function backend(rows: () => unknown[]): typeof globalThis.fetch {
+    return async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/v1/jobs/") && url.includes("/events"))
+        return completedTurn("j");
+      if (url.includes("/v1/jobs"))
+        return json({
+          job_id: "j",
+          conversation_id: "conv-a",
+          message_id: "m-server",
+          status: "queued",
+        });
+      if (url.includes("/conv-a/messages")) return json(rows());
+      return json([]);
+    };
+  }
+
+  it("drops it once a later fetch confirms its absence", async () => {
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: backend(() => []), // the server never returns the row
+    });
+
+    await session.loadConversation("conv-a");
+    await session.send("hello");
+    const prompts = () =>
+      session.messages.filter((m) => m.role === "user").map((m) => m.content);
+    expect(prompts()).toEqual(["hello"]);
+
+    // Issued after the job response, so this snapshot had to contain the row.
+    await session.loadConversation("conv-a");
+    expect(prompts()).toEqual([]);
+
+    // ...and it stays gone, rather than reappearing on every subsequent load.
+    await session.loadConversation("conv-a");
+    expect(prompts()).toEqual([]);
+  });
+
+  it("keeps it when the fetch was issued before the job response", async () => {
+    // The control. Without it the rule above would pass just as well by
+    // dropping every pending message, which is the bug this set exists for.
+    const slowFetch = gate();
+    const holdJob = gate();
+    let first = true;
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/v1/jobs")) {
+          await holdJob.wait;
+          return json({
+            job_id: "j",
+            conversation_id: "conv-a",
+            message_id: "m-server",
+            status: "queued",
+          });
+        }
+        if (url.includes("/conv-a/messages")) {
+          if (first) {
+            first = false;
+            return json([]);
+          }
+          await slowFetch.wait; // issued BEFORE the job response lands
+          return json([]);
+        }
+        return json([]);
+      },
+    });
+
+    await session.loadConversation("conv-a");
+    void session.send("hello");
+    await flush();
+
+    const racing = session.loadConversation("conv-a"); // snapshot predates the row
+    await flush();
+    holdJob.open(); // job response arrives while that fetch is still open
+    await flush();
+    slowFetch.open();
+    await racing;
+
+    expect(session.messages.map((m) => m.content)).toEqual(["hello"]);
   });
 });
