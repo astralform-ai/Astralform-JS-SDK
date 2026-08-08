@@ -1,7 +1,7 @@
 import { AuthenticationError, ConnectionError, ServerError } from "./errors.js";
 import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import { streamJobSSE } from "./streaming.js";
-import { sanitizeErrorText } from "./utils.js";
+import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
   AgentInfo,
@@ -400,13 +400,7 @@ export class AstralformClient {
         updated_at: string;
       }[]
     >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}`);
-    return raw.map((c) => ({
-      id: c.id,
-      title: c.title,
-      messageCount: c.message_count,
-      createdAt: c.created_at,
-      updatedAt: c.updated_at,
-    }));
+    return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));
   }
 
   async getMessages(conversationId: string): Promise<Message[]> {
@@ -448,13 +442,7 @@ export class AstralformClient {
       created_at: string;
       updated_at: string;
     }>(`/v1/conversations/${encodeURIComponent(id)}`, { title });
-    return {
-      id: c.id,
-      title: c.title,
-      messageCount: c.message_count,
-      createdAt: c.created_at,
-      updatedAt: c.updated_at,
-    };
+    return camelizeKeys<Conversation>(c as unknown as Record<string, unknown>);
   }
 
   async deleteConversation(id: string): Promise<void> {
@@ -478,14 +466,7 @@ export class AstralformClient {
         avatar_url?: string;
       }[]
     >("/v1/agents");
-    return raw.map((a) => ({
-      name: a.name,
-      displayName: a.display_name,
-      description: a.description,
-      isOrchestrator: a.is_orchestrator,
-      isEnabled: a.is_enabled,
-      avatarUrl: a.avatar_url,
-    }));
+    return raw.map((a) => camelizeKeys<AgentInfo>(a as unknown as Record<string, unknown>));
   }
 
   /**
@@ -532,12 +513,7 @@ export class AstralformClient {
         is_enabled: boolean;
       }[]
     >("/v1/skills");
-    return raw.map((s) => ({
-      name: s.name,
-      displayName: s.display_name,
-      description: s.description,
-      isEnabled: s.is_enabled,
-    }));
+    return raw.map((s) => camelizeKeys<SkillInfo>(s as unknown as Record<string, unknown>));
   }
 
   async getConversationEvents(
@@ -698,13 +674,7 @@ export class AstralformClient {
         role: string;
       }>
     >("/v1/teams");
-    return raw.map((t) => ({
-      id: t.id,
-      name: t.name,
-      slug: t.slug,
-      isDefault: t.is_default,
-      role: t.role,
-    }));
+    return raw.map((t) => camelizeKeys<TeamSummary>(t as unknown as Record<string, unknown>));
   }
 
   /**
@@ -723,14 +693,7 @@ export class AstralformClient {
         avatar_url?: string | null;
       }>
     >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
-    return raw.map((a) => ({
-      id: a.id,
-      name: a.name,
-      teamId: a.team_id,
-      createdAt: a.created_at,
-      updatedAt: a.updated_at,
-      avatarUrl: a.avatar_url ?? null,
-    }));
+    return raw.map((a) => camelizeKeys<TeamAgentSummary>(a as unknown as Record<string, unknown>));
   }
 
   // --- Jobs API ---
@@ -795,13 +758,7 @@ export class AstralformClient {
       comment: string | null;
       created_at: string;
     }>(`/v1/jobs/${encodeURIComponent(jobId)}/feedback`, body);
-    return {
-      id: raw.id,
-      jobId: raw.job_id,
-      rating: raw.rating,
-      comment: raw.comment,
-      createdAt: raw.created_at,
-    };
+    return camelizeKeys<FeedbackResponse>(raw as unknown as Record<string, unknown>);
   }
 
   async getActiveJob(conversationId: string): Promise<ActiveJob> {

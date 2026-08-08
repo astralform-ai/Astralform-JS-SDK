@@ -217,6 +217,37 @@ describe("AstralformClient", () => {
     expect(convos[0]!.createdAt).toBe("2026-01-01T00:00:00Z");
   });
 
+  it("getConversations passes unknown fields through (no allowlist drop)", async () => {
+    // Regression for #36: the mapper used to be an allowlist that dropped any
+    // field it did not name. A new server field must reach the consumer under
+    // its camelCase name, not silently vanish — that is how `content_url`
+    // shipped for several releases as `undefined`.
+    const mockFetch = createMockFetch({
+      "/v1/conversations": {
+        status: 200,
+        body: [
+          {
+            id: "c1",
+            title: "Test",
+            message_count: 5,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            starred: true, // hypothetical new field the mapper does not name
+            thread_count: 3, // hypothetical new snake_case field
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const convos = await client.getConversations();
+
+    expect(convos[0]!.messageCount).toBe(5);
+    // The known fields still map, and the unknown ones pass through.
+    expect((convos[0] as Record<string, unknown>).starred).toBe(true);
+    expect((convos[0] as Record<string, unknown>).threadCount).toBe(3);
+  });
+
   it("throws AuthenticationError on 401", async () => {
     const mockFetch = createMockFetch({
       "/v1/health": { status: 401, body: "Unauthorized" },
