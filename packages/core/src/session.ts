@@ -23,6 +23,7 @@ import {
   AuthenticationError,
   ConnectionError,
   RateLimitError,
+  ServerError,
 } from "./errors.js";
 
 type ChatEventHandler = (event: ChatEvent) => void;
@@ -1499,8 +1500,18 @@ export class ChatSession {
   async deleteConversation(id: string): Promise<void> {
     try {
       await this.client.deleteConversation(id);
-    } catch {
-      // May already be deleted on backend
+    } catch (err) {
+      // 404 only. The backend 404s a conversation that is already gone, and
+      // that IS this delete succeeding — drop it locally and carry on.
+      //
+      // Everything else means the conversation still exists: 403 (not yours),
+      // 401, 429, 5xx, or the request never landing at all. This used to
+      // swallow all of them and delete locally anyway, so a failed delete was
+      // indistinguishable from a successful one — the row vanished from the
+      // sidebar, survived on the server, and came back on the next device or
+      // the next reload. Rethrowing BEFORE the local delete is what makes the
+      // two outcomes tellable apart; the caller decides what to show.
+      if (!(err instanceof ServerError) || err.status !== 404) throw err;
     }
     await this.storage.deleteConversation(id);
     // Shrinks the paging offset iff the server had handed us this one — every
