@@ -52,9 +52,25 @@ export class LLMNotConfiguredError extends AstralformError {
 }
 
 export class ServerError extends AstralformError {
-  constructor(message = "Internal server error") {
+  /**
+   * The HTTP status, when this came from a response.
+   *
+   * Every status except 401 and 429 collapses into this one class, so without
+   * it a caller cannot tell "the thing is already gone" (404) from "the server
+   * broke" (500) or "this is not yours" (403) — the message is the only other
+   * signal and it is prose. `deleteConversation` is the case that forced it:
+   * it read EVERY failure as already-deleted and dropped the conversation
+   * locally regardless, so a 500 looked exactly like success and the row came
+   * back on the next device.
+   *
+   * Undefined when a ServerError is constructed without a response.
+   */
+  declare readonly status?: number;
+
+  constructor(message = "Internal server error", status?: number) {
     super(message, "server_error");
     this.name = "ServerError";
+    if (status !== undefined) Object.assign(this, { status });
   }
 }
 

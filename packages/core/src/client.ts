@@ -333,7 +333,13 @@ export class AstralformClient {
         throw createRateLimitErrorFromHttp(response, text);
       default: {
         const safeText = text ? sanitizeErrorText(text) : "";
-        throw new ServerError(safeText || `HTTP ${response.status}`);
+        // Status carried alongside the message: callers that need to tell one
+        // failure from another (a 404 meaning "already gone" from a 500 meaning
+        // "we don't know") were left parsing prose otherwise.
+        throw new ServerError(
+          safeText || `HTTP ${response.status}`,
+          response.status,
+        );
       }
     }
   }
