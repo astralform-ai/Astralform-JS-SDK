@@ -513,11 +513,12 @@ export class StreamManager {
     try {
       await this.session.deleteConversation(id);
     } catch (err) {
-      // The delete did NOT happen: `ChatSession.deleteConversation` guards only
-      // the API call, so a rejecting `ChatStorage` throws before it filters
-      // `conversations` or nulls the pointer. Relocating here would announce a
-      // deletion that never occurred, against a session that still lists the
-      // conversation and still holds its messages.
+      // The delete did NOT happen. `ChatSession.deleteConversation` rejects
+      // either because the server refused it (anything but a 404, which means
+      // already-gone) or because `ChatStorage` threw — and both reject BEFORE
+      // it filters `conversations` or nulls the pointer. Relocating here would
+      // announce a deletion that never occurred, against a session that still
+      // lists the conversation and still holds its messages.
       //
       // But the cancel above already tore the stream down and recorded `idle`
       // WITHOUT announcing, so that much has to be announced or the composer

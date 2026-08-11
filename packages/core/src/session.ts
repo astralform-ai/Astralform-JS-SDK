@@ -1478,11 +1478,12 @@ export class ChatSession {
   /**
    * Rename a conversation, server first.
    *
-   * Deliberately NOT optimistic, unlike the delete below. A failed delete is
-   * self-correcting (the row is still there on the next page fetch), but a
-   * failed rename that had already been written locally would leave the
-   * sidebar showing a title the server never accepted — and nothing refetches
-   * a conversation that is already in the loaded list.
+   * Server first, like the delete below: a failed rename written locally would
+   * leave the sidebar showing a title the server never accepted, and nothing
+   * refetches a conversation that is already in the loaded list. (The delete
+   * used to be the counter-example here — it dropped the row whatever the
+   * server said, on the theory that a failed one was self-correcting. It was
+   * not: the row stayed deleted locally and alive on the server.)
    *
    * Mirrors the `title_generated` path: the entry in `conversations` is
    * mutated in place, which is what every consumer of the list reads.

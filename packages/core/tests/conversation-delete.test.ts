@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { ChatSession } from "../src/session.js";
-import { ServerError } from "../src/errors.js";
+import { ConnectionError, ServerError } from "../src/errors.js";
 
 const baseConfig = {
   apiKey: "test-key",
@@ -92,7 +92,14 @@ describe("deleteConversation", () => {
   it("rethrows a transport failure and keeps the conversation", async () => {
     const session = await sessionWith(null);
 
-    await expect(session.deleteConversation("c1")).rejects.toBeTruthy();
+    // Pinned to the type, not merely "something threw": `toBeTruthy` would
+    // also pass on an error thrown BY the guard (a future `err.status` read on
+    // a non-object), which is the failure this case exists to rule out.
+    // `AstralformClient.request` normalises every fetch rejection into
+    // ConnectionError, so that is the counterpart to the sibling ServerErrors.
+    await expect(session.deleteConversation("c1")).rejects.toBeInstanceOf(
+      ConnectionError,
+    );
     expect(session.conversations.map((c) => c.id)).toContain("c1");
   });
 });

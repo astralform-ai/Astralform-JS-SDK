@@ -1,5 +1,39 @@
 # Changelog
 
+## 6.0.0
+
+### BREAKING CHANGES
+
+**`session.deleteConversation` now rejects when the delete failed.** It
+previously caught every error from the API call and dropped the conversation
+locally regardless, so a failed delete was indistinguishable from a successful
+one: the row left the list, survived on the server, and reappeared on the next
+device or the next reload.
+
+A **404 still resolves** — the backend 404s a conversation that is already
+gone, and that is this delete succeeding. Everything else — 403, 401, 429, 5xx,
+or the request never landing — now rejects *before* the local drop, leaving the
+conversation in `session.conversations` and in storage.
+
+Major, because a caller doing a bare `await session.deleteConversation(id)`
+turns a silent no-op into an unhandled rejection on upgrade. Wrap it:
+
+```ts
+try {
+  await session.deleteConversation(id);
+} catch (err) {
+  // The conversation is still there — say so instead of hiding the row.
+}
+```
+
+### Added
+
+**`ServerError.status`** — the HTTP status, when the error came from a
+response. Every status except 401 and 429 collapses into `ServerError`, so
+telling "already gone" (404) from "the server broke" (500) or "not yours" (403)
+previously meant parsing the message. `undefined` for a `ServerError`
+constructed without a response.
+
 ## 5.1.0
 
 ### Added
