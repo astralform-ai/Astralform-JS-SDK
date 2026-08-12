@@ -1,5 +1,30 @@
 # Changelog
 
+## 6.0.2
+
+### Fixed
+
+**Reopening a conversation whose turn did not COMPLETE now restores the
+transcript.** 6.0.1 covered a turn that is still running and resolved by the
+active-job probe. It did not cover the same conversation a minute later, once
+that turn had ended without completing — so the original report recurred
+against the fixed build, this time with a cancelled video generation: the
+turn's blocks under no prompt at all.
+
+Jobs are the spine of the walk, and the positional fallback maps over JOBS. A
+failed or cancelled job is not `completed`, so it never reaches the completed
+set; if it was the only one, the walk is empty and the plan came back empty
+with it, dropping every prompt the conversation had. The message list is the
+only record that those turns happened, so an empty walk now emits its prompts
+on their own rather than losing them with the jobs that would have anchored
+them.
+
+This also covers a turn that is still running but which the active-job probe
+did not resolve — the liveness key can expire while the job row has not — where
+the prompt is claimed by a job that anchors nothing. The claim set exists to
+stop a prompt being drawn twice, once by its turn and once as a steer, so it is
+ignored for a walk that emits no turn at all.
+
 ## 6.0.1
 
 ### Fixed
