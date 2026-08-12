@@ -498,3 +498,124 @@ describe("a real send taking the view over mid-restore", () => {
     await sending.catch(() => {});
   });
 });
+
+describe("a takeover stops the reconnect too, not just the replay", () => {
+  it("does not stream the old running turn under the send's turn", async () => {
+    // Short-circuiting the replay guard used to fall through to
+    // `reconnectToJob`, whose own `isStreaming` bail reads the same lagging
+    // flag — so the old turn's blocks streamed into the view the send owns,
+    // with two consumers sharing one `abortController`.
+    let openMessages!: () => void;
+    const messagesGate = new Promise<void>((r) => {
+      openMessages = () => r();
+    });
+    let openWrite!: () => void;
+    const writeGate = new Promise<void>((r) => {
+      openWrite = () => r();
+    });
+    const calls: string[] = [];
+
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        calls.push(url);
+        if (url.includes("/active-job")) {
+          return json({ job_id: "job-2", status: "running" });
+        }
+        if (url.includes("/v1/jobs") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ job_id: "job-3", conversation_id: "conv-1" }),
+            { status: 201, headers: JSON_HEADERS },
+          );
+        }
+        if (url.includes("/v1/jobs/")) return sse(LIVE_STREAM);
+        if (url.includes("/messages")) {
+          await messagesGate;
+          return json(MESSAGES);
+        }
+        if (url.includes("/jobs")) return json(JOBS);
+        if (url.includes("/events")) return json([]);
+        return json([]);
+      },
+    });
+    const storage = (session as unknown as { storage: { addMessage: unknown } })
+      .storage;
+    const realAdd = storage.addMessage as (...a: unknown[]) => Promise<unknown>;
+    storage.addMessage = async (...a: unknown[]) => {
+      await writeGate;
+      return realAdd.apply(storage, a);
+    };
+
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    const switching = manager.switchTo("conv-1");
+    await new Promise((r) => setTimeout(r, 0));
+    const sending = manager.send("a brand new question");
+    await new Promise((r) => setTimeout(r, 0));
+    openMessages();
+    await switching;
+
+    // The old turn's stream must never have been opened.
+    expect(calls.some((u) => u.includes("/v1/jobs/job-2/events"))).toBe(false);
+    expect(events.filter((e) => e.type === "message_start")).toHaveLength(0);
+
+    openWrite();
+    await sending.catch(() => {});
+  });
+});
+
+describe("a turn that starts AND ends inside a restore await", () => {
+  it("still blocks the replay, though the state has returned to idle", async () => {
+    // `viewTakenOverByLiveTurn` reads the CURRENT state, so a send that fails
+    // fast — resolving in about the time the job list takes — leaves `_state`
+    // back at idle with its blocks already rendered, and the transient check
+    // sees nothing. Only a monotonic count survives that.
+    let openJobs!: () => void;
+    const jobsGate = new Promise<void>((r) => {
+      openJobs = () => r();
+    });
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/active-job")) return json({ job_id: null });
+        // The send's own POST fails fast — the whole point is a turn that
+        // begins and ends inside the suspended history fetch below.
+        if (url.includes("/v1/jobs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ detail: "nope" }), {
+            status: 400,
+            headers: JSON_HEADERS,
+          });
+        }
+        if (url.includes("/messages")) return json(MESSAGES);
+        if (url.includes("/jobs")) {
+          await jobsGate;
+          return json(JOBS);
+        }
+        if (url.includes("/events")) {
+          return json(url.includes("job_id=job-1") ? DONE_TURN_EVENTS : []);
+        }
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+    const replayed: string[] = [];
+    session.on((e) => {
+      if (e.type === "user_message") replayed.push(e.content);
+    });
+
+    const switching = manager.switchTo("conv-1");
+    await new Promise((r) => setTimeout(r, 0));
+    // A whole turn begins and ends while the job list is suspended.
+    await manager.send("fails immediately").catch(() => {});
+    expect(manager.state).not.toBe("streaming");
+    expect(session.isStreaming).toBe(false);
+    openJobs();
+    await switching;
+
+    expect(replayed).toEqual([]);
+  });
+});

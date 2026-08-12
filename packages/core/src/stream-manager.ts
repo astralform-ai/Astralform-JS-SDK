@@ -82,6 +82,13 @@ export class StreamManager {
    * one the user is waiting on — see ``restore``.
    */
   private generation = 0;
+  /**
+   * Bumped every time a turn STARTS. `generation` does not move for a send
+   * (only a pointer move does), and the streaming state returns to idle when a
+   * turn ends — so neither can tell a restore that a turn ran inside one of
+   * its awaits. This can.
+   */
+  private turnCounter = 0;
 
   constructor(session: ChatSession) {
     this.session = session;
@@ -171,6 +178,7 @@ export class StreamManager {
       );
     }
     if (this._state === "streaming") return;
+    this.turnCounter++;
 
     // Auto-create conversation if none active.
     //
@@ -230,6 +238,7 @@ export class StreamManager {
 
   async regenerate(): Promise<void> {
     if (this._state === "streaming") return;
+    this.turnCounter++;
     // Unlike `send`, regenerate cannot be addressed: `resendFromCheckpoint`
     // takes no conversation override, and the message id comes from
     // `session.messages` — which a settling switch can leave holding the
@@ -691,6 +700,8 @@ export class StreamManager {
     // the history replay below repaints an emptied view or duplicates one that
     // was never emptied. The two questions have the same answer by contract —
     // `restoring` is the documented signal to clear — so they share the flag.
+    // Captured with the same timing as `gen`: before anything can await.
+    const turn = this.turnCounter;
     const announcedRestoring = !this.session.isStreaming;
     if (announcedRestoring) this.setState("restoring");
 
@@ -731,10 +742,22 @@ export class StreamManager {
     //
     // The pair is not redundant: a stream that ENDS during the probe leaves
     // no live turn over a view that was never cleared.
+    //
+    // They are separate statements rather than one `&&` because the answers
+    // differ in what they forbid. A takeover means NEITHER half below is ours,
+    // so this returns rather than
+    // short-circuiting the `&&` into the reconnect: replaying lands under the
+    // bubble the send drew, and the reconnect opens the running turn's stream
+    // under it — `reconnectToJob`'s own `isStreaming` bail cannot see a send
+    // still inside `storage.addMessage`, for the same one-await reason
+    // `viewTakenOverByLiveTurn` exists. Gated on `announcedRestoring` so the
+    // reading is unambiguous (we set `restoring` ourselves, so anything else is
+    // a send or regenerate) and the never-cleared path still falls through to
+    // the reconnect exactly as before.
+    if (announcedRestoring && this.viewTakenOverByLiveTurn()) return;
     if (
       announcedRestoring &&
-      !this.viewTakenOverByLiveTurn() &&
-      !(await this.replayHistory(conversationId, gen, activeJobId))
+      !(await this.replayHistory(conversationId, gen, activeJobId, turn))
     )
       return;
 
@@ -784,6 +807,20 @@ export class StreamManager {
   }
 
   /**
+   * Has a turn STARTED since ``turn`` was captured?
+   *
+   * ``viewTakenOverByLiveTurn`` reads the current state, so it cannot see a
+   * turn that both started and ENDED inside one of the restore's awaits — a
+   * send that fails fast (auth, rate limit) resolves in about the time the job
+   * list takes, and leaves `_state` back at idle with its blocks already
+   * rendered. A monotonic count is the only thing that survives a state that
+   * has returned to where it started.
+   */
+  private turnStarted(since: number): boolean {
+    return this.turnCounter !== since;
+  }
+
+  /**
    * Replay a conversation's persisted history into the consumer's block view.
    *
    * Returns false when this restore lost the right to finish — a newer switch
@@ -801,16 +838,21 @@ export class StreamManager {
     conversationId: string,
     gen: number,
     activeJobId: string | null,
+    turn: number,
   ): Promise<boolean> {
-    // Two ways to lose the right to replay, checked at every await boundary
-    // below because both arrive from outside this function while it waits:
-    // a newer switch (the generation), and a send taking the view over
-    // (nothing gates `send` during a restore — see the caller). The caller
-    // treats either as "stop": a send that took over owns the state, so
-    // reconnecting the turn we were restoring would open a second stream
-    // under it.
+    // Three ways to lose the right to replay, checked at every await boundary
+    // below because all of them arrive from outside this function while it
+    // waits: a newer switch (the generation); a turn holding the view right
+    // now; and a turn that has already come and gone inside one of these
+    // awaits, which the state check cannot see because the state is back where
+    // it started. Nothing gates `send` during a restore — see the caller. The
+    // caller treats any of them as "stop": a turn that took over owns the
+    // state, so reconnecting the one we were restoring would open a second
+    // stream under it.
     const stopReplay = (): boolean =>
-      gen !== this.generation || this.viewTakenOverByLiveTurn();
+      gen !== this.generation ||
+      this.viewTakenOverByLiveTurn() ||
+      this.turnStarted(turn);
     try {
       const jobs = await this.session.client.get<
         {
