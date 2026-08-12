@@ -160,9 +160,10 @@ export function planRestore(args: {
   // cases above. Claiming exists to stop a prompt being drawn twice: once by
   // the turn that anchors it and once as a steer. An empty walk emits no turn
   // at all, so nothing can anchor anything and there is no second copy to
-  // avoid — while a running job IS claimed (`claimedMessageIds` excludes only
-  // failed and cancelled), so filtering on it here would drop exactly the
-  // running-but-unresolved prompt this branch has to rescue.
+  // avoid — while a running job IS claimed (the caller claims every job it
+  // replays, and it replays every job but the one arriving live), so filtering
+  // on it here would drop exactly the running-but-unresolved prompt this branch
+  // has to rescue.
   //
   // Nor does that re-open the double-bubble the claim set guards: the caller
   // only replays after announcing `restoring`, i.e. after telling the consumer

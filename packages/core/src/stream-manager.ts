@@ -873,10 +873,10 @@ export class StreamManager {
         }[]
       >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
       if (stopReplay()) return false;
-      // COMPLETED, minus the one we are about to reconnect to. The probe and
+      // Every job EXCEPT the one we are about to reconnect to. The probe and
       // this list are two awaits apart (`loadConversation` sits between them),
-      // so a turn that ENDS in that window comes back `completed` here while
-      // `activeJobId` still names it — putting the same job in `completedJobs`
+      // so a turn that ENDS in that window comes back settled here while
+      // `activeJobId` still names it — putting the same job in the replay set
       // AND `runningJob`, which `planRestore` walks twice and `eventsByJobId`
       // then replays twice, before the reconnect delivers it a third time.
       //
@@ -884,9 +884,23 @@ export class StreamManager {
       // never in the events wave and can only enter the plan as the running
       // turn, so the live stream is its single source either way — a reconnect
       // to a job that has just finished still drains its whole event log.
-      const completedJobs = jobs.filter(
-        (j: { status: string; job_id: string }) =>
-          j.status === "completed" && j.job_id !== activeJobId,
+      //
+      // This used to also require `status === "completed"`, which silently made
+      // a FAILED turn unrecoverable. Its events are persisted exactly like any
+      // other — `job_events` is the forensic record, and the history endpoint
+      // returns a failed job's stream complete, terminal `error` event and all —
+      // but restore never asked for them, so the whole turn vanished on reload:
+      // the tool calls, their output, and the error that explains why it
+      // stopped. A conversation whose ONLY job failed came back blank.
+      //
+      // Status is the wrong axis for this decision. What decides whether a job
+      // belongs in the events wave is where its events COME FROM: the live
+      // stream for the one being reconnected to, storage for every other. How a
+      // turn ended says nothing about that, and a client that hides failed turns
+      // does not make them not have happened — it just stops the user seeing
+      // what the agent did before it stopped.
+      const replayableJobs = jobs.filter(
+        (j: { job_id: string }) => j.job_id !== activeJobId,
       );
 
       // User prompts aren't persisted in job_events — they live in the
@@ -908,7 +922,7 @@ export class StreamManager {
         ? jobs.find((j) => j.job_id === activeJobId)
         : undefined;
       const plan = planRestore({
-        completedJobs: completedJobs.map((j) => ({
+        completedJobs: replayableJobs.map((j) => ({
           job_id: j.job_id,
           message_id: j.message_id,
         })),
@@ -916,16 +930,25 @@ export class StreamManager {
           job_id: runningJob.job_id,
           message_id: runningJob.message_id,
         },
-        // Completed jobs PLUS the ones still going. A send landing in the
-        // probe window has a running job, so its prompt is claimed and does
-        // not read as a steer replayed over the bubble the live send already
-        // rendered. Failed and cancelled jobs are deliberately NOT claimed:
-        // they produce no `turn` step, so claiming them would delete the
-        // user's prompt from the restore entirely rather than show it as a
-        // steer.
-        claimedMessageIds: jobs
-          .filter((j) => j.status !== "failed" && j.status !== "cancelled")
-          .map((j) => j.message_id),
+        // EVERY job, which is the same set the replay walk gets. The claim set
+        // answers one question — "will some turn step already draw this prompt?"
+        // — so it is a RESTATEMENT of the walk, and the two drifting apart is
+        // what produces either a missing bubble or a doubled one.
+        //
+        // Failed and cancelled were excluded here for exactly one reason: they
+        // produced no turn step, which is the bug fixed above. Now that they do,
+        // the exclusion has no case left to describe.
+        //
+        // Being precise about what this change does and does not do: it is not
+        // load-bearing TODAY. `planRestore` anchors a prompt at the index its
+        // job links to and advances the cursor past it, so a message claimed by
+        // a job inside the walk is never offered to the steer branch anyway —
+        // the two spellings agree on current inputs. It is here because the
+        // invariant is what keeps them agreeing: narrow the walk again without
+        // narrowing this, and the prompts of the jobs dropped from it go with
+        // them, silently. Deriving both from `jobs` makes that impossible to
+        // get half-right.
+        claimedMessageIds: jobs.map((j) => j.message_id),
         userMessages: userMessages.map((m) => ({
           id: m.id,
           content: m.content,
@@ -939,11 +962,11 @@ export class StreamManager {
       // regeneration versions stay available for version navigation — the
       // whole-conversation endpoint drops them.
       //
-      // COMPLETED jobs only. The running turn's events are the live stream the
-      // caller reconnects to; fetching them here would replay every block it
-      // is about to receive again.
+      // The running turn is absent by construction (excluded above): its events
+      // are the live stream the caller reconnects to, and fetching them here
+      // would replay every block it is about to receive again.
       const eventLists = await Promise.all(
-        completedJobs.map((job: { job_id: string }) =>
+        replayableJobs.map((job: { job_id: string }) =>
           this.session.client
             .getConversationEvents(conversationId, job.job_id)
             .catch(() => []),
@@ -957,7 +980,7 @@ export class StreamManager {
       if (stopReplay()) return false;
 
       const eventsByJobId = new Map(
-        completedJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
+        replayableJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
       );
 
       // Replay every step in one SYNCHRONOUS pass (no awaits between events
@@ -1004,11 +1027,19 @@ export class StreamManager {
       // left to catch it, and this would fire for the abandoned
       // conversation.
       if (stopReplay()) return false;
-      if (completedJobs.length > 0) {
+      // COMPLETED only, deliberately narrower than the replay set. This drives
+      // version navigation, and a version is an answer the user can switch to —
+      // a failed turn produced none, so counting it would offer a version that
+      // does not exist. Widening the replay set is about showing what happened;
+      // this is about what can be navigated between.
+      const versionCount = replayableJobs.filter(
+        (j: { status: string }) => j.status === "completed",
+      ).length;
+      if (versionCount > 0) {
         this.emit({
           type: "versionsReady",
           conversationId,
-          count: completedJobs.length,
+          count: versionCount,
         });
       }
     } catch {
