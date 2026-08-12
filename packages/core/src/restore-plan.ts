@@ -117,11 +117,14 @@ export function planRestore(args: {
   const linkOf = (j: RestoreJob): number | undefined =>
     j.message_id ? byId.get(j.message_id) : undefined;
 
+  // `slice`, not `jobs`: the caller hands this a PORTION of the walk (the
+  // pre-cutover head, or the whole list), and reusing the outer name for
+  // sometimes-the-same list made `jobs` mean two things in one function.
   const positional = (
-    jobs: RestoreJob[],
+    slice: RestoreJob[],
     msgs: RestoreMessage[],
   ): ReplayStep[] =>
-    jobs.map((job, i) => ({
+    slice.map((job, i) => ({
       kind: "turn" as const,
       jobId: job.job_id,
       content: msgs[i]?.content,

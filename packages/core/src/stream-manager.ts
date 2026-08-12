@@ -714,12 +714,26 @@ export class StreamManager {
     // as long as the turn lasted. Long tool calls made that a matter of
     // minutes, which is exactly when a user switches away and back.
     //
-    // Skipped when we did not announce `restoring`: the consumer still holds
-    // the blocks it rendered — including the prompt bubble a live `send`
-    // inserted optimistically — so replaying would duplicate the transcript
-    // rather than repaint it.
+    // Two conditions, answering two different questions, because either one
+    // alone replays over a view that still holds content:
+    //
+    //  - `announcedRestoring` — did we tell the consumer to clear? If we never
+    //    did, it still holds the blocks it rendered and replaying appends to
+    //    them. This applies to the SETTLED path too, which used to replay
+    //    regardless: that case now shows no history until the next open, which
+    //    is the same trade the live path takes and for the same reason — the
+    //    view was never cleared, so neither outcome is coherent.
+    //  - `isStreaming` NOW, not at entry — `send` bails only on `streaming`
+    //    and we sit in `restoring`, so a send landing inside the probe window
+    //    goes through, clears nothing, and renders its own optimistic prompt.
+    //    The captured flag is stale by then and would replay the history under
+    //    the live turn, re-emitting the prompt it just drew.
+    //
+    // The pair is not redundant: a stream that ENDS during the probe leaves
+    // `isStreaming` false over a view that was never cleared.
     if (
       announcedRestoring &&
+      !this.session.isStreaming &&
       !(await this.replayHistory(conversationId, gen, activeJobId))
     )
       return;
@@ -782,8 +796,20 @@ export class StreamManager {
         }[]
       >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
       if (superseded()) return false;
+      // COMPLETED, minus the one we are about to reconnect to. The probe and
+      // this list are two awaits apart (`loadConversation` sits between them),
+      // so a turn that ENDS in that window comes back `completed` here while
+      // `activeJobId` still names it — putting the same job in `completedJobs`
+      // AND `runningJob`, which `planRestore` walks twice and `eventsByJobId`
+      // then replays twice, before the reconnect delivers it a third time.
+      //
+      // Excluding it settles both halves at once: the job we reconnect to is
+      // never in the events wave and can only enter the plan as the running
+      // turn, so the live stream is its single source either way — a reconnect
+      // to a job that has just finished still drains its whole event log.
       const completedJobs = jobs.filter(
-        (j: { status: string }) => j.status === "completed",
+        (j: { status: string; job_id: string }) =>
+          j.status === "completed" && j.job_id !== activeJobId,
       );
 
       // User prompts aren't persisted in job_events — they live in the

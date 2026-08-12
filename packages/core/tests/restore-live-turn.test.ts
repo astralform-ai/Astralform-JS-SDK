@@ -272,3 +272,89 @@ describe("restoring a conversation whose turn is still running", () => {
     expect(userMessages(events)).toEqual([]);
   });
 });
+
+describe("the probe and the job list can disagree", () => {
+  /**
+   * `getActiveJob` and `GET /jobs` are two awaits apart — `loadConversation`
+   * sits between them — so a turn that ENDS in that window is reported running
+   * by the probe and completed by the list. Naming it in both put the same job
+   * in `completedJobs` and `runningJob`, which the plan walked twice.
+   */
+  function racingBackend(calls: string[]): typeof globalThis.fetch {
+    return async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      calls.push(url);
+      if (url.includes("/active-job")) {
+        return json({ job_id: "job-2", status: "running" });
+      }
+      if (url.includes("/v1/jobs/")) return sse(LIVE_STREAM);
+      if (url.includes("/messages")) return json(MESSAGES);
+      // The list, fetched later, has already caught up: job-2 is done.
+      if (url.includes("/jobs")) {
+        return json([
+          { job_id: "job-1", status: "completed", message_id: "m-1" },
+          { job_id: "job-2", status: "completed", message_id: "m-2" },
+        ]);
+      }
+      if (url.includes("/events")) {
+        return json(url.includes("job_id=job-1") ? DONE_TURN_EVENTS : []);
+      }
+      return json([]);
+    };
+  }
+
+  it("renders the raced turn's prompt exactly once", async () => {
+    const calls: string[] = [];
+    const session = new ChatSession({ ...baseConfig, fetch: racingBackend(calls) });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await manager.switchTo("conv-1");
+
+    expect(userMessages(events)).toEqual([
+      "draw me a teapot",
+      "now generate a video of it",
+    ]);
+  });
+
+  it("keeps the raced turn out of the history events wave", async () => {
+    // Its events arrive on the reconnect, which drains the whole log of a job
+    // that has just finished — so fetching them here would render them twice.
+    const calls: string[] = [];
+    const session = new ChatSession({ ...baseConfig, fetch: racingBackend(calls) });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await manager.switchTo("conv-1");
+
+    expect(calls.some((u) => u.includes("job_id=job-2"))).toBe(false);
+    expect(
+      events.filter((e) => e.type === "message_start" && e.turnId === "t2"),
+    ).toHaveLength(1);
+  });
+});
+
+describe("a send landing inside the probe window", () => {
+  it("is not replayed over", async () => {
+    // `send` bails only on `streaming` and restore sits in `restoring`, so a
+    // send during the active-job probe goes through: it clears nothing and
+    // renders its own optimistic prompt. Replaying the history on top of that
+    // re-emits the prompt and appends the transcript under the live turn.
+    // The entry-time flag says "we cleared"; only the CURRENT streaming state
+    // says "something took the view over since".
+    const session = new ChatSession({ ...baseConfig, fetch: mockBackend([]) });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    // The send lands while the probe is in flight: streaming goes true after
+    // `announcedRestoring` was captured false.
+    const switching = manager.switchTo("conv-1");
+    (session as unknown as { isStreaming: boolean }).isStreaming = true;
+    await switching;
+
+    expect(userMessages(events)).toEqual([]);
+  });
+});
