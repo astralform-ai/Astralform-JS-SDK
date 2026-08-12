@@ -178,7 +178,6 @@ export class StreamManager {
       );
     }
     if (this._state === "streaming") return;
-    this.turnCounter++;
 
     // Auto-create conversation if none active.
     //
@@ -205,6 +204,12 @@ export class StreamManager {
       this.setActiveConversation(target);
     }
 
+    // Counted where the turn is ANNOUNCED, not where the method is entered:
+    // `turnStarted` is the one signal that survives a state which never
+    // changed, so a bump on a path that returns without starting anything
+    // reads to an in-flight restore as a takeover it must yield to. Above,
+    // `createNewConversation` can reject and leave exactly that.
+    this.turnCounter++;
     this.setState("streaming");
 
     try {
@@ -238,7 +243,6 @@ export class StreamManager {
 
   async regenerate(): Promise<void> {
     if (this._state === "streaming") return;
-    this.turnCounter++;
     // Unlike `send`, regenerate cannot be addressed: `resendFromCheckpoint`
     // takes no conversation override, and the message id comes from
     // `session.messages` — which a settling switch can leave holding the
@@ -268,6 +272,12 @@ export class StreamManager {
     const lastUserMsg = userMsgs[userMsgs.length - 1];
     if (!lastUserMsg) return;
 
+    // Past BOTH silent returns above, for the reason given at `send`'s bump.
+    // The first of them is not an edge during a restore but the ordinary case:
+    // `loadConversation` moves the pointer synchronously and installs the list
+    // only when its fetch returns, so for that whole window these two disagree
+    // and this method returns having done nothing.
+    this.turnCounter++;
     this.setState("streaming");
 
     try {

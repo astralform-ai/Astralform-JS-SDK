@@ -619,3 +619,62 @@ describe("a turn that starts AND ends inside a restore await", () => {
     expect(replayed).toEqual([]);
   });
 });
+
+describe("a regenerate that starts no turn", () => {
+  it("does not abort the restore it lands inside", async () => {
+    // `turnStarted` is deliberately the one signal that survives a state which
+    // never changed — so a bump on a path that returns without starting
+    // anything reads as a takeover, and the restore yields to a turn that does
+    // not exist: no history, no reconnect, `_state` stuck on `restoring`.
+    //
+    // Not an edge. `loadConversation` moves the pointer synchronously and
+    // installs the list only when its fetch returns, so for that entire window
+    // `regenerate`'s `messagesConversationId` guard returns having done
+    // nothing — which is exactly the window a restore sits in.
+    let openMessages!: () => void;
+    const messagesGate = new Promise<void>((r) => {
+      openMessages = () => r();
+    });
+    const calls: string[] = [];
+
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        calls.push(url);
+        if (url.includes("/active-job")) {
+          return json({ job_id: "job-2", status: "running" });
+        }
+        if (url.includes("/v1/jobs/")) return sse(LIVE_STREAM);
+        if (url.includes("/messages")) {
+          await messagesGate;
+          return json(MESSAGES);
+        }
+        if (url.includes("/jobs")) return json(JOBS);
+        if (url.includes("/events")) {
+          return json(url.includes("job_id=job-1") ? DONE_TURN_EVENTS : []);
+        }
+        return json([]);
+      },
+    });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    const switching = manager.switchTo("conv-1");
+    await new Promise((r) => setTimeout(r, 0));
+    // Lands mid-`loadConversation`, passes the `streaming` guard because we
+    // sit in `restoring`, and returns without starting a turn.
+    await manager.regenerate();
+    openMessages();
+    await switching;
+
+    // The restore must have run to completion: history, prompt, reconnect.
+    expect(userMessages(events)).toEqual([
+      "draw me a teapot",
+      "now generate a video of it",
+    ]);
+    expect(calls.some((u) => u.includes("/v1/jobs/job-2/events"))).toBe(true);
+    expect(manager.state).not.toBe("restoring");
+  });
+});
