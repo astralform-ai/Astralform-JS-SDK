@@ -1,5 +1,34 @@
 # Changelog
 
+## 6.0.1
+
+### Fixed
+
+**Reopening a conversation while a turn is still running now restores the
+transcript.** It previously rendered that turn's blocks under nothing at all —
+no prompt, and no earlier history either — because the live path reconnected to
+the running job's event stream and skipped the history replay entirely. A user
+prompt is not in `job_events`; it lives in the messages table, so the reconnect
+had nothing to render it from.
+
+Nothing about it was specific to any one tool. It was a function of turn
+DURATION: the window is open for as long as the turn runs, so a long tool call
+(a video generation holds one block open for minutes) made it reachable by
+simply switching conversations and coming back. It healed once the turn ended,
+which is why history looked correct at rest and empty only mid-flight.
+
+History now replays on both paths. The running turn is paired with the prompt
+that started it and emitted before the reconnect, so the bubble sits above the
+agent header the live stream opens. The job being reconnected to is excluded
+from the history fetch, leaving the live stream as its single source.
+
+### Changed
+
+**`versionsReady` now fires when a conversation is restored over a running
+turn**, which it never did before — the event was only reachable on the
+settled path. The count is unchanged in meaning: completed jobs only, since a
+running turn is not a version yet.
+
 ## 6.0.0
 
 ### BREAKING CHANGES
