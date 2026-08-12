@@ -99,6 +99,11 @@ export function planRestore(args: {
    * second, `steer`-flagged bubble on top of the one the live send already
    * rendered. Optional so callers that only have the completed set keep the
    * old behaviour.
+   *
+   * Ignored when the walk is EMPTY — see the branch below. Claiming prevents a
+   * second copy of a prompt, and a walk with no turns in it emits no first
+   * copy, so honouring the set there would drop a running turn's prompt rather
+   * than de-duplicate it.
    */
   claimedMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];

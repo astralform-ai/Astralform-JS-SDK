@@ -394,8 +394,11 @@ describe("no turn survived to anchor the prompt", () => {
   });
 
   it("renders a legacy prompt whose only job failed", () => {
-    // Pre-link rows carry a fabricated positional id (`str(len(result))`), so
-    // "0" must not be mistaken for "no id" and dropped.
+    // Pre-link rows carry a fabricated positional id (`str(len(result))`).
+    // The branch no longer filters on id at all, so this pins that the
+    // fabricated id survives onto the step as `messageId` — which is what the
+    // consumer keys the restored bubble by — rather than being normalised away
+    // with the pre-link handling around it.
     const steps = planRestore({
       completedJobs: [],
       claimedMessageIds: [],
