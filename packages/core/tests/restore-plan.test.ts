@@ -313,6 +313,50 @@ describe("the turn that is still running", () => {
     ]);
   });
 
+  it("renders the prompt when the only turn failed or was cancelled", () => {
+    // THE regression. A cancelled/failed job is not `completed`, so it never
+    // reaches `completedJobs` and the walk is empty. `positional` maps over
+    // JOBS, so it returned [] and the whole transcript rendered blank: the
+    // turn's blocks under no prompt at all. Reported as "my message disappears
+    // and only the Generate Video pill is left".
+    //
+    // Its id is deliberately NOT in `claimedMessageIds` — failed and cancelled
+    // jobs are left unclaimed precisely so their prompt still renders.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [tagged("make loop animation for this image", "m1")],
+    });
+
+    expect(steps).toEqual([
+      {
+        kind: "steer",
+        content: "make loop animation for this image",
+        messageId: "m1",
+      },
+    ]);
+  });
+
+  it("renders every prompt when no turn survived", () => {
+    // Same shape, several rounds deep: nothing is anchored to a job, so the
+    // message list is the only record that the conversation happened.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [tagged("first", "m1"), tagged("second", "m2")],
+    });
+
+    expect(steps.map((s) => s.content)).toEqual(["first", "second"]);
+  });
+
+  it("stays empty for a conversation that has no messages either", () => {
+    // The empty walk must not invent a bubble — a conversation opened before
+    // its first send has no jobs AND no prompts, and renders nothing.
+    expect(
+      planRestore({ completedJobs: [], claimedMessageIds: [], userMessages: [] }),
+    ).toEqual([]);
+  });
+
   it("still lets a steer sent during it through", () => {
     // A steer lands between the running turn's prompt and the end of the
     // message list, so it must not be swallowed by the running turn's pairing.

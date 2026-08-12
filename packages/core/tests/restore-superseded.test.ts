@@ -156,8 +156,22 @@ describe("a switch during a restore supersedes it", () => {
     // Nothing from A's transcript reached the consumer. The bug rendered it
     // all — the assistant text below, and every todo and plan event beside it
     // — into whichever conversation was displayed.
-    const replayed = seen.filter((e) => e.type === "event");
-    expect(replayed).toEqual([]);
+    //
+    // Addressed by CONVERSATION rather than by "any event at all": B has a
+    // prompt and no job, so B's own restore legitimately emits that bubble,
+    // and a blanket count cannot tell whose transcript it came from — which is
+    // the one thing this test exists to check.
+    const fromA = seen.filter(
+      (e) => e.type === "event" && e.conversationId === "conv-a",
+    );
+    expect(fromA).toEqual([]);
+    expect(
+      seen.some(
+        (e) =>
+          e.type === "event" &&
+          JSON.stringify(e.event).includes("A's prompt"),
+      ),
+    ).toBe(false);
     expect(seen.some((e) => e.type === "versionsReady")).toBe(false);
   });
 
