@@ -35,6 +35,12 @@
  * Steers are interleaved at the point they appear in the message list, which
  * puts them after the turn that was running when they were sent.
  *
+ * A conversation can also be reopened while a turn is STILL RUNNING, and that
+ * turn's prompt is paired here too (`runningJob`) even though its events are
+ * not replayed from storage — they arrive on the live stream the caller
+ * reconnects to. Only the pairing is special-cased; the walk treats it as an
+ * ordinary turn.
+ *
  * A conversation predating the link has no `message_id` on any job; there is
  * nothing to pair with, and no backfill is possible — inferring which historic
  * prompt started which job is exactly the ambiguity the link removes, so
@@ -69,6 +75,18 @@ export type ReplayStep =
 export function planRestore(args: {
   completedJobs: RestoreJob[];
   /**
+   * The turn that is still RUNNING, if one is. It joins the walk as an
+   * ordinary turn so it is paired with its prompt by the same rules as any
+   * other — the caller simply holds no events for it, because those are the
+   * live stream it reconnects to, so the step renders the bubble alone.
+   *
+   * Without it a live turn's prompt is paired with nothing while still being
+   * `claimed` (below), so it is neither a turn nor a steer and vanishes from
+   * the restore entirely — leaving a conversation reopened mid-turn showing
+   * the running turn's blocks under no prompt at all.
+   */
+  runningJob?: RestoreJob;
+  /**
    * Message ids claimed by ANY job, not just completed ones. A steer is a
    * prompt no job started, so testing against completed jobs alone reads a
    * prompt whose turn is still RUNNING as a steer — and replays it as a
@@ -79,9 +97,14 @@ export function planRestore(args: {
   claimedMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];
 }): ReplayStep[] {
-  const { completedJobs, userMessages } = args;
+  const { completedJobs, runningJob, userMessages } = args;
+  // The running turn sits after every completed one, which is where it belongs
+  // both chronologically and positionally: on a pre-link conversation the
+  // fallback walk pairs it with `userMessages[completedJobs.length]`, the
+  // prompt that follows the last completed turn's.
+  const jobs = runningJob ? [...completedJobs, runningJob] : completedJobs;
   const claimed = new Set(
-    (args.claimedMessageIds ?? completedJobs.map((j) => j.message_id)).filter(
+    (args.claimedMessageIds ?? jobs.map((j) => j.message_id)).filter(
       (id): id is string => !!id,
     ),
   );
@@ -94,11 +117,14 @@ export function planRestore(args: {
   const linkOf = (j: RestoreJob): number | undefined =>
     j.message_id ? byId.get(j.message_id) : undefined;
 
+  // `slice`, not `jobs`: the caller hands this a PORTION of the walk (the
+  // pre-cutover head, or the whole list), and reusing the outer name for
+  // sometimes-the-same list made `jobs` mean two things in one function.
   const positional = (
-    jobs: RestoreJob[],
+    slice: RestoreJob[],
     msgs: RestoreMessage[],
   ): ReplayStep[] =>
-    jobs.map((job, i) => ({
+    slice.map((job, i) => ({
       kind: "turn" as const,
       jobId: job.job_id,
       content: msgs[i]?.content,
@@ -111,18 +137,18 @@ export function planRestore(args: {
   // a positional index string when a row has no id of its own), so a
   // presence check silently classifies every pre-link conversation as linked
   // and strips every prompt bubble from it.
-  const firstLinked = completedJobs.findIndex((j) => linkOf(j) !== undefined);
+  const firstLinked = jobs.findIndex((j) => linkOf(j) !== undefined);
   if (firstLinked === -1) {
     // Nothing matches: the whole conversation predates the tagging.
-    return positional(completedJobs, userMessages);
+    return positional(jobs, userMessages);
   }
 
   // The tagging started at a point in time, so a conversation spanning it
   // splits cleanly: everything before the first linked turn has no usable
   // link and falls back to position; everything after is exact.
-  const cutover = linkOf(completedJobs[firstLinked]!)!;
+  const cutover = linkOf(jobs[firstLinked]!)!;
   const steps: ReplayStep[] = positional(
-    completedJobs.slice(0, firstLinked),
+    jobs.slice(0, firstLinked),
     userMessages.slice(0, cutover),
   );
 
@@ -141,7 +167,7 @@ export function planRestore(args: {
     cursor = stopAt + 1;
   };
 
-  for (const job of completedJobs.slice(firstLinked)) {
+  for (const job of jobs.slice(firstLinked)) {
     const at = linkOf(job);
     if (at !== undefined) {
       drainTo(at);

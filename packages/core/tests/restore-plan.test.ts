@@ -241,3 +241,96 @@ describe("a failed turn's prompt is not swallowed", () => {
     );
   });
 });
+
+describe("the turn that is still running", () => {
+  it("pairs with its own prompt and lands last", () => {
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m1" }],
+      runningJob: { job_id: "j2", message_id: "m2" },
+      claimedMessageIds: ["m1", "m2"],
+      userMessages: [
+        { id: "m1", content: "first turn" },
+        { id: "m2", content: "generate a video" },
+      ],
+    });
+
+    expect(plan).toEqual([
+      { kind: "turn", jobId: "j1", content: "first turn", messageId: "m1" },
+      {
+        kind: "turn",
+        jobId: "j2",
+        content: "generate a video",
+        messageId: "m2",
+      },
+    ]);
+  });
+
+  it("is the reason its prompt survives at all", () => {
+    // Without it the running prompt is `claimed` (so not a steer) and paired
+    // with no turn (so not a bubble) — it disappears from the restore, which
+    // is what left a conversation reopened mid-generation showing the running
+    // turn's blocks under nothing.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m1" }],
+      claimedMessageIds: ["m1", "m2"],
+      userMessages: [
+        { id: "m1", content: "first turn" },
+        { id: "m2", content: "generate a video" },
+      ],
+    });
+
+    expect(plan.map((s) => (s as { content?: string }).content)).toEqual([
+      "first turn",
+    ]);
+  });
+
+  it("takes the next position on a pre-link conversation", () => {
+    // No job carries a matching id, so the whole walk falls back to position.
+    // The running turn is appended, so it picks up the prompt after the last
+    // completed turn's rather than being dropped off the end.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1" }],
+      runningJob: { job_id: "j2" },
+      userMessages: [
+        { content: "first turn" },
+        { content: "generate a video" },
+      ],
+    });
+
+    expect(plan).toEqual([
+      {
+        kind: "turn",
+        jobId: "j1",
+        content: "first turn",
+        messageId: undefined,
+      },
+      {
+        kind: "turn",
+        jobId: "j2",
+        content: "generate a video",
+        messageId: undefined,
+      },
+    ]);
+  });
+
+  it("still lets a steer sent during it through", () => {
+    // A steer lands between the running turn's prompt and the end of the
+    // message list, so it must not be swallowed by the running turn's pairing.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m1" }],
+      runningJob: { job_id: "j2", message_id: "m2" },
+      claimedMessageIds: ["m1", "m2"],
+      userMessages: [
+        { id: "m1", content: "first turn" },
+        { id: "m2", content: "generate a video" },
+        { id: "m3", content: "make it shorter" },
+      ],
+    });
+
+    expect(plan[plan.length - 1]).toEqual({
+      kind: "steer",
+      content: "make it shorter",
+      messageId: "m3",
+    });
+  });
+});
