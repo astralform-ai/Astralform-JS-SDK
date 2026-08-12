@@ -685,7 +685,14 @@ export class StreamManager {
     // `restoring`" — announcing it here makes that consumer wipe the turn
     // still streaming into it. The state recovers (the active-job branch
     // re-announces `streaming`); the rendered blocks do not.
-    if (!this.session.isStreaming) this.setState("restoring");
+    //
+    // Captured rather than re-read, because it is also the answer to "was the
+    // consumer told to clear its block view?", which is what decides whether
+    // the history replay below repaints an emptied view or duplicates one that
+    // was never emptied. The two questions have the same answer by contract —
+    // `restoring` is the documented signal to clear — so they share the flag.
+    const announcedRestoring = !this.session.isStreaming;
+    if (announcedRestoring) this.setState("restoring");
 
     // Check for active job
     let activeJobId: string | null = null;
@@ -697,10 +704,27 @@ export class StreamManager {
     }
     if (superseded()) return;
 
+    await this.session.loadConversation(conversationId);
+    if (superseded()) return;
+
+    // History first, in BOTH branches. A live turn used to skip it entirely and
+    // reconnect to the running job alone — but a prompt is not in `job_events`
+    // (it lives in the messages table, see below), and neither is any earlier
+    // turn, so everything except the running turn's own blocks was missing for
+    // as long as the turn lasted. Long tool calls made that a matter of
+    // minutes, which is exactly when a user switches away and back.
+    //
+    // Skipped when we did not announce `restoring`: the consumer still holds
+    // the blocks it rendered — including the prompt bubble a live `send`
+    // inserted optimistically — so replaying would duplicate the transcript
+    // rather than repaint it.
+    if (
+      announcedRestoring &&
+      !(await this.replayHistory(conversationId, gen, activeJobId))
+    )
+      return;
+
     if (activeJobId) {
-      // Active job: load messages, reconnect to live SSE
-      await this.session.loadConversation(conversationId);
-      if (superseded()) return;
       this.setState("streaming");
       try {
         await this.session.reconnectToJob(activeJobId);
@@ -720,135 +744,176 @@ export class StreamManager {
         this.setState("idle");
       }
     } else {
-      // Completed: load the final messages once, then replay each turn.
-      await this.session.loadConversation(conversationId);
-      if (superseded()) return;
-
-      try {
-        const jobs = await this.session.client.get<
-          {
-            job_id: string;
-            status: string;
-            message_id?: string | null;
-            metrics?: Record<string, unknown>;
-          }[]
-        >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
-        if (superseded()) return;
-        const completedJobs = jobs.filter(
-          (j: { status: string }) => j.status === "completed",
-        );
-
-        // User prompts aren't persisted in job_events — they live in the
-        // messages table, so each turn has to be paired with the message that
-        // started it. `job.message_id` is that link; planRestore also decides
-        // where mid-run steers (user messages that start no job) and goal
-        // continuations (jobs with no visible prompt) belong. See
-        // restore-plan.ts for why pairing by index was wrong.
-        const userMessages = this.session.messages.filter(
-          (m) => m.role === "user",
-        );
-        const plan = planRestore({
-          completedJobs: completedJobs.map((j) => ({
-            job_id: j.job_id,
-            message_id: j.message_id,
-          })),
-          // Completed jobs PLUS the ones still going. A send landing in the
-          // probe window has a running job, so its prompt is claimed and does
-          // not read as a steer replayed over the bubble the live send already
-          // rendered. Failed and cancelled jobs are deliberately NOT claimed:
-          // they produce no `turn` step, so claiming them would delete the
-          // user's prompt from the restore entirely rather than show it as a
-          // steer.
-          claimedMessageIds: jobs
-            .filter((j) => j.status !== "failed" && j.status !== "cancelled")
-            .map((j) => j.message_id),
-          userMessages: userMessages.map((m) => ({
-            id: m.id,
-            content: m.content,
-          })),
-        });
-
-        // Fetch every turn's events up front, in PARALLEL. The backend strips
-        // live-only deltas from this path, so each response is small; parallel
-        // fetch collapses N serial round-trips into one wave. We still fetch
-        // per job (not the whole conversation in one call) so superseded
-        // regeneration versions stay available for version navigation — the
-        // whole-conversation endpoint drops them.
-        const eventLists = await Promise.all(
-          completedJobs.map((job: { job_id: string }) =>
-            this.session.client
-              .getConversationEvents(conversationId, job.job_id)
-              .catch(() => []),
-          ),
-        );
-        // THE window. This wave is the slow part of a restore — the events of
-        // every completed turn — and a click during it is the ordinary case,
-        // not a rare one. The fetched events are discarded rather than
-        // replayed: the replay below is what re-points the session and floods
-        // the consumer.
-        if (superseded()) return;
-
-        const eventsByJobId = new Map(
-          completedJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
-        );
-
-        // Replay every step in one SYNCHRONOUS pass (no awaits between events
-        // or turns), so the consumer batches the whole history into a single
-        // render instead of re-typing it event by event. A steer replays as a
-        // turn with no events: the bubble, and nothing after it.
-        for (const step of plan) {
-          // Checked per TURN, not just before the loop: "synchronous" bounds
-          // out awaits, not re-entrancy. `replayTurn` emits through
-          // `onSessionEvent` to every handler, and nothing in the `on()`
-          // contract stops a handler driving the manager straight back —
-          // `switchTo`, `createConversation` and `deleteConversation` all bump
-          // the generation from inside this loop. Without this the remaining
-          // turns keep pouring out, tagged with the abandoned conversation's
-          // id, which is the leak this guard exists to close, reached through
-          // the one door an await boundary does not cover.
-          if (superseded()) return;
-          if (step.kind === "steer") {
-            this.session.replayTurn(
-              conversationId,
-              [],
-              step.content,
-              step.messageId,
-              true,
-            );
-            continue;
-          }
-          this.session.replayTurn(
-            conversationId,
-            eventsByJobId.get(step.jobId) ?? [],
-            step.content,
-            step.messageId,
-          );
-        }
-
-        // Before the announcement, not only before `setState` below. The
-        // loop's check runs at the TOP of each turn, so a handler that
-        // navigates away while the LAST turn replays — or the only turn, for a
-        // single-job conversation — exits the loop normally with no iteration
-        // left to catch it, and this would fire for the abandoned
-        // conversation.
-        if (superseded()) return;
-        if (completedJobs.length > 0) {
-          this.emit({
-            type: "versionsReady",
-            conversationId,
-            count: completedJobs.length,
-          });
-        }
-      } catch {
-        // Version chain loading failed — non-blocking
-      }
-
-      // The loop above can be superseded from inside a handler, and the `catch`
-      // swallows a failure that may have left the chain part-way. Either way
-      // this announcement belongs to whichever switch is current.
+      // Re-checked even though `replayHistory` reports supersession: it does
+      // not run at all when we never announced `restoring`, and it swallows a
+      // failure that may have left the chain part-way. Either way this
+      // announcement belongs to whichever switch is current.
       if (superseded()) return;
       this.settleIdle();
     }
+  }
+
+  /**
+   * Replay a conversation's persisted history into the consumer's block view.
+   *
+   * Returns false when a newer switch superseded this restore, in which case
+   * the caller must stop rather than finish — see ``restore``.
+   *
+   * ``activeJobId`` names the turn that is still running, if any. Its events
+   * are NOT fetched here: they are the live stream the caller reconnects to
+   * straight after. It is passed so ``planRestore`` can pair it with the prompt
+   * that started it, which is emitted as a bubble with no events — the whole
+   * reason a conversation reopened mid-turn now shows the message that started
+   * that turn.
+   */
+  private async replayHistory(
+    conversationId: string,
+    gen: number,
+    activeJobId: string | null,
+  ): Promise<boolean> {
+    const superseded = (): boolean => gen !== this.generation;
+    try {
+      const jobs = await this.session.client.get<
+        {
+          job_id: string;
+          status: string;
+          message_id?: string | null;
+          metrics?: Record<string, unknown>;
+        }[]
+      >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
+      if (superseded()) return false;
+      const completedJobs = jobs.filter(
+        (j: { status: string }) => j.status === "completed",
+      );
+
+      // User prompts aren't persisted in job_events — they live in the
+      // messages table, so each turn has to be paired with the message that
+      // started it. `job.message_id` is that link; planRestore also decides
+      // where mid-run steers (user messages that start no job) and goal
+      // continuations (jobs with no visible prompt) belong. See
+      // restore-plan.ts for why pairing by index was wrong.
+      const userMessages = this.session.messages.filter(
+        (m) => m.role === "user",
+      );
+      // Matched against the job LIST rather than trusted from the probe: the
+      // prompt pairing needs the running job's `message_id`, which only the
+      // list carries. A probe id absent from the list (raced purge) leaves
+      // `runningJob` undefined — and because `claimedMessageIds` is derived
+      // from that same list, its prompt is then unclaimed and surfaces as a
+      // steer bubble instead of vanishing.
+      const runningJob = activeJobId
+        ? jobs.find((j) => j.job_id === activeJobId)
+        : undefined;
+      const plan = planRestore({
+        completedJobs: completedJobs.map((j) => ({
+          job_id: j.job_id,
+          message_id: j.message_id,
+        })),
+        runningJob: runningJob && {
+          job_id: runningJob.job_id,
+          message_id: runningJob.message_id,
+        },
+        // Completed jobs PLUS the ones still going. A send landing in the
+        // probe window has a running job, so its prompt is claimed and does
+        // not read as a steer replayed over the bubble the live send already
+        // rendered. Failed and cancelled jobs are deliberately NOT claimed:
+        // they produce no `turn` step, so claiming them would delete the
+        // user's prompt from the restore entirely rather than show it as a
+        // steer.
+        claimedMessageIds: jobs
+          .filter((j) => j.status !== "failed" && j.status !== "cancelled")
+          .map((j) => j.message_id),
+        userMessages: userMessages.map((m) => ({
+          id: m.id,
+          content: m.content,
+        })),
+      });
+
+      // Fetch every turn's events up front, in PARALLEL. The backend strips
+      // live-only deltas from this path, so each response is small; parallel
+      // fetch collapses N serial round-trips into one wave. We still fetch
+      // per job (not the whole conversation in one call) so superseded
+      // regeneration versions stay available for version navigation — the
+      // whole-conversation endpoint drops them.
+      //
+      // COMPLETED jobs only. The running turn's events are the live stream the
+      // caller reconnects to; fetching them here would replay every block it
+      // is about to receive again.
+      const eventLists = await Promise.all(
+        completedJobs.map((job: { job_id: string }) =>
+          this.session.client
+            .getConversationEvents(conversationId, job.job_id)
+            .catch(() => []),
+        ),
+      );
+      // THE window. This wave is the slow part of a restore — the events of
+      // every completed turn — and a click during it is the ordinary case,
+      // not a rare one. The fetched events are discarded rather than
+      // replayed: the replay below is what re-points the session and floods
+      // the consumer.
+      if (superseded()) return false;
+
+      const eventsByJobId = new Map(
+        completedJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
+      );
+
+      // Replay every step in one SYNCHRONOUS pass (no awaits between events
+      // or turns), so the consumer batches the whole history into a single
+      // render instead of re-typing it event by event. A steer replays as a
+      // turn with no events: the bubble, and nothing after it.
+      for (const step of plan) {
+        // Checked per TURN, not just before the loop: "synchronous" bounds
+        // out awaits, not re-entrancy. `replayTurn` emits through
+        // `onSessionEvent` to every handler, and nothing in the `on()`
+        // contract stops a handler driving the manager straight back —
+        // `switchTo`, `createConversation` and `deleteConversation` all bump
+        // the generation from inside this loop. Without this the remaining
+        // turns keep pouring out, tagged with the abandoned conversation's
+        // id, which is the leak this guard exists to close, reached through
+        // the one door an await boundary does not cover.
+        if (superseded()) return false;
+        if (step.kind === "steer") {
+          this.session.replayTurn(
+            conversationId,
+            [],
+            step.content,
+            step.messageId,
+            true,
+          );
+          continue;
+        }
+        // The running turn resolves to no entry here by design, so this emits
+        // its prompt bubble and nothing else — and does so BEFORE the caller
+        // reconnects, which is what keeps the bubble above the agent header
+        // the live stream's `message_start` is about to open.
+        this.session.replayTurn(
+          conversationId,
+          eventsByJobId.get(step.jobId) ?? [],
+          step.content,
+          step.messageId,
+        );
+      }
+
+      // Before the announcement, not only before `setState` below. The
+      // loop's check runs at the TOP of each turn, so a handler that
+      // navigates away while the LAST turn replays — or the only turn, for a
+      // single-job conversation — exits the loop normally with no iteration
+      // left to catch it, and this would fire for the abandoned
+      // conversation.
+      if (superseded()) return false;
+      if (completedJobs.length > 0) {
+        this.emit({
+          type: "versionsReady",
+          conversationId,
+          count: completedJobs.length,
+        });
+      }
+    } catch {
+      // History load failed — non-blocking. A live turn still reconnects, and
+      // a settled one still announces idle; the transcript is what is lost,
+      // exactly as before this was hoisted out of the completed-only branch.
+    }
+    return !superseded();
   }
 
   // ── Internal: set active conversation ─────────────────────────
