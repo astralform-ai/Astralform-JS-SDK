@@ -41,6 +41,12 @@
  * reconnects to. Only the pairing is special-cased; the walk treats it as an
  * ordinary turn.
  *
+ * Jobs are the spine, which means a conversation can also have NO spine: every
+ * job failed or was cancelled, or the only one is still running and the
+ * active-job probe did not resolve it. The walk is then empty, and the prompts
+ * are carried entirely by the message list — so they are emitted on their own
+ * rather than dropped with the jobs that would have anchored them.
+ *
  * A conversation predating the link has no `message_id` on any job; there is
  * nothing to pair with, and no backfill is possible — inferring which historic
  * prompt started which job is exactly the ambiguity the link removes, so
@@ -93,6 +99,11 @@ export function planRestore(args: {
    * second, `steer`-flagged bubble on top of the one the live send already
    * rendered. Optional so callers that only have the completed set keep the
    * old behaviour.
+   *
+   * Ignored when the walk is EMPTY — see the branch below. Claiming prevents a
+   * second copy of a prompt, and a walk with no turns in it emits no first
+   * copy, so honouring the set there would drop a running turn's prompt rather
+   * than de-duplicate it.
    */
   claimedMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];
@@ -130,6 +141,44 @@ export function planRestore(args: {
       content: msgs[i]?.content,
       messageId: msgs[i]?.id,
     }));
+
+  // No turn to walk AT ALL, which is not the same as a conversation with no
+  // history. Two ways to get here, and they are the whole reason this branch
+  // exists:
+  //
+  //   - every job FAILED or was CANCELLED — neither is `completed`, so neither
+  //     reaches `completedJobs`;
+  //   - the only job is still RUNNING and the active-job probe did not resolve
+  //     it, so the caller passes no `runningJob` (the Redis liveness key can
+  //     expire while the row is still `in_progress`).
+  //
+  // `positional` maps over JOBS, so it returns [] for an empty walk and the
+  // whole transcript renders empty — the prompt the user actually sent
+  // disappears, leaving the turn's blocks under nothing at all.
+  //
+  // `claimed` is deliberately IGNORED here, and that is what separates the two
+  // cases above. Claiming exists to stop a prompt being drawn twice: once by
+  // the turn that anchors it and once as a steer. An empty walk emits no turn
+  // at all, so nothing can anchor anything and there is no second copy to
+  // avoid — while a running job IS claimed (`claimedMessageIds` excludes only
+  // failed and cancelled), so filtering on it here would drop exactly the
+  // running-but-unresolved prompt this branch has to rescue.
+  //
+  // Nor does that re-open the double-bubble the claim set guards: the caller
+  // only replays after announcing `restoring`, i.e. after telling the consumer
+  // to clear, and bails on `turnStarted` / `viewTakenOverByLiveTurn` when a
+  // send owns the view instead. So reaching here means the view is empty.
+  //
+  // Checked before `firstLinked`, because an empty list has no linked job by
+  // definition and would otherwise fall into the pre-link branch below and
+  // return [] from there.
+  if (jobs.length === 0) {
+    return userMessages.map((m) => ({
+      kind: "steer" as const,
+      content: m.content,
+      messageId: m.id,
+    }));
+  }
 
   // Detection keys off whether a job's id actually MATCHES a message — never
   // off a field merely being present. Both fields are always populated in real

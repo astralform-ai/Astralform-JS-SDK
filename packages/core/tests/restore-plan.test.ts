@@ -334,3 +334,87 @@ describe("the turn that is still running", () => {
     });
   });
 });
+
+describe("no turn survived to anchor the prompt", () => {
+  /**
+   * Jobs are the spine of the walk and `positional` maps over JOBS, so an
+   * EMPTY walk returned [] and the whole transcript rendered blank — the
+   * turn's blocks under no prompt at all. Reported as "the previous round of
+   * the conversation is gone", with a recording of a cancelled video
+   * generation.
+   */
+  it("renders the prompt when the only turn was cancelled", () => {
+    // A cancelled job is not `completed`, so it never reaches `completedJobs`
+    // and nothing is left to walk. Its id is absent from `claimedMessageIds`:
+    // failed and cancelled jobs are left unclaimed for exactly this reason.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [tagged("make loop animation for this image", "m1")],
+    });
+
+    expect(steps).toEqual([
+      {
+        kind: "steer",
+        content: "make loop animation for this image",
+        messageId: "m1",
+      },
+    ]);
+  });
+
+  it("renders the prompt of a running turn the probe did not resolve", () => {
+    // The OTHER way to an empty walk, and the one a claim-filter would miss.
+    // `claimedMessageIds` excludes only failed and cancelled, so a job that is
+    // still `in_progress` DOES claim its prompt — but when the active-job probe
+    // fails to resolve it (the Redis liveness key can expire while the row is
+    // still in_progress) the caller passes no `runningJob`, so nothing walks it
+    // and the claim has no anchor to attach to. Filtering on `claimed` here
+    // would drop exactly this prompt.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: ["m1"], // the running job claims it
+      userMessages: [tagged("generate a video", "m1")],
+    });
+
+    expect(steps).toEqual([
+      { kind: "steer", content: "generate a video", messageId: "m1" },
+    ]);
+  });
+
+  it("renders every prompt when no turn survived", () => {
+    // Same shape, several rounds deep: nothing is anchored to a job, so the
+    // message list is the only record that the conversation happened.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [tagged("first", "m1"), tagged("second", "m2")],
+    });
+
+    expect(steps.map((s) => s.content)).toEqual(["first", "second"]);
+  });
+
+  it("renders a legacy prompt whose only job failed", () => {
+    // Pre-link rows carry a fabricated positional id (`str(len(result))`).
+    // The branch no longer filters on id at all, so this pins that the
+    // fabricated id survives onto the step as `messageId` — which is what the
+    // consumer keys the restored bubble by — rather than being normalised away
+    // with the pre-link handling around it.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [legacy("an old prompt", 0)],
+    });
+
+    expect(steps).toEqual([
+      { kind: "steer", content: "an old prompt", messageId: "0" },
+    ]);
+  });
+
+  it("stays empty for a conversation that has no messages either", () => {
+    // The empty walk must not invent a bubble — a conversation opened before
+    // its first send has no jobs AND no prompts, and renders nothing.
+    expect(
+      planRestore({ completedJobs: [], claimedMessageIds: [], userMessages: [] }),
+    ).toEqual([]);
+  });
+});
