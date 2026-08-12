@@ -723,17 +723,17 @@ export class StreamManager {
     //    regardless: that case now shows no history until the next open, which
     //    is the same trade the live path takes and for the same reason — the
     //    view was never cleared, so neither outcome is coherent.
-    //  - `isStreaming` NOW, not at entry — `send` bails only on `streaming`
-    //    and we sit in `restoring`, so a send landing inside the probe window
-    //    goes through, clears nothing, and renders its own optimistic prompt.
-    //    The captured flag is stale by then and would replay the history under
-    //    the live turn, re-emitting the prompt it just drew.
+    //  - has a live turn taken the view over SINCE? `send` bails only on
+    //    `streaming` and we sit in `restoring`, so nothing gates a send for
+    //    the whole restore: it goes through, clears nothing, and renders its
+    //    own optimistic prompt. Replaying then re-emits the prompt it just
+    //    drew and appends the history under it.
     //
     // The pair is not redundant: a stream that ENDS during the probe leaves
-    // `isStreaming` false over a view that was never cleared.
+    // no live turn over a view that was never cleared.
     if (
       announcedRestoring &&
-      !this.session.isStreaming &&
+      !this.viewTakenOverByLiveTurn() &&
       !(await this.replayHistory(conversationId, gen, activeJobId))
     )
       return;
@@ -768,10 +768,27 @@ export class StreamManager {
   }
 
   /**
+   * Has a live turn taken the block view over?
+   *
+   * ``_state`` is the SYNCHRONOUS authority and ``session.isStreaming`` lags it
+   * by an await: ``send`` sets ``_state = "streaming"`` before its first await,
+   * while the session only raises its flag inside ``processStream``, behind the
+   * ``storage.addMessage`` write. For that whole window a send is underway —
+   * composer cleared, optimistic bubble drawn — and the session flag still
+   * reads false. Reading both closes the window from either end, since
+   * ``reconnectToJob`` is the mirror case: it raises the session flag without
+   * ever moving ``_state``.
+   */
+  private viewTakenOverByLiveTurn(): boolean {
+    return this._state === "streaming" || this.session.isStreaming;
+  }
+
+  /**
    * Replay a conversation's persisted history into the consumer's block view.
    *
-   * Returns false when a newer switch superseded this restore, in which case
-   * the caller must stop rather than finish — see ``restore``.
+   * Returns false when this restore lost the right to finish — a newer switch
+   * superseded it, or a send took the view over — in which case the caller
+   * must stop rather than finish. See ``restore``.
    *
    * ``activeJobId`` names the turn that is still running, if any. Its events
    * are NOT fetched here: they are the live stream the caller reconnects to
@@ -785,7 +802,15 @@ export class StreamManager {
     gen: number,
     activeJobId: string | null,
   ): Promise<boolean> {
-    const superseded = (): boolean => gen !== this.generation;
+    // Two ways to lose the right to replay, checked at every await boundary
+    // below because both arrive from outside this function while it waits:
+    // a newer switch (the generation), and a send taking the view over
+    // (nothing gates `send` during a restore — see the caller). The caller
+    // treats either as "stop": a send that took over owns the state, so
+    // reconnecting the turn we were restoring would open a second stream
+    // under it.
+    const stopReplay = (): boolean =>
+      gen !== this.generation || this.viewTakenOverByLiveTurn();
     try {
       const jobs = await this.session.client.get<
         {
@@ -795,7 +820,7 @@ export class StreamManager {
           metrics?: Record<string, unknown>;
         }[]
       >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
-      if (superseded()) return false;
+      if (stopReplay()) return false;
       // COMPLETED, minus the one we are about to reconnect to. The probe and
       // this list are two awaits apart (`loadConversation` sits between them),
       // so a turn that ENDS in that window comes back `completed` here while
@@ -877,7 +902,7 @@ export class StreamManager {
       // not a rare one. The fetched events are discarded rather than
       // replayed: the replay below is what re-points the session and floods
       // the consumer.
-      if (superseded()) return false;
+      if (stopReplay()) return false;
 
       const eventsByJobId = new Map(
         completedJobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
@@ -897,7 +922,7 @@ export class StreamManager {
         // turns keep pouring out, tagged with the abandoned conversation's
         // id, which is the leak this guard exists to close, reached through
         // the one door an await boundary does not cover.
-        if (superseded()) return false;
+        if (stopReplay()) return false;
         if (step.kind === "steer") {
           this.session.replayTurn(
             conversationId,
@@ -926,7 +951,7 @@ export class StreamManager {
       // single-job conversation — exits the loop normally with no iteration
       // left to catch it, and this would fire for the abandoned
       // conversation.
-      if (superseded()) return false;
+      if (stopReplay()) return false;
       if (completedJobs.length > 0) {
         this.emit({
           type: "versionsReady",
@@ -939,7 +964,7 @@ export class StreamManager {
       // a settled one still announces idle; the transcript is what is lost,
       // exactly as before this was hoisted out of the completed-only branch.
     }
-    return !superseded();
+    return !stopReplay();
   }
 
   // ── Internal: set active conversation ─────────────────────────

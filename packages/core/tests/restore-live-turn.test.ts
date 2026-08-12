@@ -358,3 +358,143 @@ describe("a send landing inside the probe window", () => {
     expect(userMessages(events)).toEqual([]);
   });
 });
+
+describe("a real send taking the view over mid-restore", () => {
+  /**
+   * The previous test pinned `session.isStreaming` by hand, which is exactly
+   * what the guard used to read — so it could not see that the flag LAGS the
+   * send by an await. `StreamManager.send` sets `_state = "streaming"`
+   * synchronously (stream-manager.ts:200); the session raises `isStreaming`
+   * only inside `processStream` (session.ts:523), behind the
+   * `storage.addMessage` write (session.ts:378). These drive the real
+   * `manager.send` so the window is the code's, not the test's.
+   */
+  function backendWithGate(jobsGate: Promise<void>): typeof globalThis.fetch {
+    return async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/active-job")) {
+        return json({ job_id: "job-2", status: "running" });
+      }
+      // The send's own POST — must not be read as the job LIST below.
+      if (url.includes("/v1/jobs") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({ job_id: "job-3", conversation_id: "conv-1" }),
+          { status: 201, headers: JSON_HEADERS },
+        );
+      }
+      if (url.includes("/v1/jobs/")) return sse(LIVE_STREAM);
+      if (url.includes("/messages")) return json(MESSAGES);
+      if (url.includes("/jobs")) {
+        // Suspends the history fetch, so the send lands mid-replayHistory.
+        await jobsGate;
+        return json(JOBS);
+      }
+      if (url.includes("/events")) {
+        return json(url.includes("job_id=job-1") ? DONE_TURN_EVENTS : []);
+      }
+      return json([]);
+    };
+  }
+
+  it("does not replay history under the send's own prompt", async () => {
+    let openGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      openGate = () => r();
+    });
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: backendWithGate(gate),
+    });
+    const manager = new StreamManager(session);
+    const replayed: string[] = [];
+    session.on((e) => {
+      if (e.type === "user_message") replayed.push(e.content);
+    });
+
+    const switching = manager.switchTo("conv-1");
+    // Let the restore reach the suspended history fetch, then send for real.
+    await new Promise((r) => setTimeout(r, 0));
+    const sending = manager.send("a brand new question");
+    openGate();
+    await Promise.all([switching, sending]);
+
+    // `replayTurn` is the only thing that emits `user_message`; a live send
+    // renders its prompt through the consumer, not through this event. So any
+    // entry here is replayed history landing under the send.
+    expect(replayed).toEqual([]);
+  });
+
+  it("does not replay while the send is still inside its storage write", async () => {
+    // The gate's own half of the same race, and the one an `isStreaming`-only
+    // check cannot see: park the send between `setState("streaming")` and
+    // `processStream`'s `isStreaming = true` by suspending the
+    // `storage.addMessage` that sits between them. At the moment the restore
+    // reaches its gate, `_state` says a turn owns the view and the session
+    // flag still says nothing does.
+    let openMessages!: () => void;
+    const messagesGate = new Promise<void>((r) => {
+      openMessages = () => r();
+    });
+    let openWrite!: () => void;
+    const writeGate = new Promise<void>((r) => {
+      openWrite = () => r();
+    });
+
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/active-job")) {
+          return json({ job_id: "job-2", status: "running" });
+        }
+        if (url.includes("/v1/jobs") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ job_id: "job-3", conversation_id: "conv-1" }),
+            { status: 201, headers: JSON_HEADERS },
+          );
+        }
+        if (url.includes("/v1/jobs/")) return sse(LIVE_STREAM);
+        if (url.includes("/messages")) {
+          await messagesGate; // holds `loadConversation`, before the gate
+          return json(MESSAGES);
+        }
+        if (url.includes("/jobs")) return json(JOBS);
+        if (url.includes("/events")) {
+          return json(url.includes("job_id=job-1") ? DONE_TURN_EVENTS : []);
+        }
+        return json([]);
+      },
+    });
+
+    const storage = (session as unknown as { storage: { addMessage: unknown } })
+      .storage;
+    const realAdd = storage.addMessage as (...a: unknown[]) => Promise<unknown>;
+    storage.addMessage = async (...a: unknown[]) => {
+      await writeGate;
+      return realAdd.apply(storage, a);
+    };
+
+    const manager = new StreamManager(session);
+    const replayed: string[] = [];
+    session.on((e) => {
+      if (e.type === "user_message") replayed.push(e.content);
+    });
+
+    const switching = manager.switchTo("conv-1");
+    await new Promise((r) => setTimeout(r, 0));
+    const sending = manager.send("a brand new question");
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The window this test exists for.
+    expect(manager.state).toBe("streaming");
+    expect(session.isStreaming).toBe(false);
+
+    openMessages();
+    await switching;
+
+    expect(replayed).toEqual([]);
+
+    openWrite();
+    await sending.catch(() => {});
+  });
+});
