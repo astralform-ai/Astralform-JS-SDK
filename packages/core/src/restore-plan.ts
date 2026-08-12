@@ -137,28 +137,38 @@ export function planRestore(args: {
       messageId: msgs[i]?.id,
     }));
 
-  /** A prompt no job claims: render the bubble on its own. */
-  const isSteer = (m: RestoreMessage | undefined): m is RestoreMessage =>
-    !!m?.id && !claimed.has(m.id);
-
   // No turn to walk AT ALL, which is not the same as a conversation with no
-  // history. It is what a conversation looks like when its only job failed or
-  // was cancelled (neither is `completed`, so neither reaches `completedJobs`),
-  // or when the one still running was not resolved by the active-job probe.
+  // history. Two ways to get here, and they are the whole reason this branch
+  // exists:
+  //
+  //   - every job FAILED or was CANCELLED — neither is `completed`, so neither
+  //     reaches `completedJobs`;
+  //   - the only job is still RUNNING and the active-job probe did not resolve
+  //     it, so the caller passes no `runningJob` (the Redis liveness key can
+  //     expire while the row is still `in_progress`).
   //
   // `positional` maps over JOBS, so it returns [] for an empty walk and the
   // whole transcript renders empty — the prompt the user actually sent
-  // disappears, leaving the turn's blocks under nothing at all. There is no
-  // positional pairing to preserve when there is nothing to pair with, and
-  // nothing claims these messages (failed and cancelled jobs are deliberately
-  // left out of `claimedMessageIds` for exactly this reason), so each renders
-  // as its own bubble.
+  // disappears, leaving the turn's blocks under nothing at all.
+  //
+  // `claimed` is deliberately IGNORED here, and that is what separates the two
+  // cases above. Claiming exists to stop a prompt being drawn twice: once by
+  // the turn that anchors it and once as a steer. An empty walk emits no turn
+  // at all, so nothing can anchor anything and there is no second copy to
+  // avoid — while a running job IS claimed (`claimedMessageIds` excludes only
+  // failed and cancelled), so filtering on it here would drop exactly the
+  // running-but-unresolved prompt this branch has to rescue.
+  //
+  // Nor does that re-open the double-bubble the claim set guards: the caller
+  // only replays after announcing `restoring`, i.e. after telling the consumer
+  // to clear, and bails on `turnStarted` / `viewTakenOverByLiveTurn` when a
+  // send owns the view instead. So reaching here means the view is empty.
   //
   // Checked before `firstLinked`, because an empty list has no linked job by
   // definition and would otherwise fall into the pre-link branch below and
   // return [] from there.
   if (jobs.length === 0) {
-    return userMessages.filter(isSteer).map((m) => ({
+    return userMessages.map((m) => ({
       kind: "steer" as const,
       content: m.content,
       messageId: m.id,
@@ -187,6 +197,8 @@ export function planRestore(args: {
   );
 
   let cursor = cutover;
+  const isSteer = (m: RestoreMessage | undefined): m is RestoreMessage =>
+    !!m?.id && !claimed.has(m.id);
 
   /** Emit every steer sitting before `stopAt`, and advance past it. */
   const drainTo = (stopAt: number) => {

@@ -165,13 +165,15 @@ describe("a switch during a restore supersedes it", () => {
       (e) => e.type === "event" && e.conversationId === "conv-a",
     );
     expect(fromA).toEqual([]);
+    // Both halves of A's transcript, not just its prompt: the bug replayed the
+    // assistant text and every todo/plan event beside it, and a backstop that
+    // only names the prompt would miss a leak of the answer.
     expect(
-      seen.some(
-        (e) =>
-          e.type === "event" &&
-          JSON.stringify(e.event).includes("A's prompt"),
-      ),
-    ).toBe(false);
+      seen
+        .filter((e) => e.type === "event")
+        .map((e) => JSON.stringify(e.event))
+        .filter((s) => s.includes("A's prompt") || s.includes("A's answer")),
+    ).toEqual([]);
     expect(seen.some((e) => e.type === "versionsReady")).toBe(false);
   });
 
