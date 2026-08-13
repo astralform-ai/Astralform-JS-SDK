@@ -1,5 +1,31 @@
 # Changelog
 
+## 6.0.3
+
+### Fixed
+
+**A turn that FAILED now restores what the agent did, instead of disappearing.**
+6.0.2 fixed the half of this that renders the user's PROMPT when no turn
+survived to anchor it. The turn's own content was still missing: restore fetched
+per-job events only for jobs whose status was `completed`, so a failed job was
+never asked for and everything it did vanished on reload — the tool calls, their
+output, and the terminal `error` that explains why it stopped. A conversation
+whose only job failed came back showing the prompt and nothing else.
+
+Nothing was missing server-side. A job that died on an agent-loop timeout still
+had 4,220 events persisted, and the history endpoint returned a complete
+47-event stream for it, terminal error included. The client simply never asked
+for them.
+
+Status was the wrong axis. What decides whether a job belongs in the events wave
+is where its events COME FROM — the live stream for the one being reconnected
+to, storage for every other — and how a turn ended says nothing about that. The
+replay set is now every job except the one arriving live.
+
+`versionsReady` deliberately stays narrower and still counts completed jobs
+only: it drives version navigation, and a version is an answer the user can
+switch to, which a failed turn did not produce.
+
 ## 6.0.2
 
 ### Fixed
