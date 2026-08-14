@@ -61,7 +61,22 @@ export type StreamManagerEvent =
       jobs: ReadonlyMap<string, string>;
     }
   | { type: "event"; conversationId: string | null; event: ChatEvent }
-  | { type: "versionsReady"; conversationId: string; count: number };
+  | { type: "versionsReady"; conversationId: string; count: number }
+  | {
+      /**
+       * A history replay ran to the end — emitted for EVERY restored
+       * conversation, whatever its jobs' statuses. This is the signal to
+       * rehydrate per-turn state (attachment chips, composer modes, goal
+       * runs) from the jobs endpoint. It exists separately from
+       * ``versionsReady`` because that one is completed-only by contract
+       * (a version is an answer to switch to), and a conversation whose
+       * only turns were stopped or failed still needs this pass — gating
+       * rehydration on ``versionsReady`` left such conversations
+       * permanently chip-less.
+       */
+      type: "restoreSettled";
+      conversationId: string;
+    };
 
 type EventHandler = (event: StreamManagerEvent) => void;
 
@@ -1020,13 +1035,20 @@ export class StreamManager {
         );
       }
 
-      // Before the announcement, not only before `setState` below. The
+      // Before the announcements, not only before `setState` below. The
       // loop's check runs at the TOP of each turn, so a handler that
       // navigates away while the LAST turn replays — or the only turn, for a
       // single-job conversation — exits the loop normally with no iteration
       // left to catch it, and this would fire for the abandoned
       // conversation.
       if (stopReplay()) return false;
+
+      // Two announcements, split on purpose. ``restoreSettled`` fires for
+      // every replay that ran to the end: it is the rehydration signal
+      // (attachment chips, composer modes, goal runs), and a conversation
+      // whose only turns were stopped or failed still needs that pass.
+      this.emit({ type: "restoreSettled", conversationId });
+
       // COMPLETED only, deliberately narrower than the replay set. This drives
       // version navigation, and a version is an answer the user can switch to —
       // a failed turn produced none, so counting it would offer a version that
