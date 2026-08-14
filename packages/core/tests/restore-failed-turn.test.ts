@@ -201,6 +201,20 @@ describe("restoring a conversation whose turn failed", () => {
     expect(managerEvents.some((e) => e.type === "versionsReady")).toBe(false);
   });
 
+  it("still announces restoreSettled when no turn completed", async () => {
+    // ``versionsReady`` is completed-only by contract, but rehydration
+    // (attachment chips, composer modes, goal runs) must not be: it rides
+    // ``restoreSettled``, which fires for EVERY replay. Gating rehydration on
+    // ``versionsReady`` left a conversation whose only turn failed or was
+    // stopped permanently chip-less — this pins the split.
+    const { manager, managerEvents } = setup();
+
+    await manager.switchTo("conv-1");
+
+    expect(managerEvents.some((e) => e.type === "restoreSettled")).toBe(true);
+    expect(managerEvents.some((e) => e.type === "versionsReady")).toBe(false);
+  });
+
   it("still counts the completed turns when a conversation has both", async () => {
     const { manager, managerEvents } = setup([
       { job_id: "job-0", status: "completed", message_id: "m-0" },
