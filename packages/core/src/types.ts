@@ -650,6 +650,8 @@ export interface TeamSummary {
 export interface TeamAgentSummary {
   id: string;
   name: string;
+  /** Human-readable label for pickers, when set (wire: `display_name`). Falls back to `name`. */
+  displayName?: string | null;
   teamId: string;
   createdAt: string;
   updatedAt: string;
