@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `TeamAgentSummary.displayName` — the human-readable picker label (`display_name` on the wire), now surfaced by `listAgents()`. Optional and null-safe; consumers should fall back to `name`. The backend started returning this on `GET /v1/teams/{team_id}/agents` in [astralform-ai/Astralform#848](https://github.com/astralform-ai/Astralform/pull/848).
+
 ## 6.0.3
 
 ### Fixed

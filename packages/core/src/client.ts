@@ -693,6 +693,7 @@ export class AstralformClient {
       Array<{
         id: string;
         name: string;
+        display_name?: string | null;
         team_id: string;
         created_at: string;
         updated_at: string;
