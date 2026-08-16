@@ -327,7 +327,7 @@ describe("AstralformClient", () => {
     expect(agents[0]!.isOrchestrator).toBe(true);
   });
 
-  it("getModels maps snake_case fields to camelCase", async () => {
+  it("getModels delivers the thinking control and anything else the API adds", async () => {
     const mockFetch = createMockFetch({
       "/v1/models": {
         status: 200,
@@ -339,18 +339,29 @@ describe("AstralformClient", () => {
             thinking: true,
             tools: true,
             vision: true,
-            thinking_mode: "controllable",
-            supports_effort: true,
+            thinking_control: {
+              ladder: [
+                { id: "none", label: "Off" },
+                { id: "low", label: "Low" },
+                { id: "high", label: "High" },
+              ],
+              default: "none",
+            },
+            // A field this SDK version does not name. The point of the test:
+            // the previous hand-written map listed its fields and silently
+            // dropped the rest, which is how the server emitted `effort_levels`
+            // for months without a caller ever seeing it.
+            some_future_field: 42,
           },
           {
-            // Older backend that omits supports_effort → coerced to false.
+            // No control at all — the ABSENCE is what tells a client to render
+            // nothing, so it must arrive as undefined rather than be invented.
             provider: "deepseek",
             provider_display: "DeepSeek",
             model: "deepseek-v4-flash",
             thinking: false,
             tools: true,
             vision: false,
-            thinking_mode: "always_on",
           },
         ],
       },
@@ -363,12 +374,33 @@ describe("AstralformClient", () => {
     expect(models[0]!.provider).toBe("anthropic");
     expect(models[0]!.providerDisplay).toBe("Anthropic");
     expect(models[0]!.model).toBe("claude-opus-4-8");
-    expect(models[0]!.thinkingMode).toBe("controllable");
     expect(models[0]!.tools).toBe(true);
-    expect(models[0]!.supportsEffort).toBe(true);
-    // Absent supports_effort is coerced to a real boolean (false), keeping the
-    // non-optional ModelOption.supportsEffort honest against an older backend.
-    expect(models[1]!.supportsEffort).toBe(false);
+
+    // The ladder survives intact, in order — a rung's index is its strength,
+    // so a reordering here would silently change what a picker renders.
+    expect(models[0]!.thinkingControl?.ladder.map((r) => r.id)).toEqual([
+      "none",
+      "low",
+      "high",
+    ]);
+    expect(models[0]!.thinkingControl?.ladder[0]!.label).toBe("Off");
+    expect(models[0]!.thinkingControl?.default).toBe("none");
+
+    // Nested keys are single words, so shallow camelization leaves them alone.
+    // If the descriptor ever gains a snake_case key this assertion is where it
+    // will show up, rather than in a consumer wondering why a field is missing.
+    expect(Object.keys(models[0]!.thinkingControl!)).toEqual([
+      "ladder",
+      "default",
+    ]);
+
+    // Unknown fields pass through under their camelCase name.
+    expect(
+      (models[0]! as unknown as Record<string, unknown>).someFutureField,
+    ).toBe(42);
+
+    // No control → undefined, not a fabricated empty ladder.
+    expect(models[1]!.thinkingControl).toBeUndefined();
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {

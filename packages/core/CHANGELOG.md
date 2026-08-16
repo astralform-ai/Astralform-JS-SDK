@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Changed — BREAKING
+
+**`ModelOption.thinkingMode` and `ModelOption.supportsEffort` are removed, replaced by `thinkingControl`.**
+
+A model's thinking control is a per-model LADDER, not a fixed `low | medium | high`. Probing the providers showed the real vocabulary is seven values — `none / minimal / low / medium / high / xhigh / max`, verbatim what OpenAI, DeepSeek and Z.AI each enumerate when rejecting an invalid effort — and that a given model accepts a subset. `gpt-5.x` has no `minimal` or `max`; xAI rejects `max`; Z.AI cannot be turned off at all.
+
+```ts
+// before
+if (model.supportsEffort) {
+  const options = model.thinkingMode === "controllable"
+    ? ["", "low", "medium", "high"]   // client-derived Off
+    : ["", "low", "medium", "high"];
+}
+
+// after
+if (model.thinkingControl) {
+  const options = model.thinkingControl.ladder;   // ordered, already correct
+}
+```
+
+- **`thinkingControl` absent** is the signal to render no control. That replaces `supportsEffort`, which had to be kept consistent with the level list beside it.
+- **`ladder` is ordered least-effort-first.** A rung's INDEX is its strength, which is what a proportional indicator should read.
+- **`label` is server-owned**, so two clients cannot word the same rung differently.
+- **`default` is nullable** — for the OpenAI-style family the server sends no effort at all, so the choice belongs to the provider and naming a rung would be a guess.
+- **An Off is an ordinary `none` rung**, present iff the model can genuinely stop reasoning. Clients no longer synthesize one from a mode string. Note that `"none"` (an explicit request not to think) is distinct from omitting the effort (use the model's default), and on some models those differ.
+
+`ReasoningEffort` is widened to `EffortRung`. New exported types: `EffortRung`, `ThinkingDescriptor`, `ThinkingRungOption`.
+
+Requires a backend with `thinking_control` on `GET /v1/models` (astralform-ai/Astralform#867).
+
+### Fixed
+
+**`getModels()` no longer drops fields the API adds.** It hand-mapped a fixed list of keys, so anything not named was silently discarded — the server emitted a per-model `effort_levels` for months that no consumer could see. It now maps structurally, and a regression test pins that an unrecognized field survives.
+
 ### Added
 
 - `TeamAgentSummary.displayName` — the human-readable picker label (`display_name` on the wire), now surfaced by `listAgents()`. Optional and null-safe; consumers should fall back to `name`. The backend started returning this on `GET /v1/teams/{team_id}/agents` in [astralform-ai/Astralform#848](https://github.com/astralform-ai/Astralform/pull/848).

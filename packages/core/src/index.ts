@@ -132,7 +132,10 @@ export type {
 // Request / response types
 export type {
   ChatStreamRequest,
+  EffortRung,
   ReasoningEffort,
+  ThinkingDescriptor,
+  ThinkingRungOption,
   ToolResultRequest,
   ToolResult,
   ToolDefinition,

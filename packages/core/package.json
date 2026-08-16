@@ -1,6 +1,6 @@
 {
   "name": "@astralform/js",
-  "version": "6.0.4",
+  "version": "7.0.0",
   "description": "Astralform JS SDK - AI agent orchestration with WebMCP support",
   "type": "module",
   "main": "./dist/index.cjs",
