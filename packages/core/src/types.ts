@@ -718,7 +718,6 @@ export interface FeedbackResponse {
   createdAt: string;
 }
 
-/** Reasoning effort a caller may request for a turn (client-side model selection). */
 /**
  * One rung on a model's thinking ladder.
  *

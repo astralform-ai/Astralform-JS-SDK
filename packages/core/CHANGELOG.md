@@ -9,11 +9,10 @@
 A model's thinking control is a per-model LADDER, not a fixed `low | medium | high`. Probing the providers showed the real vocabulary is seven values — `none / minimal / low / medium / high / xhigh / max`, verbatim what OpenAI, DeepSeek and Z.AI each enumerate when rejecting an invalid effort — and that a given model accepts a subset. `gpt-5.x` has no `minimal` or `max`; xAI rejects `max`; Z.AI cannot be turned off at all.
 
 ```ts
-// before
+// before — the Off had to be synthesized, and the levels were a guess
 if (model.supportsEffort) {
-  const options = model.thinkingMode === "controllable"
-    ? ["", "low", "medium", "high"]   // client-derived Off
-    : ["", "low", "medium", "high"];
+  const off = model.thinkingMode === "controllable" ? ["off"] : [];
+  const options = [...off, "low", "medium", "high"];
 }
 
 // after
