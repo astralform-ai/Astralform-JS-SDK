@@ -718,8 +718,57 @@ export interface FeedbackResponse {
   createdAt: string;
 }
 
-/** Reasoning effort a caller may request for a turn (client-side model selection). */
-export type ReasoningEffort = "low" | "medium" | "high";
+/**
+ * One rung on a model's thinking ladder.
+ *
+ * These strings are not ours to choose: they are verbatim what OpenAI,
+ * DeepSeek and Z.AI each enumerate when rejecting an invalid
+ * `reasoning_effort`, so renaming one means sending a value the provider 400s
+ * on. A given model accepts a SUBSET — read it from
+ * {@link ModelOption.thinkingControl}, never assume all seven.
+ *
+ * `"none"` is a real off on the providers that list it, and is distinct from
+ * omitting the effort entirely: omitting means "use the model's own default",
+ * which on some models still reasons.
+ */
+export type EffortRung =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+/**
+ * A reasoning effort a caller may request. Widened from `low | medium | high`
+ * once the providers were probed and shown to expose seven values.
+ */
+export type ReasoningEffort = EffortRung;
+
+/** One selectable rung, with the label every client should display for it. */
+export interface ThinkingRungOption {
+  id: EffortRung;
+  /** Server-owned, so two clients cannot word the same rung differently. */
+  label: string;
+}
+
+/**
+ * A model's thinking control, from `GET /v1/models`.
+ *
+ * `ladder` runs least-effort-first. That order is the menu order and the basis
+ * of any proportional indicator — a rung's INDEX is its strength. It contains a
+ * `none` rung if and only if the model can genuinely stop reasoning, so an Off
+ * is an ordinary rung rather than something a client synthesizes.
+ *
+ * `default` is the rung a run uses when the caller picks nothing, and is
+ * nullable: for the OpenAI-style family the server sends no effort at all, so
+ * the choice belongs to the provider and naming a rung would be a guess.
+ */
+export interface ThinkingDescriptor {
+  ladder: ThinkingRungOption[];
+  default: EffortRung | null;
+}
 
 /**
  * The per-request model choice (client-side model selection). `provider` and
@@ -923,9 +972,16 @@ export interface ModelOption {
   thinking: boolean;
   tools: boolean;
   vision: boolean;
-  thinkingMode: string;
-  /** whether the model accepts a configurable reasoning effort (low/medium/high); false for always-on-thinking / think-tags models where effort is a no-op */
-  supportsEffort: boolean;
+  /**
+   * The model's thinking control, or absent when it has none.
+   *
+   * Its ABSENCE is the signal to render no control — that replaces a separate
+   * `supportsEffort` flag which had to be kept consistent with the level list
+   * beside it. Distinct from `thinking` above, which says only whether the
+   * model reasons at all: a model can reason with no control a client can
+   * drive.
+   */
+  thinkingControl?: ThinkingDescriptor;
 }
 
 // =============================================================================

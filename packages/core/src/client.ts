@@ -482,32 +482,18 @@ export class AstralformClient {
    * via X-Agent-ID, same as {@link getAgentStatus}.
    */
   async getModels(): Promise<ModelOption[]> {
-    const raw = await this.get<
-      {
-        provider: string;
-        provider_display: string;
-        model: string;
-        thinking: boolean;
-        tools: boolean;
-        vision: boolean;
-        thinking_mode: string;
-        supports_effort?: boolean;
-      }[]
-    >("/v1/models");
-    return raw.map((m) => ({
-      provider: m.provider,
-      providerDisplay: m.provider_display,
-      model: m.model,
-      thinking: m.thinking,
-      tools: m.tools,
-      vision: m.vision,
-      thinkingMode: m.thinking_mode,
-      // Coerce so the non-optional `supportsEffort: boolean` stays honest even
-      // against an older backend that omits `supports_effort` (→ false = safe:
-      // the effort control is hidden). Unlike the always-present siblings above,
-      // this field can be absent, so it's the one that needs coercion.
-      supportsEffort: Boolean(m.supports_effort),
-    }));
+    const raw = await this.get<Record<string, unknown>[]>("/v1/models");
+    // camelizeKeys, not a hand-written map: the previous version listed the
+    // fields it knew and silently dropped the rest, so `effort_levels` was
+    // emitted by the server for months and never reached a caller. Structural
+    // mapping means the next field the API adds arrives on its own.
+    //
+    // Shallow is correct here rather than a limitation. `thinkingControl`'s
+    // nested keys (`ladder`, `id`, `label`, `default`) are all single words, so
+    // there is nothing to convert inside it — and recursing would rewrite keys
+    // inside arbitrary JSON payloads elsewhere in the SDK, which is a worse
+    // failure than the one it would prevent. `client.test.ts` pins the key set.
+    return raw.map((m) => camelizeKeys<ModelOption>(m));
   }
 
   async getSkills(): Promise<SkillInfo[]> {
