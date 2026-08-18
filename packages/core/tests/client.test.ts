@@ -352,6 +352,7 @@ describe("AstralformClient", () => {
             icon_url: "https://cdn.example/anthropic.png",
             last_used_at: "2026-08-18T12:00:00Z",
             use_count: 7,
+            context_window: 200000,
             // A field this SDK version does not name. The point of the test:
             // the previous hand-written map listed its fields and silently
             // dropped the rest, which is how the server emitted `effort_levels`
@@ -415,6 +416,12 @@ describe("AstralformClient", () => {
     expect(models[1]!.iconUrl).toBeNull();
     expect(models[1]!.lastUsedAt).toBeNull();
     expect(models[1]!.useCount).toBeNull();
+
+    // Declared rather than left to structural passthrough: the value arrived
+    // either way, but only a named field is reachable without a cast — which
+    // is what forced consumers to re-fetch /v1/models to read it.
+    expect(models[0]!.contextWindow).toBe(200000);
+    expect(models[1]!.contextWindow).toBeNull();
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {

@@ -988,6 +988,13 @@ export interface ModelOption {
   lastUsedAt?: string | null;
   /** how many times the caller has run this model; null alongside lastUsedAt */
   useCount?: number | null;
+  /**
+   * The model's context window in tokens, as the serving provider reports it
+   * — which is not always the model's headline number (a provider may serve
+   * a smaller window than the model supports). Null when the backend does not
+   * state one.
+   */
+  contextWindow?: number | null;
 }
 
 // =============================================================================

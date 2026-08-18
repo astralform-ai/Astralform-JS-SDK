@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 7.1.0
+
+### Added
+
+- **`ModelOption.iconUrl`, `lastUsedAt` and `useCount`** — the provider's brand mark, and the calling user's recency/usage for that model, from `GET /v1/models`. Together they are what a picker needs to render provider tiles and a "Recent" section whose ordering matches every other client, since the backend owns it rather than each device keeping its own history.
+- **`ModelOption.contextWindow`** — the model's context window in tokens as the serving provider reports it, which is not always the model's headline number.
+
+All four are optional, and `getModels()` normalizes them to `null` when the backend omits them, so "no data" is a single value. (`thinkingControl` is deliberately excluded from that treatment — its absence is itself the "no control to render" signal.)
+
+These fields have existed on `GET /v1/models` for some time; only the typed accessors are new. A consumer that worked around their absence by reading `/v1/models` raw can now delete that code and use `getModels()` — which is worth doing, because a hand-written mapper forwards the fields its author knew about and silently drops the rest. That is the same failure `getModels()` itself had before 7.0.0.
+
+## 7.0.0
 
 ### Changed — BREAKING
 
