@@ -874,6 +874,12 @@ export interface ModelOption {
   thinkingMode: string;
   /** whether the model accepts a configurable reasoning effort (low/medium/high); false for always-on-thinking / think-tags models where effort is a no-op */
   supportsEffort: boolean;
+  /** the provider's brand mark (picker tiles); null until the backend rollout / for icon-less providers */
+  iconUrl?: string | null;
+  /** when the CALLER last ran this model (picker "Recent" ordering); null for a never-used model */
+  lastUsedAt?: string | null;
+  /** how many times the caller has run this model; null alongside lastUsedAt */
+  useCount?: number | null;
 }
 
 // =============================================================================

@@ -310,6 +310,9 @@ describe("AstralformClient", () => {
             vision: true,
             thinking_mode: "controllable",
             supports_effort: true,
+            icon_url: "https://cdn.example/anthropic.png",
+            last_used_at: "2026-08-18T12:00:00Z",
+            use_count: 7,
           },
           {
             // Older backend that omits supports_effort → coerced to false.
@@ -338,6 +341,14 @@ describe("AstralformClient", () => {
     // Absent supports_effort is coerced to a real boolean (false), keeping the
     // non-optional ModelOption.supportsEffort honest against an older backend.
     expect(models[1]!.supportsEffort).toBe(false);
+    // Picker recents + provider tiles pass through (snake→camel).
+    expect(models[0]!.iconUrl).toBe("https://cdn.example/anthropic.png");
+    expect(models[0]!.lastUsedAt).toBe("2026-08-18T12:00:00Z");
+    expect(models[0]!.useCount).toBe(7);
+    // Absent usage/icon fields → null (the "no data" signal), not undefined.
+    expect(models[1]!.iconUrl).toBeNull();
+    expect(models[1]!.lastUsedAt).toBeNull();
+    expect(models[1]!.useCount).toBeNull();
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {

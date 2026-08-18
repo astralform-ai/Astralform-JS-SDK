@@ -505,6 +505,9 @@ export class AstralformClient {
         vision: boolean;
         thinking_mode: string;
         supports_effort?: boolean;
+        icon_url?: string | null;
+        last_used_at?: string | null;
+        use_count?: number | null;
       }[]
     >("/v1/models");
     return raw.map((m) => ({
@@ -520,6 +523,12 @@ export class AstralformClient {
       // the effort control is hidden). Unlike the always-present siblings above,
       // this field can be absent, so it's the one that needs coercion.
       supportsEffort: Boolean(m.supports_effort),
+      // Picker recents + provider tiles (optional on the wire — absent on
+      // backends that predate them, null for icon-less providers / unused
+      // models). Passed through, never coerced: null IS the "no data" signal.
+      iconUrl: m.icon_url ?? null,
+      lastUsedAt: m.last_used_at ?? null,
+      useCount: m.use_count ?? null,
     }));
   }
 
