@@ -494,9 +494,11 @@ export class AstralformClient {
     // inside arbitrary JSON payloads elsewhere in the SDK, which is a worse
     // failure than the one it would prevent. `client.test.ts` pins the key set.
     //
-    // The picker-recents triple (iconUrl/lastUsedAt/useCount) arrives through
-    // the same structural map; normalizing absent → null so "no data" is one
-    // value, never undefined-vs-null ambiguity for consumers.
+    // Fields whose absence carries no signal — iconUrl/lastUsedAt/useCount and
+    // contextWindow — normalize to null, so "no data" is one value rather than
+    // undefined-vs-null ambiguity for consumers. thinkingControl deliberately
+    // does NOT: there, absence IS the signal, meaning "no control to render".
+    // That split is the rule to apply to the next optional field added here.
     return raw.map((m) => {
       const option = camelizeKeys<ModelOption>(m);
       return {
