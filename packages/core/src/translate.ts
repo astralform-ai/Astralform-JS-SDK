@@ -65,6 +65,28 @@ function translateAgentIdentity(raw: Record<string, unknown>) {
 }
 
 /**
+ * Translate a wire TodoItem (snake_case — `active_form`, `blocked_by`,
+ * mirroring `backend/src/stream/protocol.py`) into the consumer-facing
+ * camelCase shape. The backend emits todos exactly as the payload catalog
+ * defines them, so the translation is the single place the casing is fixed;
+ * consumers can rely on `todo.activeForm` / `todo.blockedBy` matching the
+ * declared types.
+ */
+function translateTodoItem(raw: Record<string, unknown>): TodoItem {
+  return {
+    id: (raw.id as number) ?? 0,
+    subject: (raw.subject as string) ?? "",
+    status: (raw.status as TodoItem["status"]) ?? "pending",
+    description: (raw.description as string | null) ?? null,
+    activeForm: (raw.active_form as string | null) ?? null,
+    owner: (raw.owner as string | null) ?? null,
+    blockedBy: (raw.blocked_by as number[] | null) ?? null,
+    blocks: (raw.blocks as number[] | null) ?? null,
+    priority: (raw.priority as number | null) ?? null,
+  };
+}
+
+/**
  * Translate a wire custom event (``{type: "custom", name, data}``) into a
  * typed ChatEvent. Unknown names fall through to the generic ``custom``
  * passthrough so consumers can still observe future backends.
@@ -88,7 +110,19 @@ export function translateCustomEvent(
     case "todo_update":
       return {
         type: "todo_update",
-        todos: (data.todos as TodoItem[]) ?? [],
+        todos: ((data.todos as unknown[]) ?? []).map((t) =>
+          translateTodoItem(t as Record<string, unknown>),
+        ),
+      };
+    case "plan_update":
+      return {
+        type: "plan_update",
+        plan: (data.plan as string) ?? "",
+      };
+    case "note_update":
+      return {
+        type: "note_update",
+        notes: (data.notes as string[]) ?? [],
       };
     case "context_update":
       return {
@@ -293,6 +327,7 @@ export function translateWireEvent(wire: WireEvent): ChatEvent | null {
           inputTokens: wire.usage.input_tokens ?? 0,
           outputTokens: wire.usage.output_tokens ?? 0,
           cachedTokens: wire.usage.cached_tokens ?? 0,
+          cacheCreationTokens: wire.usage.cache_creation_tokens ?? 0,
         },
         ttfbMs: wire.ttfb_ms,
         totalMs: wire.total_ms,

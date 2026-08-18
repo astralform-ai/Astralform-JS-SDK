@@ -265,8 +265,13 @@ const id = await session.createNewConversation();
 // Switch to an existing conversation (loads messages from backend)
 await session.switchConversation("conversation-id");
 
-// Delete a conversation
-await session.deleteConversation("conversation-id");
+// Delete a conversation. Rejects if the server refused it — a 404 counts as
+// already deleted and resolves, anything else leaves the conversation in place.
+try {
+  await session.deleteConversation("conversation-id");
+} catch (err) {
+  // Still there: tell the user rather than removing it from your own UI.
+}
 
 // Edit and resend from a checkpoint
 await session.resendFromCheckpoint("message-id", "Updated message");
@@ -357,7 +362,7 @@ import {
   AuthenticationError, // 401 — invalid API key
   RateLimitError, // 429 — rate limit exceeded
   LLMNotConfiguredError, // LLM provider not set up
-  ServerError, // 5xx or unexpected errors
+  ServerError, // 5xx or unexpected errors — carries `status` when it came from a response
   ConnectionError, // Network failures
   StreamAbortedError, // Stream cancelled via disconnect()
 } from "@astralform/js";

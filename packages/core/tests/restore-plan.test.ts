@@ -182,3 +182,239 @@ describe("replayed steers are distinguishable", () => {
     });
   });
 });
+
+describe("a prompt whose turn is still running is not a steer", () => {
+  it("does not replay a live send as a steer bubble", () => {
+    // `isSteer` asked only the COMPLETED jobs, so a prompt whose job is still
+    // running looked like a mid-run steer. The pending-message merge in
+    // `loadConversation` is what puts that prompt into `session.messages` in
+    // the first place, so a send landing in the probe window was replayed as a
+    // second, steer-flagged bubble on top of the one the consumer had already
+    // rendered from the live send.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "job-old", message_id: "m-old" }],
+      claimedMessageIds: ["m-old", "m-live"], // m-live's job is RUNNING
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-live", content: "just sent" },
+      ],
+    });
+
+    expect(plan.filter((s) => s.kind === "steer")).toEqual([]);
+  });
+
+  it("still reports a genuine steer — the control", () => {
+    // A prompt no job claims at all is a real mid-run steer and must survive.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "job-old", message_id: "m-old" }],
+      claimedMessageIds: ["m-old"],
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-steer", content: "actually, stop" },
+      ],
+    });
+
+    expect(plan.filter((s) => s.kind === "steer")).toHaveLength(1);
+  });
+});
+
+describe("a failed turn's prompt is not swallowed", () => {
+  it("still reports it as a steer when its job never completed", () => {
+    // Claiming EVERY job's id (rather than the non-terminal ones) removed the
+    // prompt from the restore entirely: a failed job produces no `turn` step,
+    // so claiming its id meant no `steer` step either and the user's text
+    // vanished from history on reload. Worse than the duplicate bubble the
+    // claim set was introduced to fix.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m-old" }],
+      claimedMessageIds: ["m-old"], // m-failed's job is terminal — not claimed
+      userMessages: [
+        { id: "m-old", content: "first turn" },
+        { id: "m-failed", content: "the one that errored" },
+      ],
+    });
+
+    const steers = plan.filter((s) => s.kind === "steer");
+    expect(steers).toHaveLength(1);
+    expect((steers[0] as { content: string }).content).toBe(
+      "the one that errored",
+    );
+  });
+});
+
+describe("the turn that is still running", () => {
+  it("pairs with its own prompt and lands last", () => {
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m1" }],
+      runningJob: { job_id: "j2", message_id: "m2" },
+      claimedMessageIds: ["m1", "m2"],
+      userMessages: [
+        { id: "m1", content: "first turn" },
+        { id: "m2", content: "generate a video" },
+      ],
+    });
+
+    expect(plan).toEqual([
+      { kind: "turn", jobId: "j1", content: "first turn", messageId: "m1" },
+      {
+        kind: "turn",
+        jobId: "j2",
+        content: "generate a video",
+        messageId: "m2",
+      },
+    ]);
+  });
+
+  it("is the reason its prompt survives at all", () => {
+    // Without it the running prompt is `claimed` (so not a steer) and paired
+    // with no turn (so not a bubble) — it disappears from the restore, which
+    // is what left a conversation reopened mid-generation showing the running
+    // turn's blocks under nothing.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m1" }],
+      claimedMessageIds: ["m1", "m2"],
+      userMessages: [
+        { id: "m1", content: "first turn" },
+        { id: "m2", content: "generate a video" },
+      ],
+    });
+
+    expect(plan.map((s) => (s as { content?: string }).content)).toEqual([
+      "first turn",
+    ]);
+  });
+
+  it("takes the next position on a pre-link conversation", () => {
+    // No job carries a matching id, so the whole walk falls back to position.
+    // The running turn is appended, so it picks up the prompt after the last
+    // completed turn's rather than being dropped off the end.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1" }],
+      runningJob: { job_id: "j2" },
+      userMessages: [
+        { content: "first turn" },
+        { content: "generate a video" },
+      ],
+    });
+
+    expect(plan).toEqual([
+      {
+        kind: "turn",
+        jobId: "j1",
+        content: "first turn",
+        messageId: undefined,
+      },
+      {
+        kind: "turn",
+        jobId: "j2",
+        content: "generate a video",
+        messageId: undefined,
+      },
+    ]);
+  });
+
+  it("still lets a steer sent during it through", () => {
+    // A steer lands between the running turn's prompt and the end of the
+    // message list, so it must not be swallowed by the running turn's pairing.
+    const plan = planRestore({
+      completedJobs: [{ job_id: "j1", message_id: "m1" }],
+      runningJob: { job_id: "j2", message_id: "m2" },
+      claimedMessageIds: ["m1", "m2"],
+      userMessages: [
+        { id: "m1", content: "first turn" },
+        { id: "m2", content: "generate a video" },
+        { id: "m3", content: "make it shorter" },
+      ],
+    });
+
+    expect(plan[plan.length - 1]).toEqual({
+      kind: "steer",
+      content: "make it shorter",
+      messageId: "m3",
+    });
+  });
+});
+
+describe("no turn survived to anchor the prompt", () => {
+  /**
+   * Jobs are the spine of the walk and `positional` maps over JOBS, so an
+   * EMPTY walk returned [] and the whole transcript rendered blank — the
+   * turn's blocks under no prompt at all. Reported as "the previous round of
+   * the conversation is gone", with a recording of a cancelled video
+   * generation.
+   */
+  it("renders the prompt when the only turn was cancelled", () => {
+    // A cancelled job is not `completed`, so it never reaches `completedJobs`
+    // and nothing is left to walk. Its id is absent from `claimedMessageIds`:
+    // failed and cancelled jobs are left unclaimed for exactly this reason.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [tagged("make loop animation for this image", "m1")],
+    });
+
+    expect(steps).toEqual([
+      {
+        kind: "steer",
+        content: "make loop animation for this image",
+        messageId: "m1",
+      },
+    ]);
+  });
+
+  it("renders the prompt of a running turn the probe did not resolve", () => {
+    // The OTHER way to an empty walk, and the one a claim-filter would miss.
+    // `claimedMessageIds` excludes only failed and cancelled, so a job that is
+    // still `in_progress` DOES claim its prompt — but when the active-job probe
+    // fails to resolve it (the Redis liveness key can expire while the row is
+    // still in_progress) the caller passes no `runningJob`, so nothing walks it
+    // and the claim has no anchor to attach to. Filtering on `claimed` here
+    // would drop exactly this prompt.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: ["m1"], // the running job claims it
+      userMessages: [tagged("generate a video", "m1")],
+    });
+
+    expect(steps).toEqual([
+      { kind: "steer", content: "generate a video", messageId: "m1" },
+    ]);
+  });
+
+  it("renders every prompt when no turn survived", () => {
+    // Same shape, several rounds deep: nothing is anchored to a job, so the
+    // message list is the only record that the conversation happened.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [tagged("first", "m1"), tagged("second", "m2")],
+    });
+
+    expect(steps.map((s) => s.content)).toEqual(["first", "second"]);
+  });
+
+  it("renders a legacy prompt whose only job failed", () => {
+    // Pre-link rows carry a fabricated positional id (`str(len(result))`).
+    // The branch no longer filters on id at all, so this pins that the
+    // fabricated id survives onto the step as `messageId` — which is what the
+    // consumer keys the restored bubble by — rather than being normalised away
+    // with the pre-link handling around it.
+    const steps = planRestore({
+      completedJobs: [],
+      claimedMessageIds: [],
+      userMessages: [legacy("an old prompt", 0)],
+    });
+
+    expect(steps).toEqual([
+      { kind: "steer", content: "an old prompt", messageId: "0" },
+    ]);
+  });
+
+  it("stays empty for a conversation that has no messages either", () => {
+    // The empty walk must not invent a bubble — a conversation opened before
+    // its first send has no jobs AND no prompts, and renders nothing.
+    expect(
+      planRestore({ completedJobs: [], claimedMessageIds: [], userMessages: [] }),
+    ).toEqual([]);
+  });
+});

@@ -36,6 +36,18 @@ export interface TodoUpdatePayload {
   todos: TodoItem[];
 }
 
+/** The conversation's plan, as markdown, after the agent wrote or revised it.
+ *  Full body rather than a diff — `write_plan` replaces the document wholesale. */
+export interface PlanUpdatePayload {
+  plan: string;
+}
+
+/** Names of the conversation's notes, after one was written or deleted.
+ *  Names only; bodies are unbounded and read on demand. */
+export interface NoteUpdatePayload {
+  notes: string[];
+}
+
 export interface TitleGeneratedPayload {
   title: string;
 }

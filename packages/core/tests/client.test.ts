@@ -217,6 +217,37 @@ describe("AstralformClient", () => {
     expect(convos[0]!.createdAt).toBe("2026-01-01T00:00:00Z");
   });
 
+  it("getConversations passes unknown fields through (no allowlist drop)", async () => {
+    // Regression for #36: the mapper used to be an allowlist that dropped any
+    // field it did not name. A new server field must reach the consumer under
+    // its camelCase name, not silently vanish — that is how `content_url`
+    // shipped for several releases as `undefined`.
+    const mockFetch = createMockFetch({
+      "/v1/conversations": {
+        status: 200,
+        body: [
+          {
+            id: "c1",
+            title: "Test",
+            message_count: 5,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            starred: true, // hypothetical new field the mapper does not name
+            thread_count: 3, // hypothetical new snake_case field
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const convos = await client.getConversations();
+
+    expect(convos[0]!.messageCount).toBe(5);
+    // The known fields still map, and the unknown ones pass through.
+    expect((convos[0] as Record<string, unknown>).starred).toBe(true);
+    expect((convos[0] as Record<string, unknown>).threadCount).toBe(3);
+  });
+
   it("throws AuthenticationError on 401", async () => {
     const mockFetch = createMockFetch({
       "/v1/health": { status: 401, body: "Unauthorized" },
@@ -296,7 +327,7 @@ describe("AstralformClient", () => {
     expect(agents[0]!.isOrchestrator).toBe(true);
   });
 
-  it("getModels maps snake_case fields to camelCase", async () => {
+  it("getModels delivers the thinking control and anything else the API adds", async () => {
     const mockFetch = createMockFetch({
       "/v1/models": {
         status: 200,
@@ -308,21 +339,34 @@ describe("AstralformClient", () => {
             thinking: true,
             tools: true,
             vision: true,
-            thinking_mode: "controllable",
-            supports_effort: true,
+            thinking_control: {
+              ladder: [
+                { id: "none", label: "Off" },
+                { id: "low", label: "Low" },
+                { id: "high", label: "High" },
+              ],
+              default: "none",
+            },
+            // Picker recents + provider tiles (snake on the wire, camelized
+            // through the structural map).
             icon_url: "https://cdn.example/anthropic.png",
             last_used_at: "2026-08-18T12:00:00Z",
             use_count: 7,
+            // A field this SDK version does not name. The point of the test:
+            // the previous hand-written map listed its fields and silently
+            // dropped the rest, which is how the server emitted `effort_levels`
+            // for months without a caller ever seeing it.
+            some_future_field: 42,
           },
           {
-            // Older backend that omits supports_effort → coerced to false.
+            // No control at all — the ABSENCE is what tells a client to render
+            // nothing, so it must arrive as undefined rather than be invented.
             provider: "deepseek",
             provider_display: "DeepSeek",
             model: "deepseek-v4-flash",
             thinking: false,
             tools: true,
             vision: false,
-            thinking_mode: "always_on",
           },
         ],
       },
@@ -335,13 +379,35 @@ describe("AstralformClient", () => {
     expect(models[0]!.provider).toBe("anthropic");
     expect(models[0]!.providerDisplay).toBe("Anthropic");
     expect(models[0]!.model).toBe("claude-opus-4-8");
-    expect(models[0]!.thinkingMode).toBe("controllable");
     expect(models[0]!.tools).toBe(true);
-    expect(models[0]!.supportsEffort).toBe(true);
-    // Absent supports_effort is coerced to a real boolean (false), keeping the
-    // non-optional ModelOption.supportsEffort honest against an older backend.
-    expect(models[1]!.supportsEffort).toBe(false);
-    // Picker recents + provider tiles pass through (snake→camel).
+
+    // The ladder survives intact, in order — a rung's index is its strength,
+    // so a reordering here would silently change what a picker renders.
+    expect(models[0]!.thinkingControl?.ladder.map((r) => r.id)).toEqual([
+      "none",
+      "low",
+      "high",
+    ]);
+    expect(models[0]!.thinkingControl?.ladder[0]!.label).toBe("Off");
+    expect(models[0]!.thinkingControl?.default).toBe("none");
+
+    // Nested keys are single words, so shallow camelization leaves them alone.
+    // If the descriptor ever gains a snake_case key this assertion is where it
+    // will show up, rather than in a consumer wondering why a field is missing.
+    expect(Object.keys(models[0]!.thinkingControl!)).toEqual([
+      "ladder",
+      "default",
+    ]);
+
+    // Unknown fields pass through under their camelCase name.
+    expect(
+      (models[0]! as unknown as Record<string, unknown>).someFutureField,
+    ).toBe(42);
+
+    // No control → undefined, not a fabricated empty ladder.
+    expect(models[1]!.thinkingControl).toBeUndefined();
+
+    // Picker recents + provider tiles pass through camelized.
     expect(models[0]!.iconUrl).toBe("https://cdn.example/anthropic.png");
     expect(models[0]!.lastUsedAt).toBe("2026-08-18T12:00:00Z");
     expect(models[0]!.useCount).toBe(7);
@@ -538,6 +604,76 @@ describe("AstralformClient", () => {
 
     // null (signing failed / no object) must not leak past the `url?: string` type.
     expect(outputs[0]!.url).toBeUndefined();
+  });
+
+  it("listOutputs carries the poster and the permanent address", async () => {
+    // The mapper is an allowlist: a field the API returns and it does not name
+    // is dropped, silently and without a type error. That is how `content_url`
+    // reached consumers as `undefined` while the API had been serving it for
+    // releases. So the assertion that matters is per FIELD, not "it maps".
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/outputs": {
+        status: 200,
+        body: [
+          {
+            id: "o1",
+            kind: "output",
+            original_name: "generated-e945823f.mp4",
+            media_type: "video/mp4",
+            size_bytes: 2048,
+            url: "https://minio.local/workspaces/c1/generated/o1.mp4?sig=abc",
+            content_url:
+              "https://api.astralform.ai/v1/conversations/c1/assets/o1/content",
+            poster_url:
+              "https://minio.local/workspaces/c1/generated/still.png?sig=def",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const outputs = await client.listOutputs("c1");
+
+    // The poster is a DIFFERENT object from the asset's own url — a mapper that
+    // aliased them would still be non-undefined here and still be wrong.
+    expect(outputs[0]!.posterUrl).toBe(
+      "https://minio.local/workspaces/c1/generated/still.png?sig=def",
+    );
+    expect(outputs[0]!.url).toBe(
+      "https://minio.local/workspaces/c1/generated/o1.mp4?sig=abc",
+    );
+    expect(outputs[0]!.contentUrl).toBe(
+      "https://api.astralform.ai/v1/conversations/c1/assets/o1/content",
+    );
+  });
+
+  it("listOutputs leaves poster and content urls undefined when absent", async () => {
+    // Most assets have neither: a non-video has no poster, and a response from
+    // an older backend has no content_url. Both must read as undefined rather
+    // than null, like `url` does.
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/outputs": {
+        status: 200,
+        body: [
+          {
+            id: "o1",
+            kind: "output",
+            original_name: "notes.md",
+            media_type: "text/markdown",
+            size_bytes: 64,
+            poster_url: null,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const outputs = await client.listOutputs("c1");
+
+    expect(outputs[0]!.posterUrl).toBeUndefined();
+    expect(outputs[0]!.contentUrl).toBeUndefined();
   });
 
   it("getJob GETs /v1/jobs/{id} and maps snake_case to camelCase", async () => {
@@ -1137,9 +1273,11 @@ describe("team/agent discovery (user-token mode)", () => {
       {
         id: "agent-1",
         name: "Astralform",
+        display_name: "Astralform",
         team_id: "team-1",
         created_at: "2026-07-01T00:00:00Z",
         updated_at: "2026-07-02T00:00:00Z",
+        avatar_url: "https://example.com/avatar.png",
       },
     ]);
     const client = new AstralformClient({
@@ -1155,9 +1293,11 @@ describe("team/agent discovery (user-token mode)", () => {
       {
         id: "agent-1",
         name: "Astralform",
+        displayName: "Astralform",
         teamId: "team-1",
         createdAt: "2026-07-01T00:00:00Z",
         updatedAt: "2026-07-02T00:00:00Z",
+        avatarUrl: "https://example.com/avatar.png",
       },
     ]);
   });

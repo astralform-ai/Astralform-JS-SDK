@@ -35,6 +35,18 @@
  * Steers are interleaved at the point they appear in the message list, which
  * puts them after the turn that was running when they were sent.
  *
+ * A conversation can also be reopened while a turn is STILL RUNNING, and that
+ * turn's prompt is paired here too (`runningJob`) even though its events are
+ * not replayed from storage — they arrive on the live stream the caller
+ * reconnects to. Only the pairing is special-cased; the walk treats it as an
+ * ordinary turn.
+ *
+ * Jobs are the spine, which means a conversation can also have NO spine: every
+ * job failed or was cancelled, or the only one is still running and the
+ * active-job probe did not resolve it. The walk is then empty, and the prompts
+ * are carried entirely by the message list — so they are emitted on their own
+ * rather than dropped with the jobs that would have anchored them.
+ *
  * A conversation predating the link has no `message_id` on any job; there is
  * nothing to pair with, and no backfill is possible — inferring which historic
  * prompt started which job is exactly the ambiguity the link removes, so
@@ -68,9 +80,45 @@ export type ReplayStep =
  */
 export function planRestore(args: {
   completedJobs: RestoreJob[];
+  /**
+   * The turn that is still RUNNING, if one is. It joins the walk as an
+   * ordinary turn so it is paired with its prompt by the same rules as any
+   * other — the caller simply holds no events for it, because those are the
+   * live stream it reconnects to, so the step renders the bubble alone.
+   *
+   * Without it a live turn's prompt is paired with nothing while still being
+   * `claimed` (below), so it is neither a turn nor a steer and vanishes from
+   * the restore entirely — leaving a conversation reopened mid-turn showing
+   * the running turn's blocks under no prompt at all.
+   */
+  runningJob?: RestoreJob;
+  /**
+   * Message ids claimed by ANY job, not just completed ones. A steer is a
+   * prompt no job started, so testing against completed jobs alone reads a
+   * prompt whose turn is still RUNNING as a steer — and replays it as a
+   * second, `steer`-flagged bubble on top of the one the live send already
+   * rendered. Optional so callers that only have the completed set keep the
+   * old behaviour.
+   *
+   * Ignored when the walk is EMPTY — see the branch below. Claiming prevents a
+   * second copy of a prompt, and a walk with no turns in it emits no first
+   * copy, so honouring the set there would drop a running turn's prompt rather
+   * than de-duplicate it.
+   */
+  claimedMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];
 }): ReplayStep[] {
-  const { completedJobs, userMessages } = args;
+  const { completedJobs, runningJob, userMessages } = args;
+  // The running turn sits after every completed one, which is where it belongs
+  // both chronologically and positionally: on a pre-link conversation the
+  // fallback walk pairs it with `userMessages[completedJobs.length]`, the
+  // prompt that follows the last completed turn's.
+  const jobs = runningJob ? [...completedJobs, runningJob] : completedJobs;
+  const claimed = new Set(
+    (args.claimedMessageIds ?? jobs.map((j) => j.message_id)).filter(
+      (id): id is string => !!id,
+    ),
+  );
 
   const byId = new Map<string, number>();
   userMessages.forEach((m, i) => {
@@ -80,13 +128,58 @@ export function planRestore(args: {
   const linkOf = (j: RestoreJob): number | undefined =>
     j.message_id ? byId.get(j.message_id) : undefined;
 
-  const positional = (jobs: RestoreJob[], msgs: RestoreMessage[]): ReplayStep[] =>
-    jobs.map((job, i) => ({
+  // `slice`, not `jobs`: the caller hands this a PORTION of the walk (the
+  // pre-cutover head, or the whole list), and reusing the outer name for
+  // sometimes-the-same list made `jobs` mean two things in one function.
+  const positional = (
+    slice: RestoreJob[],
+    msgs: RestoreMessage[],
+  ): ReplayStep[] =>
+    slice.map((job, i) => ({
       kind: "turn" as const,
       jobId: job.job_id,
       content: msgs[i]?.content,
       messageId: msgs[i]?.id,
     }));
+
+  // No turn to walk AT ALL, which is not the same as a conversation with no
+  // history. Two ways to get here, and they are the whole reason this branch
+  // exists:
+  //
+  //   - every job FAILED or was CANCELLED — neither is `completed`, so neither
+  //     reaches `completedJobs`;
+  //   - the only job is still RUNNING and the active-job probe did not resolve
+  //     it, so the caller passes no `runningJob` (the Redis liveness key can
+  //     expire while the row is still `in_progress`).
+  //
+  // `positional` maps over JOBS, so it returns [] for an empty walk and the
+  // whole transcript renders empty — the prompt the user actually sent
+  // disappears, leaving the turn's blocks under nothing at all.
+  //
+  // `claimed` is deliberately IGNORED here, and that is what separates the two
+  // cases above. Claiming exists to stop a prompt being drawn twice: once by
+  // the turn that anchors it and once as a steer. An empty walk emits no turn
+  // at all, so nothing can anchor anything and there is no second copy to
+  // avoid — while a running job IS claimed (the caller claims every job it
+  // replays, and it replays every job but the one arriving live), so filtering
+  // on it here would drop exactly the running-but-unresolved prompt this branch
+  // has to rescue.
+  //
+  // Nor does that re-open the double-bubble the claim set guards: the caller
+  // only replays after announcing `restoring`, i.e. after telling the consumer
+  // to clear, and bails on `turnStarted` / `viewTakenOverByLiveTurn` when a
+  // send owns the view instead. So reaching here means the view is empty.
+  //
+  // Checked before `firstLinked`, because an empty list has no linked job by
+  // definition and would otherwise fall into the pre-link branch below and
+  // return [] from there.
+  if (jobs.length === 0) {
+    return userMessages.map((m) => ({
+      kind: "steer" as const,
+      content: m.content,
+      messageId: m.id,
+    }));
+  }
 
   // Detection keys off whether a job's id actually MATCHES a message — never
   // off a field merely being present. Both fields are always populated in real
@@ -94,24 +187,24 @@ export function planRestore(args: {
   // a positional index string when a row has no id of its own), so a
   // presence check silently classifies every pre-link conversation as linked
   // and strips every prompt bubble from it.
-  const firstLinked = completedJobs.findIndex((j) => linkOf(j) !== undefined);
+  const firstLinked = jobs.findIndex((j) => linkOf(j) !== undefined);
   if (firstLinked === -1) {
     // Nothing matches: the whole conversation predates the tagging.
-    return positional(completedJobs, userMessages);
+    return positional(jobs, userMessages);
   }
 
   // The tagging started at a point in time, so a conversation spanning it
   // splits cleanly: everything before the first linked turn has no usable
   // link and falls back to position; everything after is exact.
-  const cutover = linkOf(completedJobs[firstLinked]!)!;
+  const cutover = linkOf(jobs[firstLinked]!)!;
   const steps: ReplayStep[] = positional(
-    completedJobs.slice(0, firstLinked),
+    jobs.slice(0, firstLinked),
     userMessages.slice(0, cutover),
   );
 
   let cursor = cutover;
   const isSteer = (m: RestoreMessage | undefined): m is RestoreMessage =>
-    !!m?.id && !completedJobs.some((j) => j.message_id === m.id);
+    !!m?.id && !claimed.has(m.id);
 
   /** Emit every steer sitting before `stopAt`, and advance past it. */
   const drainTo = (stopAt: number) => {
@@ -124,7 +217,7 @@ export function planRestore(args: {
     cursor = stopAt + 1;
   };
 
-  for (const job of completedJobs.slice(firstLinked)) {
+  for (const job of jobs.slice(firstLinked)) {
     const at = linkOf(job);
     if (at !== undefined) {
       drainTo(at);

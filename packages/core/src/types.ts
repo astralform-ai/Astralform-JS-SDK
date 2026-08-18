@@ -125,6 +125,8 @@ export const ChatEventType = {
   UserMessage: "user_message",
   TitleGenerated: "title_generated",
   TodoUpdate: "todo_update",
+  PlanUpdate: "plan_update",
+  NoteUpdate: "note_update",
   ContextUpdate: "context_update",
   SubagentStart: "subagent_start",
   SubagentStop: "subagent_stop",
@@ -266,6 +268,7 @@ export interface WireMessageStop extends WireEnvelope {
     input_tokens?: number;
     output_tokens?: number;
     cached_tokens?: number;
+    cache_creation_tokens?: number;
   };
   ttfb_ms?: number | null;
   total_ms: number;
@@ -335,6 +338,8 @@ export interface TurnUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /** Tokens written to the model's prompt cache (wire: `cache_creation_tokens`). */
+  cacheCreationTokens: number;
 }
 
 export type BlockDeltaPayload =
@@ -443,6 +448,14 @@ export type ChatEvent =
     }
   | { type: "title_generated"; title: string }
   | { type: "todo_update"; todos: TodoItem[] }
+  /** The conversation's plan, as markdown, after the agent wrote or revised it.
+   *  Carries the FULL body rather than a diff: the backend replaces the plan
+   *  wholesale (`write_plan` — "Replaces any existing plan"), so a consumer that
+   *  merged deltas would drift from the stored document. */
+  | { type: "plan_update"; plan: string }
+  /** Names of the conversation's notes, after one was written or deleted. Names
+   *  only — bodies are unbounded and read on demand. */
+  | { type: "note_update"; notes: string[] }
   | {
       type: "context_update";
       context: Record<string, unknown>;
@@ -637,9 +650,13 @@ export interface TeamSummary {
 export interface TeamAgentSummary {
   id: string;
   name: string;
+  /** Human-readable label for pickers, when set (wire: `display_name`). Falls back to `name`. */
+  displayName?: string | null;
   teamId: string;
   createdAt: string;
   updatedAt: string;
+  /** Agent avatar URL, when the team has set one (wire: `avatar_url`). */
+  avatarUrl?: string | null;
 }
 
 export interface SkillInfo {
@@ -701,8 +718,57 @@ export interface FeedbackResponse {
   createdAt: string;
 }
 
-/** Reasoning effort a caller may request for a turn (client-side model selection). */
-export type ReasoningEffort = "low" | "medium" | "high";
+/**
+ * One rung on a model's thinking ladder.
+ *
+ * These strings are not ours to choose: they are verbatim what OpenAI,
+ * DeepSeek and Z.AI each enumerate when rejecting an invalid
+ * `reasoning_effort`, so renaming one means sending a value the provider 400s
+ * on. A given model accepts a SUBSET — read it from
+ * {@link ModelOption.thinkingControl}, never assume all seven.
+ *
+ * `"none"` is a real off on the providers that list it, and is distinct from
+ * omitting the effort entirely: omitting means "use the model's own default",
+ * which on some models still reasons.
+ */
+export type EffortRung =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+/**
+ * A reasoning effort a caller may request. Widened from `low | medium | high`
+ * once the providers were probed and shown to expose seven values.
+ */
+export type ReasoningEffort = EffortRung;
+
+/** One selectable rung, with the label every client should display for it. */
+export interface ThinkingRungOption {
+  id: EffortRung;
+  /** Server-owned, so two clients cannot word the same rung differently. */
+  label: string;
+}
+
+/**
+ * A model's thinking control, from `GET /v1/models`.
+ *
+ * `ladder` runs least-effort-first. That order is the menu order and the basis
+ * of any proportional indicator — a rung's INDEX is its strength. It contains a
+ * `none` rung if and only if the model can genuinely stop reasoning, so an Off
+ * is an ordinary rung rather than something a client synthesizes.
+ *
+ * `default` is the rung a run uses when the caller picks nothing, and is
+ * nullable: for the OpenAI-style family the server sends no effort at all, so
+ * the choice belongs to the provider and naming a rung would be a guess.
+ */
+export interface ThinkingDescriptor {
+  ladder: ThinkingRungOption[];
+  default: EffortRung | null;
+}
 
 /**
  * The per-request model choice (client-side model selection). `provider` and
@@ -727,6 +793,7 @@ export interface ChatStreamRequest {
   agent_name?: string;
   plan_mode?: boolean;
   image_mode?: boolean;
+  video_mode?: boolean;
   /**
    * Start a durable long-horizon goal for this run (goal mode). The backend mints
    * an agent_goal from this text and drives the run under a budget until the
@@ -833,6 +900,24 @@ export interface ConversationEvent {
 // =============================================================================
 
 export interface SendOptions extends ModelChoiceOptions {
+  /**
+   * Which conversation this turn belongs to. Defaults to the session's current
+   * one.
+   *
+   * ⚠️ BEHAVIOR CHANGE: passing this now RELOCATES the session. A value
+   * different from the current one sets `session.conversationId`, DISCARDS
+   * `session.messages` (the old conversation's list is not that conversation's
+   * history), and invalidates any `loadConversation` still in flight.
+   * Previously it addressed a single turn elsewhere and left the session where
+   * it was. After a successful send the list holds only that turn, so load the
+   * conversation if you need its history.
+   *
+   * The change is deliberate: `onSessionEvent` tags every emitted event with
+   * `session.conversationId`, so a turn sent elsewhere without moving the
+   * pointer streamed its events back under the wrong conversation. Addressing
+   * one turn away from the session is not something the session can honestly
+   * represent while it has a single pointer, so the send now moves it.
+   */
   conversationId?: string;
   enabledClientTools?: string[];
   uploadIds?: string[];
@@ -853,6 +938,22 @@ export interface SendOptions extends ModelChoiceOptions {
    */
   imageMode?: boolean;
   /**
+   * Put this turn in video mode, attaching the video-generation tool.
+   *
+   * Off by default and per-message, for a sharper reason than images: a clip
+   * occupies one shared GPU for minutes, during which image generation on the
+   * same host cannot run at all. The tool is not attached unless this is set.
+   *
+   * Mutually exclusive with `imageMode` at the composer level — which is why a
+   * video turn also gets the image tool server-side: the user cannot select
+   * both, so the agent must be able to produce its own first frame.
+   *
+   * `generate_video` animates an EXISTING image; it cannot start from text, and
+   * the clip is silent. Gate the affordance on `AgentStatus.capabilities`
+   * (`video`), the same way image mode does.
+   */
+  videoMode?: boolean;
+  /**
    * Start a durable long-horizon goal for this run (goal mode). The text becomes
    * the goal's objective; the backend keeps the agent working under a budget until
    * it's complete. Omit for a normal turn.
@@ -871,9 +972,16 @@ export interface ModelOption {
   thinking: boolean;
   tools: boolean;
   vision: boolean;
-  thinkingMode: string;
-  /** whether the model accepts a configurable reasoning effort (low/medium/high); false for always-on-thinking / think-tags models where effort is a no-op */
-  supportsEffort: boolean;
+  /**
+   * The model's thinking control, or absent when it has none.
+   *
+   * Its ABSENCE is the signal to render no control — that replaces a separate
+   * `supportsEffort` flag which had to be kept consistent with the level list
+   * beside it. Distinct from `thinking` above, which says only whether the
+   * model reasons at all: a model can reason with no control a client can
+   * drive.
+   */
+  thinkingControl?: ThinkingDescriptor;
   /** the provider's brand mark (picker tiles); null until the backend rollout / for icon-less providers */
   iconUrl?: string | null;
   /** when the CALLER last ran this model (picker "Recent" ordering); null for a never-used model */
@@ -883,7 +991,7 @@ export interface ModelOption {
 }
 
 // =============================================================================
-// Conversation assets (unchanged)
+// Conversation assets
 // =============================================================================
 
 export interface ConversationAsset {
@@ -902,5 +1010,19 @@ export interface ConversationAsset {
    * failed or the asset has no stored object.
    */
   url?: string;
+  /**
+   * The asset's PERMANENT address. Authorization is resolved per request
+   * against the caller's live session, so unlike `url` it never expires — but
+   * it needs an `Authorization` header, which a browser will not attach to an
+   * `<img src>`. Store and link this one; render from `url`.
+   */
+  contentUrl?: string;
+  /**
+   * A still to show for an asset the browser cannot draw from `url` alone.
+   * Present only for video: an `<img src>` pointed at an mp4 renders nothing,
+   * so a video row would otherwise have no thumbnail. Signed and expiring
+   * exactly like `url` — display, not identity, so never store it.
+   */
+  posterUrl?: string;
   createdAt: string;
 }

@@ -1,7 +1,7 @@
 import { AuthenticationError, ConnectionError, ServerError } from "./errors.js";
 import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import { streamJobSSE } from "./streaming.js";
-import { sanitizeErrorText } from "./utils.js";
+import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
   AgentInfo,
@@ -333,7 +333,13 @@ export class AstralformClient {
         throw createRateLimitErrorFromHttp(response, text);
       default: {
         const safeText = text ? sanitizeErrorText(text) : "";
-        throw new ServerError(safeText || `HTTP ${response.status}`);
+        // Status carried alongside the message: callers that need to tell one
+        // failure from another (a 404 meaning "already gone" from a 500 meaning
+        // "we don't know") were left parsing prose otherwise.
+        throw new ServerError(
+          safeText || `HTTP ${response.status}`,
+          response.status,
+        );
       }
     }
   }
@@ -400,13 +406,7 @@ export class AstralformClient {
         updated_at: string;
       }[]
     >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}`);
-    return raw.map((c) => ({
-      id: c.id,
-      title: c.title,
-      messageCount: c.message_count,
-      createdAt: c.created_at,
-      updatedAt: c.updated_at,
-    }));
+    return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));
   }
 
   async getMessages(conversationId: string): Promise<Message[]> {
@@ -448,13 +448,7 @@ export class AstralformClient {
       created_at: string;
       updated_at: string;
     }>(`/v1/conversations/${encodeURIComponent(id)}`, { title });
-    return {
-      id: c.id,
-      title: c.title,
-      messageCount: c.message_count,
-      createdAt: c.created_at,
-      updatedAt: c.updated_at,
-    };
+    return camelizeKeys<Conversation>(c as unknown as Record<string, unknown>);
   }
 
   async deleteConversation(id: string): Promise<void> {
@@ -478,14 +472,7 @@ export class AstralformClient {
         avatar_url?: string;
       }[]
     >("/v1/agents");
-    return raw.map((a) => ({
-      name: a.name,
-      displayName: a.display_name,
-      description: a.description,
-      isOrchestrator: a.is_orchestrator,
-      isEnabled: a.is_enabled,
-      avatarUrl: a.avatar_url,
-    }));
+    return raw.map((a) => camelizeKeys<AgentInfo>(a as unknown as Record<string, unknown>));
   }
 
   /**
@@ -495,41 +482,30 @@ export class AstralformClient {
    * via X-Agent-ID, same as {@link getAgentStatus}.
    */
   async getModels(): Promise<ModelOption[]> {
-    const raw = await this.get<
-      {
-        provider: string;
-        provider_display: string;
-        model: string;
-        thinking: boolean;
-        tools: boolean;
-        vision: boolean;
-        thinking_mode: string;
-        supports_effort?: boolean;
-        icon_url?: string | null;
-        last_used_at?: string | null;
-        use_count?: number | null;
-      }[]
-    >("/v1/models");
-    return raw.map((m) => ({
-      provider: m.provider,
-      providerDisplay: m.provider_display,
-      model: m.model,
-      thinking: m.thinking,
-      tools: m.tools,
-      vision: m.vision,
-      thinkingMode: m.thinking_mode,
-      // Coerce so the non-optional `supportsEffort: boolean` stays honest even
-      // against an older backend that omits `supports_effort` (→ false = safe:
-      // the effort control is hidden). Unlike the always-present siblings above,
-      // this field can be absent, so it's the one that needs coercion.
-      supportsEffort: Boolean(m.supports_effort),
-      // Picker recents + provider tiles (optional on the wire — absent on
-      // backends that predate them, null for icon-less providers / unused
-      // models). Passed through, never coerced: null IS the "no data" signal.
-      iconUrl: m.icon_url ?? null,
-      lastUsedAt: m.last_used_at ?? null,
-      useCount: m.use_count ?? null,
-    }));
+    const raw = await this.get<Record<string, unknown>[]>("/v1/models");
+    // camelizeKeys, not a hand-written map: the previous version listed the
+    // fields it knew and silently dropped the rest, so `effort_levels` was
+    // emitted by the server for months and never reached a caller. Structural
+    // mapping means the next field the API adds arrives on its own.
+    //
+    // Shallow is correct here rather than a limitation. `thinkingControl`'s
+    // nested keys (`ladder`, `id`, `label`, `default`) are all single words, so
+    // there is nothing to convert inside it — and recursing would rewrite keys
+    // inside arbitrary JSON payloads elsewhere in the SDK, which is a worse
+    // failure than the one it would prevent. `client.test.ts` pins the key set.
+    //
+    // The picker-recents triple (iconUrl/lastUsedAt/useCount) arrives through
+    // the same structural map; normalizing absent → null so "no data" is one
+    // value, never undefined-vs-null ambiguity for consumers.
+    return raw.map((m) => {
+      const option = camelizeKeys<ModelOption>(m);
+      return {
+        ...option,
+        iconUrl: option.iconUrl ?? null,
+        lastUsedAt: option.lastUsedAt ?? null,
+        useCount: option.useCount ?? null,
+      };
+    });
   }
 
   async getSkills(): Promise<SkillInfo[]> {
@@ -541,12 +517,7 @@ export class AstralformClient {
         is_enabled: boolean;
       }[]
     >("/v1/skills");
-    return raw.map((s) => ({
-      name: s.name,
-      displayName: s.display_name,
-      description: s.description,
-      isEnabled: s.is_enabled,
-    }));
+    return raw.map((s) => camelizeKeys<SkillInfo>(s as unknown as Record<string, unknown>));
   }
 
   async getConversationEvents(
@@ -643,6 +614,11 @@ export class AstralformClient {
       // undefined so it matches the `url?: string` type and consumers that
       // check `!== undefined` never receive a null.
       url: (raw.url as string | null) ?? undefined,
+      // This mapping is an ALLOWLIST — a field the API returns and this
+      // function does not name is dropped silently, and no type error says so.
+      // `content_url` shipped that way and was invisible to every consumer.
+      contentUrl: (raw.content_url as string | null) ?? undefined,
+      posterUrl: (raw.poster_url as string | null) ?? undefined,
       createdAt: raw.created_at as string,
     };
   }
@@ -702,13 +678,7 @@ export class AstralformClient {
         role: string;
       }>
     >("/v1/teams");
-    return raw.map((t) => ({
-      id: t.id,
-      name: t.name,
-      slug: t.slug,
-      isDefault: t.is_default,
-      role: t.role,
-    }));
+    return raw.map((t) => camelizeKeys<TeamSummary>(t as unknown as Record<string, unknown>));
   }
 
   /**
@@ -721,18 +691,14 @@ export class AstralformClient {
       Array<{
         id: string;
         name: string;
+        display_name?: string | null;
         team_id: string;
         created_at: string;
         updated_at: string;
+        avatar_url?: string | null;
       }>
     >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
-    return raw.map((a) => ({
-      id: a.id,
-      name: a.name,
-      teamId: a.team_id,
-      createdAt: a.created_at,
-      updatedAt: a.updated_at,
-    }));
+    return raw.map((a) => camelizeKeys<TeamAgentSummary>(a as unknown as Record<string, unknown>));
   }
 
   // --- Jobs API ---
@@ -797,13 +763,7 @@ export class AstralformClient {
       comment: string | null;
       created_at: string;
     }>(`/v1/jobs/${encodeURIComponent(jobId)}/feedback`, body);
-    return {
-      id: raw.id,
-      jobId: raw.job_id,
-      rating: raw.rating,
-      comment: raw.comment,
-      createdAt: raw.created_at,
-    };
+    return camelizeKeys<FeedbackResponse>(raw as unknown as Record<string, unknown>);
   }
 
   async getActiveJob(conversationId: string): Promise<ActiveJob> {

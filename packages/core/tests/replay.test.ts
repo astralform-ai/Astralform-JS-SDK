@@ -79,7 +79,12 @@ describe("mapSseToChat", () => {
         turn_id: "t1",
         job_id: "job-1",
         stop_reason: "end_turn",
-        usage: { input_tokens: 100, output_tokens: 50, cached_tokens: 20 },
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cached_tokens: 20,
+          cache_creation_tokens: 5,
+        },
         ttfb_ms: 40,
         total_ms: 1000,
         stall_count: 0,
@@ -91,7 +96,12 @@ describe("mapSseToChat", () => {
       type: "message_stop",
       jobId: "job-1",
       stopReason: "end_turn",
-      usage: { inputTokens: 100, outputTokens: 50, cachedTokens: 20 },
+      usage: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedTokens: 20,
+        cacheCreationTokens: 5,
+      },
     });
   });
 

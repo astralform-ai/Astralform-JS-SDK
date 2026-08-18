@@ -2,13 +2,27 @@ name: PR Review
 
 on:
   pull_request:
-    types: [opened]
+    # `synchronize` is load-bearing and its absence is silent: with `opened` alone
+    # the reviewer sees a PR exactly once, and every push after ships unreviewed.
+    # Worse than unreviewed — the check belongs to the commit it ran on, so after a
+    # push `review / review` is ABSENT rather than stale, while mergeStateStatus
+    # still reads CLEAN, so a gate of "CLEAN + review SUCCESS" goes green over code
+    # no reviewer has seen. Same fix as Astralform#726.
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
   id-token: write
   actions: read
+  # Required, not optional: a reusable workflow's permissions are INTERSECTED with
+  # the caller's, so a scope the called workflow requests but the caller does not
+  # grant is a STARTUP FAILURE — zero jobs, no log, and it reads as "the reviewer
+  # is broken" rather than "a permission is missing". astralform-ai/.github added
+  # `packages: read` (it runs a JS gate needing the private @astralform-ai/ui), and
+  # every caller has to grant it too. Astralform did this in its #719; this repo
+  # did not, so every PR here has failed to start since 2026-08-05.
+  packages: read
 
 jobs:
   review:

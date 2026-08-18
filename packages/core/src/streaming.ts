@@ -41,7 +41,7 @@ export async function* streamJobSSE(
       case 429:
         throw createRateLimitErrorFromHttp(response, rawText);
       default:
-        throw new ServerError(text || `HTTP ${response.status}`);
+        throw new ServerError(text || `HTTP ${response.status}`, response.status);
     }
   }
 

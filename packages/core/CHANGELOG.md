@@ -1,5 +1,322 @@
 # Changelog
 
+## Unreleased
+
+### Changed — BREAKING
+
+**`ModelOption.thinkingMode` and `ModelOption.supportsEffort` are removed, replaced by `thinkingControl`.**
+
+A model's thinking control is a per-model LADDER, not a fixed `low | medium | high`. Probing the providers showed the real vocabulary is seven values — `none / minimal / low / medium / high / xhigh / max`, verbatim what OpenAI, DeepSeek and Z.AI each enumerate when rejecting an invalid effort — and that a given model accepts a subset. `gpt-5.x` has no `minimal` or `max`; xAI rejects `max`; Z.AI cannot be turned off at all.
+
+```ts
+// before — the Off had to be synthesized, and the levels were a guess
+if (model.supportsEffort) {
+  const off = model.thinkingMode === "controllable" ? ["off"] : [];
+  const options = [...off, "low", "medium", "high"];
+}
+
+// after
+if (model.thinkingControl) {
+  const options = model.thinkingControl.ladder;   // ordered, already correct
+}
+```
+
+- **`thinkingControl` absent** is the signal to render no control. That replaces `supportsEffort`, which had to be kept consistent with the level list beside it.
+- **`ladder` is ordered least-effort-first.** A rung's INDEX is its strength, which is what a proportional indicator should read.
+- **`label` is server-owned**, so two clients cannot word the same rung differently.
+- **`default` is nullable** — for the OpenAI-style family the server sends no effort at all, so the choice belongs to the provider and naming a rung would be a guess.
+- **An Off is an ordinary `none` rung**, present iff the model can genuinely stop reasoning. Clients no longer synthesize one from a mode string. Note that `"none"` (an explicit request not to think) is distinct from omitting the effort (use the model's default), and on some models those differ.
+
+`ReasoningEffort` is widened to `EffortRung`. New exported types: `EffortRung`, `ThinkingDescriptor`, `ThinkingRungOption`.
+
+Requires a backend with `thinking_control` on `GET /v1/models` (astralform-ai/Astralform#867).
+
+### Fixed
+
+**`getModels()` no longer drops fields the API adds.** It hand-mapped a fixed list of keys, so anything not named was silently discarded — the server emitted a per-model `effort_levels` for months that no consumer could see. It now maps structurally, and a regression test pins that an unrecognized field survives.
+
+### Added
+
+- `TeamAgentSummary.displayName` — the human-readable picker label (`display_name` on the wire), now surfaced by `listAgents()`. Optional and null-safe; consumers should fall back to `name`. The backend started returning this on `GET /v1/teams/{team_id}/agents` in [astralform-ai/Astralform#848](https://github.com/astralform-ai/Astralform/pull/848).
+
+## 6.0.3
+
+### Fixed
+
+**A turn that FAILED now restores what the agent did, instead of disappearing.**
+6.0.2 fixed the half of this that renders the user's PROMPT when no turn
+survived to anchor it. The turn's own content was still missing: restore fetched
+per-job events only for jobs whose status was `completed`, so a failed job was
+never asked for and everything it did vanished on reload — the tool calls, their
+output, and the terminal `error` that explains why it stopped. A conversation
+whose only job failed came back showing the prompt and nothing else.
+
+Nothing was missing server-side. A job that died on an agent-loop timeout still
+had 4,220 events persisted, and the history endpoint returned a complete
+47-event stream for it, terminal error included. The client simply never asked
+for them.
+
+Status was the wrong axis. What decides whether a job belongs in the events wave
+is where its events COME FROM — the live stream for the one being reconnected
+to, storage for every other — and how a turn ended says nothing about that. The
+replay set is now every job except the one arriving live.
+
+`versionsReady` deliberately stays narrower and still counts completed jobs
+only: it drives version navigation, and a version is an answer the user can
+switch to, which a failed turn did not produce.
+
+## 6.0.2
+
+### Fixed
+
+**Reopening a conversation whose turn did not COMPLETE now restores the
+transcript.** 6.0.1 covered a turn that is still running and resolved by the
+active-job probe. It did not cover the same conversation a minute later, once
+that turn had ended without completing — so the original report recurred
+against the fixed build, this time with a cancelled video generation: the
+turn's blocks under no prompt at all.
+
+Jobs are the spine of the walk, and the positional fallback maps over JOBS. A
+failed or cancelled job is not `completed`, so it never reaches the completed
+set; if it was the only one, the walk is empty and the plan came back empty
+with it, dropping every prompt the conversation had. The message list is the
+only record that those turns happened, so an empty walk now emits its prompts
+on their own rather than losing them with the jobs that would have anchored
+them.
+
+This also covers a turn that is still running but which the active-job probe
+did not resolve — the liveness key can expire while the job row has not — where
+the prompt is claimed by a job that anchors nothing. The claim set exists to
+stop a prompt being drawn twice, once by its turn and once as a steer, so it is
+ignored for a walk that emits no turn at all.
+
+## 6.0.1
+
+### Fixed
+
+**Reopening a conversation while a turn is still running now restores the
+transcript.** It previously rendered that turn's blocks under nothing at all —
+no prompt, and no earlier history either — because the live path reconnected to
+the running job's event stream and skipped the history replay entirely. A user
+prompt is not in `job_events`; it lives in the messages table, so the reconnect
+had nothing to render it from.
+
+Nothing about it was specific to any one tool. It was a function of turn
+DURATION: the window is open for as long as the turn runs, so a long tool call
+(a video generation holds one block open for minutes) made it reachable by
+simply switching conversations and coming back. It healed once the turn ended,
+which is why history looked correct at rest and empty only mid-flight.
+
+History now replays on both paths. The running turn is paired with the prompt
+that started it and emitted before the reconnect, so the bubble sits above the
+agent header the live stream opens. The job being reconnected to is excluded
+from the history fetch, leaving the live stream as its single source.
+
+### Changed
+
+**`versionsReady` now fires when a conversation is restored over a running
+turn**, which it never did before — the event was only reachable on the
+settled path. The count is unchanged in meaning: completed jobs only, since a
+running turn is not a version yet.
+
+## 6.0.0
+
+### BREAKING CHANGES
+
+**`session.deleteConversation` now rejects when the delete failed.** It
+previously caught every error from the API call and dropped the conversation
+locally regardless, so a failed delete was indistinguishable from a successful
+one: the row left the list, survived on the server, and reappeared on the next
+device or the next reload.
+
+A **404 still resolves** — the backend 404s a conversation that is already
+gone, and that is this delete succeeding. Everything else — 403, 401, 429, 5xx,
+or the request never landing — now rejects *before* the local drop, leaving the
+conversation in `session.conversations` and in storage.
+
+Major, because a caller doing a bare `await session.deleteConversation(id)`
+turns a silent no-op into an unhandled rejection on upgrade. Wrap it:
+
+```ts
+try {
+  await session.deleteConversation(id);
+} catch (err) {
+  // The conversation is still there — say so instead of hiding the row.
+}
+```
+
+### Added
+
+**`ServerError.status`** — the HTTP status, when the error came from a
+response. Every status except 401 and 429 collapses into `ServerError`, so
+telling "already gone" (404) from "the server broke" (500) or "not yours" (403)
+previously meant parsing the message. `undefined` for a `ServerError`
+constructed without a response.
+
+## 5.1.0
+
+### Added
+
+**`ConversationAsset.posterUrl`** — a signed still to render for an asset that
+cannot be its own thumbnail. Video only: an `<img src>` pointed at an mp4 draws
+nothing, because a poster frame costs a container decode, so a video row had no
+thumbnail to show at all. The backend resolves it from the image a generated
+clip was animated from — that still is literally the clip's first frame.
+Undefined for everything else, and for a clip with no recorded source (one
+assembled in a sandbox rather than by `generate_video`).
+
+**`ConversationAsset.contentUrl`** — the asset's permanent address. It never
+expires, because authorization is resolved per request against the caller's
+live session rather than frozen into a signature; store and link this one.
+It needs an `Authorization` header, which a browser will not attach to an
+`<img src>`, so keep rendering from `url`.
+
+`contentUrl` is not a new API field — the backend has served `content_url` for
+several releases. `mapAsset` is an allowlist and silently dropped it, so every
+consumer saw `undefined`, including one that had declared the field in a local
+type widening and therefore type-checked against a value that never arrived.
+Nothing breaks on upgrade; a consumer that worked around the gap can stop.
+
+## 5.0.0
+
+### BREAKING CHANGES
+
+**`send({ conversationId })` now relocates the session instead of addressing one turn.**
+
+Previously it posted a turn to another conversation and left the session where it
+was. It now sets `session.conversationId`, **discards `session.messages`**, and
+invalidates any `loadConversation` still in flight. A direct `ChatSession`
+consumer using the old semantics — send a turn to a side conversation, keep
+rendering the current one — loses its message list on upgrade, with no error.
+
+The old behaviour was not safe to keep: `onSessionEvent` tags every emitted
+event with `session.conversationId`, so leaving the pointer behind filed the
+send's OWN stream events under the conversation the caller had just addressed
+away from, and `regenerate` resent a list belonging to a different conversation
+than the one `send` posts to.
+
+**Migration** — if you need the target's history after the send:
+
+```ts
+await session.send(text, { conversationId: id });
+await session.loadConversation(id);
+```
+
+Callers going through `StreamManager` are unaffected **in the settled case**:
+it passes its own active conversation, which normally already matches. The two
+pointers deliberately diverge during a restore's active-job probe — the manager
+moves the moment the user clicks, `session.conversationId` only when that
+switch's own `loadConversation` runs — and a send landing in that window does
+relocate. The restore reinstalls the right list a moment later, so the end
+state is fine, but a consumer reading `session.messages` or
+`session.messagesConversationId` directly sees the gap.
+
+**TypeScript will not catch this for you.** The `SendOptions` exported from the
+package is `StreamManager`'s, which has no `conversationId`; the one that does
+is internal. So an affected caller is passing an inline object literal to
+`ChatSession.send`, and gets no error on upgrade — this entry is the only
+signal.
+
+**Assistant message ids are now client-generated.** `job.message_id` is the
+PROMPT's id; the assistant row was being pushed under it too. The user turn now
+carries it — which is what lets a restore pair a job to its prompt by id rather
+than by position — and the assistant row gets a local id until a REST load
+replaces it. A consumer keying rendered state off `message.id` for assistant
+rows will see a different value across the live → restored boundary; key off
+position or the block path instead.
+
+### Fixed
+
+**A conversation switch the user has moved on from now stops instead of
+finishing.** `restore` is a chain of awaits — the active-job probe, the message
+list, the job list, then every completed turn's events in parallel — and clicks
+are not serialized. A superseded restore ran to completion, re-pointed the
+session at the conversation being replayed, and poured its whole history out of
+the event stream into the one on screen. A monotonic generation, claimed
+synchronously by `setActiveConversation` and checked at every await boundary and
+per-turn inside the replay loop, ends it at the first check after the switch.
+
+Fixed along the same seam:
+
+- **Status, plan, and note documents no longer follow the user between
+  conversations.** Together with `@astralform/chat`'s per-conversation document
+  buckets, this is the client half of a status panel binding to the wrong
+  conversation.
+- **`createConversation` and `deleteConversation` invalidate a load in flight.**
+  Both move `conversationId`, so a fetch landing afterwards used to reinstall
+  the previous conversation's list under the new id — and because `regenerate`
+  gates on that pairing, nothing reopened it for the rest of the session.
+- **A restore no longer announces an idle composer over a live send.** On both
+  the fast path and the active-job branch, a send landing during the probe kept
+  the composer readable as ready for the whole turn, after which the next send
+  was swallowed by `ChatSession.send`'s own `isStreaming` bail with no error.
+- **A completed turn no longer puts two messages under one id.** `job.message_id`
+  is the PROMPT's id; the assistant row was being pushed under it too. The user
+  turn now carries it — which is what lets a restore pair a job to its prompt by
+  id rather than by position — and the assistant row gets its own.
+- **A send that never reached the wire no longer leaves its row behind.**
+  Previously the local user row stayed in `session.messages` with
+  `status: "complete"` — a claim it had no business making — and `regenerate`
+  would pick it and resend under a client-minted id the server never issued.
+  A consumer that rendered the failed message and expected it to persist should
+  read the `error` event instead.
+- **Pressing Stop no longer wipes the protocol registry.** `stop()` routed
+  through `session.disconnect()`, which ends in `protocols.clear()` — so the
+  first Stop dropped every registered `ProtocolAdapter` for the rest of the
+  session, and the SDK never re-registers them. Stop now cancels the TURN
+  (`session.cancelTurn()`), leaving the session's own state alone. Deleting a
+  conversation takes the same path, and a parked background job on a deleted
+  conversation is now cancelled rather than left billing tokens.
+- **A cancelled turn no longer strands its prompt.** A turn that reached the
+  wire and was then stopped never reaches `message_stop`, so nothing could
+  prove its prompt committed and every later load re-appended the row.
+  Cancelling now hands authority back to the server.
+- **Deleting a conversation with a parked background job emits
+  `backgroundJobsChanged`,** so a running-job badge cannot outlive the
+  conversation it points at.
+
+## 4.9.1
+
+**A dropped SSE stream can no longer hang a turn forever.** A dead HTTP/3 (QUIC) connection leaves `reader.read()` pending indefinitely — no bytes, no error, no FIN. The existing reconnect loop only engages on a *rejected* or *cleanly closed* stream, so it never fired: the turn sat on "working" with no recovery path and no way for a client to tell it apart from a slow model. Seen in production as `ERR_QUIC_PROTOCOL_ERROR` on `/v1/jobs/{id}/events`.
+
+`pumpStream` now runs a stall watchdog. The backend emits a keepalive every 15s, so a healthy stream never goes quiet for long; if no event arrives for **45s** the stream is treated as a zombie, the connection is aborted, and a `ConnectionError` feeds the existing reconnect-from-`lastSeq` loop. Recovery is transparent — the turn resumes from the last seq and completes.
+
+Two things worth knowing if you tune this:
+
+- **It depends on the keepalive's framing, not just its interval.** The backend sends `keepalive` as a typed wire event, so it reaches the SSE parser as a real `data:` line and resets the timer. A bare `: keepalive` SSE *comment* would be swallowed by the parser and the watchdog would fire on every healthy turn that thinks for 45s.
+- **Time-to-give-up is now ~5.5 min, not ~17s.** The 17.5s figure is the backoff sum (0.5+1+2+4+5+5). A stalled attempt burns 45s before it even registers as a failure, so all 7 attempts stalling is 7 × 45s + 17.5s. That is deliberate: a stalled stream is indistinguishable from a slow one until the watchdog fires, and a shorter window would kill healthy long-running turns.
+
+Also fixed: `disconnect()` / `detach()` during reconnect backoff could let one more `/events` request go out. The per-attempt `AbortController` is linked to the session signal by an `abort` *listener*, and a signal aborted while the loop was sleeping has already dispatched that event — so the listener never fired and the fresh controller stayed live. That attempt reached the network, emitted `ChatEvent`s to lingering handlers, and could run a client tool on a session the caller believed was gone. The loop now bails up front when the signal is already aborted, restoring the short-circuit that passing the outer signal straight to `fetch` used to provide.
+
+## 4.9.0
+
+**A turn can now be put in video mode.** The backend has accepted `video_mode` on `POST /v1/jobs` since Astralform 0.67.0, but `send()` builds the request body field by field — so a client passing `videoMode` had it silently dropped, ran an ordinary turn, and waited for a clip nobody had requested. There was nothing on the wire to explain why.
+
+- `SendOptions.videoMode` on both `ChatSession` and `StreamManager`, mapped to `video_mode`.
+- Mutually exclusive with `imageMode` at the composer level — which is why a video turn also gets the image tool server-side: the user cannot select both, so the agent must be able to produce its own first frame.
+
+`generate_video` animates an **existing** image; it cannot start from text, and the clip is silent.
+
+**Which backend you need, precisely** — `video_mode` being accepted is not the same as a clip arriving:
+
+| Needs | Backend |
+|---|---|
+| `video_mode` accepted on `POST /v1/jobs` | ≥ 0.67.0 |
+| A clip that actually completes | **> 0.67.0** — a ~232 s generation cannot cross Cloudflare's ~126 s origin timeout, so on 0.67.0 it fails with a 524. Fixed by the submit+poll transport, unreleased at time of writing. |
+| `AgentStatus.capabilities` reporting `video`, to gate the affordance | **> 0.67.0** — also unreleased at time of writing. |
+
+Gate on the capability the same way image mode does. Until a backend carrying it ships, the key is simply absent, which reads as hidden — so a client written against this is correct now and lights up on its own when the backend catches up.
+
+## 4.8.0
+
+**The plan and notes a conversation accumulates now reach the client live.** The backend has emitted `plan_update` and `note_update` since the plan/note tools shipped, but `translateCustomEvent` dropped both at `default: return null` — so a client could only learn about a plan by polling REST. Combined with a poll that is skipped mid-stream, a plan written at minute 1 of a 13-minute turn stayed invisible until the turn ended.
+
+- `plan_update` → `{ type: "plan_update"; plan: string }` — the full markdown body, not a diff, because `write_plan` replaces the document wholesale.
+- `note_update` → `{ type: "note_update"; notes: string[] }` — names only; bodies are unbounded and read on demand.
+- `PlanUpdatePayload` / `NoteUpdatePayload` exported alongside the other custom-event payloads.
+
+Both default rather than drop on an empty payload: a plan can legitimately be cleared, and dropping that event would leave a panel showing a plan that no longer exists.
+
 ## 4.7.0
 
 **A conversation can now be renamed — previously its title was whatever the server generated from the first turn, permanently.** There was no way to change it from any client; the SDK's `updateConversationTitle` is local-cache-only and makes no network call.
