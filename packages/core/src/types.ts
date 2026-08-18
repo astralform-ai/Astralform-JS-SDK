@@ -982,6 +982,12 @@ export interface ModelOption {
    * drive.
    */
   thinkingControl?: ThinkingDescriptor;
+  /** the provider's brand mark (picker tiles); null until the backend rollout / for icon-less providers */
+  iconUrl?: string | null;
+  /** when the CALLER last ran this model (picker "Recent" ordering); null for a never-used model */
+  lastUsedAt?: string | null;
+  /** how many times the caller has run this model; null alongside lastUsedAt */
+  useCount?: number | null;
 }
 
 // =============================================================================

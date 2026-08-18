@@ -347,6 +347,11 @@ describe("AstralformClient", () => {
               ],
               default: "none",
             },
+            // Picker recents + provider tiles (snake on the wire, camelized
+            // through the structural map).
+            icon_url: "https://cdn.example/anthropic.png",
+            last_used_at: "2026-08-18T12:00:00Z",
+            use_count: 7,
             // A field this SDK version does not name. The point of the test:
             // the previous hand-written map listed its fields and silently
             // dropped the rest, which is how the server emitted `effort_levels`
@@ -401,6 +406,15 @@ describe("AstralformClient", () => {
 
     // No control → undefined, not a fabricated empty ladder.
     expect(models[1]!.thinkingControl).toBeUndefined();
+
+    // Picker recents + provider tiles pass through camelized.
+    expect(models[0]!.iconUrl).toBe("https://cdn.example/anthropic.png");
+    expect(models[0]!.lastUsedAt).toBe("2026-08-18T12:00:00Z");
+    expect(models[0]!.useCount).toBe(7);
+    // Absent usage/icon fields → null (the "no data" signal), not undefined.
+    expect(models[1]!.iconUrl).toBeNull();
+    expect(models[1]!.lastUsedAt).toBeNull();
+    expect(models[1]!.useCount).toBeNull();
   });
 
   it("submitToolResult posts to /v1/tool-result", async () => {

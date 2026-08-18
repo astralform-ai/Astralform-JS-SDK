@@ -493,7 +493,19 @@ export class AstralformClient {
     // there is nothing to convert inside it — and recursing would rewrite keys
     // inside arbitrary JSON payloads elsewhere in the SDK, which is a worse
     // failure than the one it would prevent. `client.test.ts` pins the key set.
-    return raw.map((m) => camelizeKeys<ModelOption>(m));
+    //
+    // The picker-recents triple (iconUrl/lastUsedAt/useCount) arrives through
+    // the same structural map; normalizing absent → null so "no data" is one
+    // value, never undefined-vs-null ambiguity for consumers.
+    return raw.map((m) => {
+      const option = camelizeKeys<ModelOption>(m);
+      return {
+        ...option,
+        iconUrl: option.iconUrl ?? null,
+        lastUsedAt: option.lastUsedAt ?? null,
+        useCount: option.useCount ?? null,
+      };
+    });
   }
 
   async getSkills(): Promise<SkillInfo[]> {
