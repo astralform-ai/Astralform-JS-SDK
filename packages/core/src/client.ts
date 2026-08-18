@@ -504,6 +504,7 @@ export class AstralformClient {
         iconUrl: option.iconUrl ?? null,
         lastUsedAt: option.lastUsedAt ?? null,
         useCount: option.useCount ?? null,
+        contextWindow: option.contextWindow ?? null,
       };
     });
   }
