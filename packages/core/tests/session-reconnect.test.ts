@@ -368,8 +368,12 @@ describe("ChatSession auto-reconnect", () => {
 
     vi.useFakeTimers();
     const p = session.send("Hi");
-    // 45s stall timeout + reconnect backoff, with margin.
-    await vi.advanceTimersByTimeAsync(60_000);
+    // Stall timeout (135s) + the 0.5s first reconnect backoff, with margin.
+    // If SSE_STALL_TIMEOUT_MS moves again this advance must move with it —
+    // an advance short of the watchdog leaves the zombie read pending and
+    // this test hanging (the constant is module-private, so the coupling is
+    // by comment, not import).
+    await vi.advanceTimersByTimeAsync(150_000);
     await p;
     vi.useRealTimers();
 
