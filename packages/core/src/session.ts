@@ -49,7 +49,8 @@ const SSE_MAX_RECONNECTS = 6;
 /**
  * Max silence tolerated on an established SSE stream before we declare it a
  * zombie and reconnect. The backend emits a keepalive every 15s
- * (``subscribe.py``), so a healthy stream never goes quiet this long. This
+ * (``subscribe.py``) and is moving to a 45s cadence to cut mobile radio
+ * wake-ups, so a healthy stream never goes quiet this long. This
  * matters because some failures (notably HTTP/3 / QUIC connection deaths)
  * leave ``reader.read()`` pending forever — no bytes, no error, no FIN — and
  * without a watchdog the retry loop below never engages and the UI hangs on
@@ -60,10 +61,14 @@ const SSE_MAX_RECONNECTS = 6;
  * it reaches ``streamJobSSE``'s parser as a real ``data:`` line and resets the
  * timer below. An SSE-protocol comment (``: keepalive``) would be silently
  * swallowed by that parser — it only reacts to ``event:``/``data:`` — and this
- * watchdog would then fire on every healthy turn that thinks for 45s. If the
- * backend ever changes that framing, this constant has to change with it.
+ * watchdog would then fire on every healthy turn that thinks this long. If
+ * the backend ever changes that framing, this constant has to change with it.
+ *
+ * 3x the PLANNED 45s keepalive cadence, not the current 15s one: 135s
+ * tolerates both, so this client can ship ahead of the backend flip without
+ * ever racing the keepalive it depends on.
  */
-const SSE_STALL_TIMEOUT_MS = 45_000;
+const SSE_STALL_TIMEOUT_MS = 135_000;
 
 // Retries for the client-tool result POST itself, independent of the SSE
 // reconnect loop — reconnecting the *stream* can't recover a failed *result
@@ -753,7 +758,7 @@ export class ChatSession {
    * whether an ended stream means "turn done" vs "dropped, reconnect".
    *
    * ``onStall`` aborts the per-attempt connection: if no event arrives within
-   * SSE_STALL_TIMEOUT_MS (backend keepalives land every 15s), the stream is a
+   * SSE_STALL_TIMEOUT_MS (backend keepalives land well inside it), the stream is a
    * zombie — ``reader.read()`` will never settle — so we kill the fetch and
    * throw a ConnectionError, feeding the caller's reconnect-from-lastSeq loop.
    */
