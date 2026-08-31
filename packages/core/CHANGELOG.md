@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.1.1
+
+### Changed
+
+- **`SSE_STALL_TIMEOUT_MS` is now 135s (was 45s).** The backend's keepalive cadence is moving from every 15s to every 45s to cut mobile radio wake-ups on idle streams, and the zombie watchdog stays 3× the cadence. 135s tolerates both intervals, so this release ships ahead of the backend flip and the deploy order is safe in both directions. This supersedes the 45s and ~5.5-minute figures in the 4.9.1 entry: a zombie stream (a QUIC death that leaves `reader.read()` pending forever) is now detected in up to 135s, and the worst case with every reconnect attempt stalling rises to ~16 minutes (7 × 135s + 17.5s of backoff) — accepted rather than held by shrinking `SSE_MAX_RECONNECTS`, which would trade real resilience on flaky networks for a pathological case.
+
 ## 7.1.0
 
 ### Added

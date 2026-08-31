@@ -40,30 +40,40 @@ type ChatEventHandler = (event: ChatEvent) => void;
  * That 17.5s is the BACKOFF total, not the time to give up. An attempt that
  * fails fast costs ~nothing, but one that stalls burns SSE_STALL_TIMEOUT_MS
  * before it even registers as a failure — so with all 7 attempts stalling the
- * worst case is 7 * 45s + 17.5s ≈ 5.5 minutes. That is the intended trade: a
- * stalled stream is indistinguishable from a slow one until the watchdog
- * fires, and cutting it shorter risks killing healthy long-running turns.
+ * worst case is 7 * 135s + 17.5s ≈ 16 minutes. That ceiling is accepted, not
+ * accidental: an all-stalls sequence needs every attempt to die the rare QUIC
+ * way (fail-fast is the common failure), and shrinking the attempt budget to
+ * hold the old ~5.5-minute bound would cost real resilience on flaky networks
+ * to improve a pathological case. A stalled stream is indistinguishable from
+ * a slow one until the watchdog fires, and cutting that shorter risks killing
+ * healthy long-running turns.
  */
 const SSE_MAX_RECONNECTS = 6;
 
 /**
  * Max silence tolerated on an established SSE stream before we declare it a
- * zombie and reconnect. The backend emits a keepalive every 15s
- * (``subscribe.py``), so a healthy stream never goes quiet this long. This
+ * zombie and reconnect. The backend emits a keepalive on a fixed cadence
+ * (``subscribe.py``), moving from every 15s to every 45s to cut mobile radio
+ * wake-ups, so a healthy stream never goes quiet this long. This
  * matters because some failures (notably HTTP/3 / QUIC connection deaths)
  * leave ``reader.read()`` pending forever — no bytes, no error, no FIN — and
  * without a watchdog the retry loop below never engages and the UI hangs on
- * "working" indefinitely. Set to 3x the keepalive interval.
+ * "working" indefinitely.
  *
  * DEPENDS ON THE KEEPALIVE'S FRAMING, not just its interval. The backend
  * sends it as a typed wire event (``{"event": "keepalive", "data": ...}``), so
  * it reaches ``streamJobSSE``'s parser as a real ``data:`` line and resets the
  * timer below. An SSE-protocol comment (``: keepalive``) would be silently
  * swallowed by that parser — it only reacts to ``event:``/``data:`` — and this
- * watchdog would then fire on every healthy turn that thinks for 45s. If the
- * backend ever changes that framing, this constant has to change with it.
+ * watchdog would then fire on every healthy turn that thinks this long. If
+ * the backend ever changes that framing, this constant has to change with
+ * it.
+ *
+ * 3x the PLANNED 45s keepalive cadence, not the current 15s one: 135s
+ * tolerates both, so this client can ship ahead of the backend flip without
+ * ever racing the keepalive it depends on.
  */
-const SSE_STALL_TIMEOUT_MS = 45_000;
+const SSE_STALL_TIMEOUT_MS = 135_000;
 
 // Retries for the client-tool result POST itself, independent of the SSE
 // reconnect loop — reconnecting the *stream* can't recover a failed *result
@@ -753,7 +763,7 @@ export class ChatSession {
    * whether an ended stream means "turn done" vs "dropped, reconnect".
    *
    * ``onStall`` aborts the per-attempt connection: if no event arrives within
-   * SSE_STALL_TIMEOUT_MS (backend keepalives land every 15s), the stream is a
+   * SSE_STALL_TIMEOUT_MS (backend keepalives land every 15-45s), the stream is a
    * zombie — ``reader.read()`` will never settle — so we kill the fetch and
    * throw a ConnectionError, feeding the caller's reconnect-from-lastSeq loop.
    */
