@@ -104,6 +104,13 @@ export class StreamManager {
    * its awaits. This can.
    */
   private turnCounter = 0;
+  /**
+   * True while a `resync` is between its probe and its restore. Visibility and
+   * focus listeners can both fire for one return, and two overlapping resyncs
+   * would each detach the other's stream mid-flight — the second call must
+   * find the flag set and leave the first to converge.
+   */
+  private _resyncing = false;
 
   constructor(session: ChatSession) {
     this.session = session;
@@ -443,6 +450,123 @@ export class StreamManager {
       // Only when we are still the current generation: if a newer switch
       // superseded us it owns the announcement.
       if (!tookOver && gen === this.generation && this._state === "restoring") {
+        this.settleIdle();
+      }
+    }
+  }
+
+  // ── Resync after the page sat in the background ───────────────
+
+  /**
+   * Re-attach to whatever the server says is live for the ACTIVE conversation.
+   *
+   * The reconnect machinery inside ``consumeEventStream`` only runs while a
+   * stream is being consumed — and a page suspended in the background (locked
+   * phone, app switch, hidden tab) can outlive it: timers are throttled or
+   * suspended, so the stall watchdog may never fire while hidden; the
+   * reconnect budget (``SSE_MAX_RECONNECTS``) can burn out in fail-fast
+   * attempts; and a 401 from a rotated access token ends the loop outright as
+   * non-retryable. What is left is a manager that believes a turn is streaming
+   * (or has given up on one that is still running) with nothing attached — and
+   * no navigation will ever fix it, because ``switchTo`` early-returns on the
+   * conversation it is already on.
+   *
+   * So the consumer calls this when the user COMES BACK
+   * (``visibilitychange → visible``, window ``focus``). One ``getActiveJob``
+   * probe, then:
+   *
+   *  - attached to exactly the job the server calls live → healthy. The stall
+   *    watchdog owns zombie recovery from here, now that timers run again.
+   *    No-op.
+   *  - anything else — attached to a job the server no longer calls live,
+   *    attached to nothing while a job runs, or idle with a live job another
+   *    tab/device started — → detach and re-run ``restore``, the same path a
+   *    conversation reopen takes, with all of its supersession and takeover
+   *    guards inherited.
+   *
+   * Skipped while a restore is already in flight (it is converging on server
+   * truth by itself) and while another resync holds the flag — see
+   * ``_resyncing``.
+   */
+  async resync(): Promise<void> {
+    const conversationId = this._activeConversationId;
+    if (!conversationId) return;
+    if (this._state === "restoring" || this._resyncing) return;
+    this._resyncing = true;
+    // Captured BEFORE the probe, with nothing awaiting between here and the
+    // set: a switch moves the generation, a send or regenerate moves the turn
+    // counter (never the generation — see `turnCounter`), and whichever lands
+    // inside the probe's await owns everything after it. `turnStarted`, not
+    // `viewTakenOverByLiveTurn`: the zombie case this method exists for IS
+    // `_state === "streaming"` with nothing attached, so the streaming state
+    // alone cannot mean "a live send took over" — but a turn that STARTED
+    // since the capture unambiguously is one.
+    const gen = this.generation;
+    const turn = this.turnCounter;
+    try {
+      let activeJobId: string | null = null;
+      try {
+        activeJobId = (await this.session.client.getActiveJob(conversationId))
+          .jobId;
+      } catch {
+        // Can't ask the server — the stall watchdog still owns recovery.
+        return;
+      }
+      if (gen !== this.generation || this.turnStarted(turn)) return;
+      // Is this manager attached to a turn at all? `_state` is the synchronous
+      // authority; `session.isStreaming` covers the window where a send/restore
+      // raised it behind an await (see `viewTakenOverByLiveTurn`).
+      const attached = this._state === "streaming" || this.session.isStreaming;
+      // Nothing attached and nothing live: the ordinary case for a focus event,
+      // and the one that must cost nothing beyond the probe above.
+      if (activeJobId === null && !attached) return;
+      // Attached to exactly the job the server calls live: healthy. The stall
+      // watchdog owns zombie recovery from here, now that timers run again.
+      if (
+        activeJobId !== null &&
+        this.session.isStreaming &&
+        this.session.currentJobId === activeJobId
+      ) {
+        return;
+      }
+      // Attached to a job the server no longer calls live, or attached to
+      // nothing while one runs: rebuild from server truth. `session.detach()`
+      // aborts whatever socket remains and emits `disconnected` (consumers
+      // clear their streaming flags on it) WITHOUT `detachStreamingTurn`'s
+      // parking bookkeeping — this job is not becoming a background job, it
+      // is about to be re-attached or replayed by the restore below. Its
+      // `currentJobId` is cleared for the same reason `detachStreamingTurn`
+      // clears it: `detach()` deliberately leaves it, `stop()` has no state
+      // guard, and the branches below where the restore does NOT reconnect
+      // would leave it naming a job the server just said is not live.
+      this.session.detach();
+      this.session.currentJobId = null;
+      // Un-own the old turn WITHOUT announcing — `restore` announces from
+      // here. Same contract as `detachStreamingTurn`'s tail: had this left
+      // `streaming` set, `restore`'s `settleIdle` would read it as a live
+      // send's state and refuse to announce, stranding the state.
+      this._state = "idle";
+      try {
+        await this.restore(conversationId, gen);
+      } catch {
+        // The `finally` below settles the announced state. Swallowed
+        // deliberately: this method is documented to be wired straight into
+        // visibility/focus listeners with no `.catch` of their own, and the
+        // failure is recoverable — the settle re-enables the next
+        // visibility/focus event to retry rather than locking it out.
+      }
+    } finally {
+      this._resyncing = false;
+      // `restore` can reject at `loadConversation`, having already announced
+      // `restoring`. Only when still current: a newer switch owns the
+      // announcement. Without this the state is unrecoverable — the guard at
+      // the top of this method locks out every later resync, and `switchTo`
+      // early-returns on this very conversation. Compared through an asserted
+      // local because the entry guard above narrows `_state` to exclude
+      // "restoring" for the rest of this function, and `restore()`'s writes
+      // to it are invisible to that narrowing.
+      const restoring = "restoring" as StreamState;
+      if (gen === this.generation && this._state === restoring) {
         this.settleIdle();
       }
     }
