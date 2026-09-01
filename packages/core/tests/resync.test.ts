@@ -399,6 +399,9 @@ describe("resync: a send landing inside the probe await", () => {
     const events: ChatEvent[] = [];
     session.on((e) => events.push(e));
     await manager.switchTo("conv-1");
+    // Clear the switch's own events so the assertions below can only be
+    // satisfied by the send's stream, not by the open's replay/reconnect.
+    events.length = 0;
 
     gateArmed = true;
     const resyncing = manager.resync();
@@ -408,10 +411,10 @@ describe("resync: a send landing inside the probe await", () => {
     openProbe();
     await Promise.all([resyncing, sending.catch(() => {})]);
 
-    // The send streamed to its terminal (the mock SSE ends with one) rather
-    // than being aborted by a detach …
-    const started = events.filter((e) => e.type === "message_start");
-    expect(started.length).toBeGreaterThan(0);
+    // The send's own stream pumped to its terminal (the mock SSE ends with
+    // one) rather than being aborted by a detach — with `events` cleared
+    // above, this message_start can only have come from the send's stream.
+    expect(events.some((e) => e.type === "message_start")).toBe(true);
     // … and no detach ever happened: `session.detach()` emits `disconnected`.
     expect(events.some((e) => e.type === "disconnected")).toBe(false);
     expect(manager.state).toBe("idle");
