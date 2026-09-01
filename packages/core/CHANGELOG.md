@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.2.0
+
+### Added
+
+- **`StreamManager.resync()`** — re-attach to whatever the server says is live for the active conversation, for the moment the user comes back to a page that sat in the background. The reconnect loop inside `consumeEventStream` only runs while a stream is being consumed, and a suspended page can outlive it: timers are throttled so the stall watchdog may never fire, the `SSE_MAX_RECONNECTS` budget can burn out in fail-fast attempts, and a rotated token's 401 ends the loop outright as non-retryable. What's left is a manager that believes a turn is streaming (or has given up on one that is still running) with nothing attached — and no navigation fixes it, because `switchTo` early-returns on the conversation it is already on. `resync()` probes `getActiveJob` once and either proves the attachment healthy (no-op, the stall watchdog owns zombie recovery once timers run again) or rebuilds from server truth through the same `restore` path a conversation reopen takes. Consumers should call it on `visibilitychange → visible` and window `focus` (astralform-ai/Astralform#1012).
+
 ## 7.1.1
 
 ### Changed
