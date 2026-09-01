@@ -292,9 +292,16 @@ describe("resync: the stream died in the background and the job is still live", 
     expect(finished).toBeDefined();
     // … the restore was announced (consumers cleared on it) …
     expect(managerEvents).toContainEqual({ type: "stateChange", state: "restoring" });
-    // … and the manager settled rather than staying on the stale streaming
+    // … the manager settled rather than staying on the stale streaming
     // belief.
     expect(manager.state).toBe("idle");
+    // And the dead job's id did not survive the detach — `detach()` leaves
+    // it and `stop()` has no state guard, so a stale id would re-issue a
+    // cancel against it on the next stop press.
+    expect(
+      (manager as unknown as { session: ChatSession & { currentJobId: string | null } })
+        .session.currentJobId,
+    ).toBeNull();
   });
 });
 
@@ -348,6 +355,119 @@ describe("resync: the states that must cost nothing", () => {
     await manager.resync();
 
     expect(calls.length - before).toBe(0); // not even the probe
+  });
+});
+
+describe("resync: a send landing inside the probe await", () => {
+  it("does not detach the send's stream over a stale probe result", async () => {
+    // `send` bumps `turnCounter` and `_state`, never `generation` — so a
+    // generation-only guard cannot see it, and the probe (issued before the
+    // send) answering `null` while `attached` reads true falls through to
+    // `detach()`, aborting the send's in-flight POST and silently dropping
+    // the user's message. The `turnStarted` capture is what closes it.
+    let openProbe!: () => void;
+    let gateArmed = false;
+    const probeGate = new Promise<void>((r) => {
+      openProbe = r;
+    });
+    const state: BackendState = { liveJobId: "job-2" };
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (url.includes("/active-job") && gateArmed) {
+          await probeGate;
+          // Answered before the send existed: nothing live from the server's
+          // point of view at issue time.
+          return json({ job_id: null, status: "none" });
+        }
+        if (url.includes("/v1/jobs") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ job_id: "job-3", conversation_id: "conv-1" }),
+            { status: 201, headers: JSON_HEADERS },
+          );
+        }
+        return mockBackend([], state)(input);
+      },
+    });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+    await manager.switchTo("conv-1");
+
+    gateArmed = true;
+    const resyncing = manager.resync();
+    await new Promise((r) => setTimeout(r, 0));
+    // The send lands while the probe is parked.
+    const sending = manager.send("a message typed during the probe");
+    openProbe();
+    await Promise.all([resyncing, sending.catch(() => {})]);
+
+    // The send streamed to its terminal (the mock SSE ends with one) rather
+    // than being aborted by a detach …
+    const started = events.filter((e) => e.type === "message_start");
+    expect(started.length).toBeGreaterThan(0);
+    // … and no detach ever happened: `session.detach()` emits `disconnected`.
+    expect(events.some((e) => e.type === "disconnected")).toBe(false);
+    expect(manager.state).toBe("idle");
+  });
+});
+
+describe("resync: a restore that rejects", () => {
+  it("settles the state instead of stranding it on restoring", async () => {
+    // `loadConversation` rejects when the messages fetch AND the storage
+    // fallback both fail (`ChatStorage` is a public interface). A resync
+    // wired straight into a visibility listener has no `.catch`, so the
+    // rejection must be contained here — and the state must settle, because
+    // the `restoring` guard at the top of this method would otherwise lock
+    // out every later resync while `switchTo` early-returns on this very
+    // conversation.
+    const { manager, calls } = await openConversation();
+    // Break the messages fetch AND the storage fallback for the resync's
+    // `loadConversation`.
+    const session = (manager as unknown as { session: ChatSession }).session;
+    const storage = (session as unknown as { storage: { fetchMessages: unknown } })
+      .storage;
+    const realFetch = storage.fetchMessages as (
+      ...a: unknown[]
+    ) => Promise<unknown>;
+    storage.fetchMessages = async (...a: unknown[]) => {
+      throw new Error("storage down");
+    };
+    void realFetch;
+    const client = (session as unknown as { client: ChatSession["client"] })
+      .client;
+    const realGet = client.get.bind(client);
+    (client as unknown as { get: unknown }).get = async (
+      url: string,
+      ...rest: unknown[]
+    ) => {
+      if (url.includes("/messages")) {
+        return new Response(JSON.stringify({ detail: "boom" }), {
+          status: 500,
+          headers: JSON_HEADERS,
+        });
+      }
+      return realGet(url, ...(rest as []));
+    };
+
+    // Must resolve (not reject) despite the failing restore.
+    await expect(manager.resync()).resolves.toBeUndefined();
+    expect(manager.state).toBe("idle");
+
+    // And the failure is recoverable: a later resync is not locked out by a
+    // stranded `restoring` state — it probes again (its own probe plus the
+    // restore's, so strictly more than one new hit).
+    const before = calls.filter((u) => u.includes("/active-job")).length;
+    await manager.resync();
+    expect(calls.filter((u) => u.includes("/active-job")).length).toBeGreaterThan(
+      before,
+    );
   });
 });
 

@@ -493,11 +493,17 @@ export class StreamManager {
     if (!conversationId) return;
     if (this._state === "restoring" || this._resyncing) return;
     this._resyncing = true;
+    // Captured BEFORE the probe, with nothing awaiting between here and the
+    // set: a switch moves the generation, a send or regenerate moves the turn
+    // counter (never the generation — see `turnCounter`), and whichever lands
+    // inside the probe's await owns everything after it. `turnStarted`, not
+    // `viewTakenOverByLiveTurn`: the zombie case this method exists for IS
+    // `_state === "streaming"` with nothing attached, so the streaming state
+    // alone cannot mean "a live send took over" — but a turn that STARTED
+    // since the capture unambiguously is one.
+    const gen = this.generation;
+    const turn = this.turnCounter;
     try {
-      // Captured BEFORE the probe, same timing as `restore`'s own capture: a
-      // switch or send landing inside the await moves the generation / turn
-      // counter, and whichever landed owns everything after it.
-      const gen = this.generation;
       let activeJobId: string | null = null;
       try {
         activeJobId = (await this.session.client.getActiveJob(conversationId))
@@ -506,7 +512,7 @@ export class StreamManager {
         // Can't ask the server — the stall watchdog still owns recovery.
         return;
       }
-      if (gen !== this.generation) return;
+      if (gen !== this.generation || this.turnStarted(turn)) return;
       // Is this manager attached to a turn at all? `_state` is the synchronous
       // authority; `session.isStreaming` covers the window where a send/restore
       // raised it behind an await (see `viewTakenOverByLiveTurn`).
@@ -528,16 +534,41 @@ export class StreamManager {
       // aborts whatever socket remains and emits `disconnected` (consumers
       // clear their streaming flags on it) WITHOUT `detachStreamingTurn`'s
       // parking bookkeeping — this job is not becoming a background job, it
-      // is about to be re-attached or replayed by the restore below.
+      // is about to be re-attached or replayed by the restore below. Its
+      // `currentJobId` is cleared for the same reason `detachStreamingTurn`
+      // clears it: `detach()` deliberately leaves it, `stop()` has no state
+      // guard, and the branches below where the restore does NOT reconnect
+      // would leave it naming a job the server just said is not live.
       this.session.detach();
+      this.session.currentJobId = null;
       // Un-own the old turn WITHOUT announcing — `restore` announces from
       // here. Same contract as `detachStreamingTurn`'s tail: had this left
       // `streaming` set, `restore`'s `settleIdle` would read it as a live
       // send's state and refuse to announce, stranding the state.
       this._state = "idle";
-      await this.restore(conversationId, gen);
+      try {
+        await this.restore(conversationId, gen);
+      } catch {
+        // The `finally` below settles the announced state. Swallowed
+        // deliberately: this method is documented to be wired straight into
+        // visibility/focus listeners with no `.catch` of their own, and the
+        // failure is recoverable — the settle re-enables the next
+        // visibility/focus event to retry rather than locking it out.
+      }
     } finally {
       this._resyncing = false;
+      // `restore` can reject at `loadConversation`, having already announced
+      // `restoring`. Only when still current: a newer switch owns the
+      // announcement. Without this the state is unrecoverable — the guard at
+      // the top of this method locks out every later resync, and `switchTo`
+      // early-returns on this very conversation. Compared through an asserted
+      // local because the entry guard above narrows `_state` to exclude
+      // "restoring" for the rest of this function, and `restore()`'s writes
+      // to it are invisible to that narrowing.
+      const restoring = "restoring" as StreamState;
+      if (gen === this.generation && this._state === restoring) {
+        this.settleIdle();
+      }
     }
   }
 
