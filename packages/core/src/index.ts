@@ -156,9 +156,11 @@ export type {
   ChatStreamEvent,
   ConversationEvent,
   VoiceConfig,
+  VoiceLLMMode,
   VoicePolishEvent,
   VoicePolishMode,
   VoicePolishRequest,
   VoiceTranscribeOptions,
   VoiceTranscript,
 } from "./types.js";
+export { VOICE_POLISH_MODES, isVoiceLLMMode, isVoicePolishMode } from "./types.js";

@@ -1,6 +1,7 @@
 import { AuthenticationError, ConnectionError, ServerError } from "./errors.js";
 import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import { streamJobSSE } from "./streaming.js";
+import { VOICE_POLISH_MODES, isVoicePolishMode } from "./types.js";
 import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
@@ -28,7 +29,6 @@ import type {
   ToolResultRequest,
   VoiceConfig,
   VoicePolishEvent,
-  VoicePolishMode,
   VoicePolishRequest,
   VoiceTranscribeOptions,
   VoiceTranscript,
@@ -664,13 +664,10 @@ export class AstralformClient {
     const raw = await this.get<Record<string, unknown>>("/v1/voice/config");
     return {
       enabled: Boolean(raw.enabled),
-      modes: (raw.modes as string[] | undefined) ?? [
-        "raw",
-        "light",
-        "structured",
-        "formal",
-      ],
-      defaultMode: (raw.default_mode as VoicePolishMode | undefined) ?? "structured",
+      modes: (raw.modes as string[] | undefined) ?? [...VOICE_POLISH_MODES],
+      // A mode this SDK does not know must not reach a `switch` typed as
+      // `VoicePolishMode`; `structured` is the server's own default.
+      defaultMode: isVoicePolishMode(raw.default_mode) ? raw.default_mode : "structured",
       silenceAutoStopSeconds:
         (raw.silence_auto_stop_seconds as number | undefined) ?? 2,
       autoSend: (raw.auto_send as boolean | undefined) ?? true,
@@ -684,6 +681,11 @@ export class AstralformClient {
    * Transcribe one recording with the agent's configured speech-to-text
    * provider (`POST /v1/voice/transcriptions`). 16 kHz mono 16-bit WAV is the
    * reference format; anything the provider accepts works.
+   *
+   * Deliberately outside `withDeadline`: a recording can run to
+   * `VoiceConfig.maxRecordingSeconds`, so the 30 s default would cut real
+   * uploads off. Pass `options.signal` to give up on a stalled one; the
+   * promise then rejects with the runtime's `AbortError`.
    */
   async transcribeVoice(
     audio: Blob,
@@ -692,6 +694,9 @@ export class AstralformClient {
     const formData = new FormData();
     formData.append("file", audio, options.filename ?? "recording.wav");
     if (options.hotwords?.length) {
+      // The form field is a comma-separated string — the server splits it on
+      // commas (and newlines), so this is the wire format, not a choice made
+      // here. A word containing a comma arrives as two.
       formData.append("hotwords", options.hotwords.join(", "));
     }
     if (options.language) {
@@ -701,7 +706,11 @@ export class AstralformClient {
       method: "POST",
       headers: this.authHeaders,
       body: formData,
+      signal: options.signal,
     }).catch((err) => {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw err;
+      }
       throw new ConnectionError(
         err instanceof Error ? err.message : "Failed to connect",
       );
@@ -718,8 +727,14 @@ export class AstralformClient {
 
   /**
    * Stream the LLM rewrite of a transcript (`POST /v1/voice/polish`) as typed
-   * frames. Aborting `signal` closes the connection, which cancels the model
-   * call upstream.
+   * frames.
+   *
+   * Failures the server reports mid-stream arrive as an `error` frame, but
+   * the iteration itself can reject: aborting `signal` closes the connection
+   * (which cancels the model call upstream) and rejects with
+   * `StreamAbortedError`; a non-2xx open rejects with `AuthenticationError`,
+   * `RateLimitError` or `ServerError`; a network failure with
+   * `ConnectionError`. Wrap the `for await` accordingly.
    */
   async *streamVoicePolish(
     request: VoicePolishRequest,
@@ -904,7 +919,11 @@ export function parseVoicePolishFrame(frame: {
 }): VoicePolishEvent | null {
   let payload: Record<string, unknown>;
   try {
-    payload = JSON.parse(frame.data) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(frame.data);
+    // `null`, `true` and `42` all parse; only an object carries the fields
+    // read below, and a throw here would end the whole polish generator.
+    if (typeof parsed !== "object" || parsed === null) return null;
+    payload = parsed as Record<string, unknown>;
   } catch {
     return null;
   }

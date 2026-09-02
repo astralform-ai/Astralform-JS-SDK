@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { AstralformClient, parseVoicePolishFrame } from "../src/client.js";
-import type { VoicePolishEvent } from "../src/types.js";
+import { ConnectionError } from "../src/errors.js";
+import { VOICE_POLISH_MODES, isVoiceLLMMode, isVoicePolishMode } from "../src/types.js";
+import type { VoicePolishEvent, VoicePolishMode } from "../src/types.js";
 
 function sseResponse(chunks: string[], status = 200): Response {
   const encoder = new TextEncoder();
@@ -53,6 +55,30 @@ describe("getVoiceConfig", () => {
     expect(url).toBe("http://test.com/v1/voice/config");
     expect(init.method).toBe("GET");
   });
+
+  it("falls back to structured when the server names a mode this SDK does not know", async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ enabled: true, default_mode: "casual", modes: ["casual"] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const config = await makeClient(fetchFn as unknown as typeof fetch).getVoiceConfig();
+    expect(config.defaultMode).toBe("structured");
+    // The picker still sees what the server offers.
+    expect(config.modes).toEqual(["casual"]);
+  });
+});
+
+describe("mode guards", () => {
+  it("narrow a config's default mode before polishing", () => {
+    expect(VOICE_POLISH_MODES).toEqual(["raw", "light", "structured", "formal"]);
+    expect(isVoicePolishMode("formal")).toBe(true);
+    expect(isVoicePolishMode("casual")).toBe(false);
+    expect(isVoicePolishMode(null)).toBe(false);
+    const modes: VoicePolishMode[] = ["raw", "light"];
+    expect(modes.filter(isVoiceLLMMode)).toEqual(["light"]);
+  });
 });
 
 describe("transcribeVoice", () => {
@@ -80,6 +106,27 @@ describe("transcribeVoice", () => {
     // The browser sets the multipart boundary; a JSON Content-Type here would break the upload.
     expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk_test");
+  });
+
+  it("forwards the caller's signal and surfaces an abort as the runtime's AbortError", async () => {
+    const controller = new AbortController();
+    const fetchFn = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        }),
+    );
+    const pending = makeClient(fetchFn as unknown as typeof fetch).transcribeVoice(
+      new Blob(["RIFF...."], { type: "audio/wav" }),
+      { signal: controller.signal },
+    );
+    const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBe(controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await expect(pending).rejects.not.toBeInstanceOf(ConnectionError);
   });
 });
 
@@ -143,6 +190,10 @@ describe("parseVoicePolishFrame", () => {
   it("returns null for malformed data and keeps detail only when present", () => {
     expect(parseVoicePolishFrame({ event: "delta", data: "not json" })).toBeNull();
     expect(parseVoicePolishFrame({ event: "delta", data: "{}" })).toBeNull();
+    // Valid JSON that is not an object must be skipped, not thrown on.
+    expect(parseVoicePolishFrame({ event: "delta", data: "null" })).toBeNull();
+    expect(parseVoicePolishFrame({ event: "error", data: "42" })).toBeNull();
+    expect(parseVoicePolishFrame({ event: "done", data: "true" })).toBeNull();
     expect(
       parseVoicePolishFrame({
         event: "error",
