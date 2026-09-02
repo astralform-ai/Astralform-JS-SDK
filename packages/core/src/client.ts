@@ -685,7 +685,8 @@ export class AstralformClient {
    * Deliberately outside `withDeadline`: a recording can run to
    * `VoiceConfig.maxRecordingSeconds`, so the 30 s default would cut real
    * uploads off. Pass `options.signal` to give up on a stalled one; the
-   * promise then rejects with the runtime's `AbortError`.
+   * promise then rejects with the abort reason — the runtime's `AbortError`,
+   * or whatever was passed to `abort(reason)`.
    */
   async transcribeVoice(
     audio: Blob,
@@ -708,7 +709,9 @@ export class AstralformClient {
       body: formData,
       signal: options.signal,
     }).catch((err) => {
-      if (err instanceof Error && err.name === "AbortError") {
+      // Any abort is the caller's, not a failure — including `abort(reason)`,
+      // which rejects with the caller's own error rather than an AbortError.
+      if (options.signal?.aborted) {
         throw err;
       }
       throw new ConnectionError(
@@ -920,9 +923,10 @@ export function parseVoicePolishFrame(frame: {
   let payload: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(frame.data);
-    // `null`, `true` and `42` all parse; only an object carries the fields
-    // read below, and a throw here would end the whole polish generator.
-    if (typeof parsed !== "object" || parsed === null) return null;
+    // `null`, `true`, `42` and `[]` all parse; only a plain object carries
+    // the fields read below (an array would synthesize an `error` event), and
+    // a throw here would end the whole polish generator.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     payload = parsed as Record<string, unknown>;
   } catch {
     return null;

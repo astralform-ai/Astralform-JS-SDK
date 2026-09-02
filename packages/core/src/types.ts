@@ -981,7 +981,8 @@ export interface VoiceTranscribeOptions {
    * Abort the upload. No client-side deadline applies to this call (a
    * recording can run to `maxRecordingSeconds` and the upload with it), so
    * this is the only way to give up on a stalled one; the promise rejects
-   * with the runtime's `AbortError`.
+   * with the abort reason (the runtime's `AbortError`, or what was passed to
+   * `abort(reason)`).
    */
   signal?: AbortSignal;
 }

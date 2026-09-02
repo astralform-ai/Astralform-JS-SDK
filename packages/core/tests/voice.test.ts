@@ -128,6 +128,23 @@ describe("transcribeVoice", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     await expect(pending).rejects.not.toBeInstanceOf(ConnectionError);
   });
+
+  it("passes an abort reason through untouched instead of wrapping it", async () => {
+    const controller = new AbortController();
+    const fetchFn = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        }),
+    );
+    const pending = makeClient(fetchFn as unknown as typeof fetch).transcribeVoice(
+      new Blob(["RIFF...."], { type: "audio/wav" }),
+      { signal: controller.signal },
+    );
+    const reason = new Error("user cancelled");
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  });
 });
 
 describe("streamVoicePolish", () => {
@@ -194,6 +211,7 @@ describe("parseVoicePolishFrame", () => {
     expect(parseVoicePolishFrame({ event: "delta", data: "null" })).toBeNull();
     expect(parseVoicePolishFrame({ event: "error", data: "42" })).toBeNull();
     expect(parseVoicePolishFrame({ event: "done", data: "true" })).toBeNull();
+    expect(parseVoicePolishFrame({ event: "error", data: "[]" })).toBeNull();
     expect(
       parseVoicePolishFrame({
         event: "error",
