@@ -1,6 +1,7 @@
 import { AuthenticationError, ConnectionError, ServerError } from "./errors.js";
 import { createRateLimitErrorFromHttp } from "./rate-limit.js";
 import { streamJobSSE } from "./streaming.js";
+import { VOICE_POLISH_MODES, isVoicePolishMode } from "./types.js";
 import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
@@ -26,6 +27,11 @@ import type {
   TeamSummary,
   ToolApprovalRequest,
   ToolResultRequest,
+  VoiceConfig,
+  VoicePolishEvent,
+  VoicePolishRequest,
+  VoiceTranscribeOptions,
+  VoiceTranscript,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.astralform.ai";
@@ -651,6 +657,110 @@ export class AstralformClient {
     return this.mapAsset(raw as Record<string, unknown>);
   }
 
+  // --- Voice input ---
+
+  /** The agent's voice-input defaults (`GET /v1/voice/config`). */
+  async getVoiceConfig(): Promise<VoiceConfig> {
+    const raw = await this.get<Record<string, unknown>>("/v1/voice/config");
+    return {
+      enabled: Boolean(raw.enabled),
+      modes: (raw.modes as string[] | undefined) ?? [...VOICE_POLISH_MODES],
+      // A mode this SDK does not know must not reach a `switch` typed as
+      // `VoicePolishMode`; `structured` is the server's own default.
+      defaultMode: isVoicePolishMode(raw.default_mode) ? raw.default_mode : "structured",
+      silenceAutoStopSeconds:
+        (raw.silence_auto_stop_seconds as number | undefined) ?? 2,
+      autoSend: (raw.auto_send as boolean | undefined) ?? true,
+      maxRecordingSeconds: (raw.max_recording_seconds as number | undefined) ?? 300,
+      supportsStreaming: Boolean(raw.supports_streaming),
+      hotwords: (raw.hotwords as string[] | undefined) ?? [],
+    };
+  }
+
+  /**
+   * Transcribe one recording with the agent's configured speech-to-text
+   * provider (`POST /v1/voice/transcriptions`). 16 kHz mono 16-bit WAV is the
+   * reference format; anything the provider accepts works.
+   *
+   * Deliberately outside `withDeadline`: a recording can run to
+   * `VoiceConfig.maxRecordingSeconds`, so the 30 s default would cut real
+   * uploads off. Pass `options.signal` to give up on a stalled one; the
+   * promise then rejects with the abort reason — the runtime's `AbortError`,
+   * or whatever was passed to `abort(reason)`.
+   */
+  async transcribeVoice(
+    audio: Blob,
+    options: VoiceTranscribeOptions = {},
+  ): Promise<VoiceTranscript> {
+    const formData = new FormData();
+    formData.append("file", audio, options.filename ?? "recording.wav");
+    if (options.hotwords?.length) {
+      // The form field is a comma-separated string — the server splits it on
+      // commas (and newlines), so this is the wire format, not a choice made
+      // here. A word containing a comma arrives as two.
+      formData.append("hotwords", options.hotwords.join(", "));
+    }
+    if (options.language) {
+      formData.append("language", options.language);
+    }
+    const response = await this.fetchFn(`${this.baseURL}/v1/voice/transcriptions`, {
+      method: "POST",
+      headers: this.authHeaders,
+      body: formData,
+      signal: options.signal,
+    }).catch((err) => {
+      // Any abort is the caller's, not a failure — including `abort(reason)`,
+      // which rejects with the caller's own error rather than an AbortError.
+      if (options.signal?.aborted) {
+        throw err;
+      }
+      throw new ConnectionError(
+        err instanceof Error ? err.message : "Failed to connect",
+      );
+    });
+    await this.handleError(response);
+    const raw = (await response.json()) as Record<string, unknown>;
+    return {
+      text: (raw.text as string | undefined) ?? "",
+      language: (raw.language as string | null | undefined) ?? null,
+      durationMs: (raw.duration_ms as number | null | undefined) ?? null,
+      asrMs: (raw.asr_ms as number | undefined) ?? 0,
+    };
+  }
+
+  /**
+   * Stream the LLM rewrite of a transcript (`POST /v1/voice/polish`) as typed
+   * frames.
+   *
+   * Failures the server reports mid-stream arrive as an `error` frame, but
+   * the iteration itself can reject: aborting `signal` closes the connection
+   * (which cancels the model call upstream) and rejects with
+   * `StreamAbortedError`; a non-2xx open rejects with `AuthenticationError`,
+   * `RateLimitError` or `ServerError`; a network failure with
+   * `ConnectionError`. Wrap the `for await` accordingly.
+   */
+  async *streamVoicePolish(
+    request: VoicePolishRequest,
+    options: { signal?: AbortSignal } = {},
+  ): AsyncGenerator<VoicePolishEvent> {
+    const frames = streamJobSSE({
+      url: `${this.baseURL}/v1/voice/polish`,
+      headers: { ...this.headers, Accept: "text/event-stream" },
+      method: "POST",
+      body: JSON.stringify({
+        text: request.text,
+        mode: request.mode,
+        hotwords: request.hotwords ?? [],
+      }),
+      signal: options.signal,
+      fetchFn: this.fetchFn,
+    });
+    for await (const frame of frames) {
+      const event = parseVoicePolishFrame(frame);
+      if (event) yield event;
+    }
+  }
+
   async listUploads(conversationId: string): Promise<ConversationAsset[]> {
     const raw = await this.get<Record<string, unknown>[]>(
       `/v1/conversations/${encodeURIComponent(conversationId)}/uploads`,
@@ -799,5 +909,49 @@ export class AstralformClient {
       metrics: j.metrics ?? null,
       createdAt: j.created_at ?? null,
     }));
+  }
+}
+
+/**
+ * Decode one SSE frame of `POST /v1/voice/polish`; null for frames the
+ * client does not act on (pings, unknown events).
+ */
+export function parseVoicePolishFrame(frame: {
+  event: string;
+  data: string;
+}): VoicePolishEvent | null {
+  let payload: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(frame.data);
+    // `null`, `true`, `42` and `[]` all parse; only a plain object carries
+    // the fields read below (an array would synthesize an `error` event), and
+    // a throw here would end the whole polish generator.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    payload = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  switch (frame.event) {
+    case "delta":
+      return typeof payload.text === "string"
+        ? { type: "delta", text: payload.text }
+        : null;
+    case "done":
+      return typeof payload.text === "string"
+        ? {
+            type: "done",
+            text: payload.text,
+            polishMs: (payload.polish_ms as number | undefined) ?? 0,
+          }
+        : null;
+    case "error":
+      return {
+        type: "error",
+        reason: (payload.reason as string | undefined) ?? "unknown",
+        partial: (payload.partial as string | undefined) ?? "",
+        ...(typeof payload.detail === "string" ? { detail: payload.detail } : {}),
+      };
+    default:
+      return null;
   }
 }

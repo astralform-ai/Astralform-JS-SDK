@@ -882,7 +882,129 @@ export interface StreamJobSSEOptions {
   headers: Record<string, string>;
   signal?: AbortSignal;
   fetchFn: typeof globalThis.fetch;
+  /** Request method; defaults to GET (the job event stream). */
+  method?: "GET" | "POST";
+  /** A JSON-serialised body for POST streams (the voice polish stream). */
+  body?: string;
 }
+
+// =============================================================================
+// Voice input
+// =============================================================================
+
+/**
+ * The styles a transcript can be shaped into, as the server names them.
+ * `raw` never calls the model — the transcript is used as recognized.
+ */
+export const VOICE_POLISH_MODES = ["raw", "light", "structured", "formal"] as const;
+
+export type VoicePolishMode = (typeof VOICE_POLISH_MODES)[number];
+
+/** A mode that calls the polish model — every mode except `raw`. */
+export type VoiceLLMMode = Exclude<VoicePolishMode, "raw">;
+
+/** Whether `value` is one of the four modes this SDK version knows. */
+export function isVoicePolishMode(value: unknown): value is VoicePolishMode {
+  return (
+    typeof value === "string" && (VOICE_POLISH_MODES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Whether `mode` may be passed to `streamVoicePolish` — the check to make on
+ * `VoiceConfig.defaultMode`, which can be `raw`.
+ */
+export function isVoiceLLMMode(mode: VoicePolishMode): mode is VoiceLLMMode {
+  return mode !== "raw";
+}
+
+/**
+ * What a client needs to run the microphone for an agent, from
+ * `GET /v1/voice/config`. Deliberately carries no provider or model names.
+ */
+export interface VoiceConfig {
+  enabled: boolean;
+  /**
+   * The styles the client may request, as the server names them. Kept as
+   * plain strings so a mode this SDK version does not know still reaches a
+   * picker; `isVoicePolishMode` narrows one.
+   */
+  modes: string[];
+  /**
+   * The style to use when the user has not picked one. Falls back to
+   * `structured` when the server names a mode this SDK does not know. Can be
+   * `raw`, which `streamVoicePolish` refuses — check it with `isVoiceLLMMode`
+   * (or compare against `"raw"`) before polishing.
+   */
+  defaultMode: VoicePolishMode;
+  /** In tap-to-talk mode, the pause that ends a recording. */
+  silenceAutoStopSeconds: number;
+  /** Send the message as soon as the result is ready. */
+  autoSend: boolean;
+  maxRecordingSeconds: number;
+  /**
+   * Whether the configured recognizer emits live partial transcripts. Batch
+   * (Whisper-style) providers do not; they transcribe on stop.
+   */
+  supportsStreaming: boolean;
+  /**
+   * The project vocabulary, for display. The server applies it to every
+   * transcription and polish itself; `transcribeVoice({ hotwords })` and
+   * `VoicePolishRequest.hotwords` carry only the user's own words, which the
+   * server merges after these.
+   */
+  hotwords: string[];
+}
+
+/** One recording turned into text, from `POST /v1/voice/transcriptions`. */
+export interface VoiceTranscript {
+  text: string;
+  language: string | null;
+  /** Length of the submitted audio, when the WAV header said so. */
+  durationMs: number | null;
+  /** Time the provider took. */
+  asrMs: number;
+}
+
+export interface VoiceTranscribeOptions {
+  /** File name sent with the recording; defaults to `recording.wav`. */
+  filename?: string;
+  /**
+   * The user's own vocabulary — not the project's, which the server already
+   * holds and merges in first. Sent comma-separated, so a word cannot itself
+   * contain a comma.
+   */
+  hotwords?: string[];
+  /** ISO 639-1 hint; omit for auto-detection. */
+  language?: string;
+  /**
+   * Abort the upload. No client-side deadline applies to this call (a
+   * recording can run to `maxRecordingSeconds` and the upload with it), so
+   * this is the only way to give up on a stalled one; the promise rejects
+   * with the abort reason (the runtime's `AbortError`, or what was passed to
+   * `abort(reason)`).
+   */
+  signal?: AbortSignal;
+}
+
+export interface VoicePolishRequest {
+  text: string;
+  /** One of the LLM modes; `raw` is refused by the server. */
+  mode: VoiceLLMMode;
+  /** The user's own vocabulary; the server merges it after the project's. */
+  hotwords?: string[];
+}
+
+/**
+ * One frame of the polish stream. `delta` text arrives in order; `done.text`
+ * is authoritative (the cleaned full output, which can differ from the
+ * concatenated deltas). On `error` keep the raw transcript; `partial` is what
+ * was streamed before the failure.
+ */
+export type VoicePolishEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; text: string; polishMs: number }
+  | { type: "error"; reason: string; partial: string; detail?: string };
 
 export interface ChatStreamEvent {
   event: string;

@@ -1,5 +1,5 @@
 // Core classes
-export { AstralformClient } from "./client.js";
+export { AstralformClient, parseVoicePolishFrame } from "./client.js";
 export { ChatSession, CONVERSATION_PAGE_SIZE } from "./session.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
 export { InMemoryStorage, type ChatStorage } from "./storage.js";
@@ -155,4 +155,12 @@ export type {
   StreamJobSSEOptions,
   ChatStreamEvent,
   ConversationEvent,
+  VoiceConfig,
+  VoiceLLMMode,
+  VoicePolishEvent,
+  VoicePolishMode,
+  VoicePolishRequest,
+  VoiceTranscribeOptions,
+  VoiceTranscript,
 } from "./types.js";
+export { VOICE_POLISH_MODES, isVoiceLLMMode, isVoicePolishMode } from "./types.js";
