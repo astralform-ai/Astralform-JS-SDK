@@ -9,18 +9,20 @@ import type { ChatStreamEvent, StreamJobSSEOptions } from "./types.js";
 import { sanitizeErrorText } from "./utils.js";
 
 /**
- * GET-based SSE stream for job events.
+ * SSE stream reader. GET for the job event stream (the default); POST with a
+ * JSON body for the voice polish stream. The frame parser is the same.
  */
 export async function* streamJobSSE(
   options: StreamJobSSEOptions,
 ): AsyncGenerator<ChatStreamEvent> {
-  const { url, headers, signal, fetchFn } = options;
+  const { url, headers, signal, fetchFn, method = "GET", body } = options;
 
   let response: Response;
   try {
     response = await fetchFn(url, {
-      method: "GET",
+      method,
       headers,
+      body,
       signal,
     });
   } catch (err) {

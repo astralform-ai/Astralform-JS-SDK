@@ -882,7 +882,81 @@ export interface StreamJobSSEOptions {
   headers: Record<string, string>;
   signal?: AbortSignal;
   fetchFn: typeof globalThis.fetch;
+  /** Request method; defaults to GET (the job event stream). */
+  method?: "GET" | "POST";
+  /** A JSON-serialised body for POST streams (the voice polish stream). */
+  body?: string;
 }
+
+// =============================================================================
+// Voice input
+// =============================================================================
+
+/**
+ * The style the polish LLM shapes a transcript into. `raw` never calls the
+ * model — the transcript is used as recognized.
+ */
+export type VoicePolishMode = "raw" | "light" | "structured" | "formal";
+
+/**
+ * What a client needs to run the microphone for an agent, from
+ * `GET /v1/voice/config`. Deliberately carries no provider or model names.
+ */
+export interface VoiceConfig {
+  enabled: boolean;
+  /** The styles the client may request, as the server names them. */
+  modes: string[];
+  defaultMode: VoicePolishMode;
+  /** In tap-to-talk mode, the pause that ends a recording. */
+  silenceAutoStopSeconds: number;
+  /** Send the message as soon as the result is ready. */
+  autoSend: boolean;
+  maxRecordingSeconds: number;
+  /**
+   * Whether the configured recognizer emits live partial transcripts. Batch
+   * (Whisper-style) providers do not; they transcribe on stop.
+   */
+  supportsStreaming: boolean;
+  /** The project vocabulary — sent back, plus the user's own words, with each request. */
+  hotwords: string[];
+}
+
+/** One recording turned into text, from `POST /v1/voice/transcriptions`. */
+export interface VoiceTranscript {
+  text: string;
+  language: string | null;
+  /** Length of the submitted audio, when the WAV header said so. */
+  durationMs: number | null;
+  /** Time the provider took. */
+  asrMs: number;
+}
+
+export interface VoiceTranscribeOptions {
+  /** File name sent with the recording; defaults to `recording.wav`. */
+  filename?: string;
+  /** The caller's own vocabulary; merged after the project's. */
+  hotwords?: string[];
+  /** ISO 639-1 hint; omit for auto-detection. */
+  language?: string;
+}
+
+export interface VoicePolishRequest {
+  text: string;
+  /** One of the LLM modes; `raw` is refused by the server. */
+  mode: Exclude<VoicePolishMode, "raw">;
+  hotwords?: string[];
+}
+
+/**
+ * One frame of the polish stream. `delta` text arrives in order; `done.text`
+ * is authoritative (the cleaned full output, which can differ from the
+ * concatenated deltas). On `error` keep the raw transcript; `partial` is what
+ * was streamed before the failure.
+ */
+export type VoicePolishEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; text: string; polishMs: number }
+  | { type: "error"; reason: string; partial: string; detail?: string };
 
 export interface ChatStreamEvent {
   event: string;

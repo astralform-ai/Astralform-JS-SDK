@@ -1,5 +1,14 @@
 # Changelog
 
+## 7.3.0
+
+### Added
+
+- **Voice input** — the client half of the per-agent voice pipeline (astralform-ai/Astralform#1057): `getVoiceConfig()` (`GET /v1/voice/config` — modes, defaults and vocabulary, never the provider), `transcribeVoice(blob, options)` (`POST /v1/voice/transcriptions`, one multipart form with the recording, the caller's vocabulary and a language hint), and `streamVoicePolish(request, { signal })` (`POST /v1/voice/polish`, an async generator of typed `delta` / `done` / `error` frames; `done.text` is authoritative, and aborting the signal cancels the model call upstream). `parseVoicePolishFrame` is exported for consumers that read the raw stream. New types `VoiceConfig`, `VoiceTranscript`, `VoiceTranscribeOptions`, `VoicePolishRequest`, `VoicePolishEvent`, `VoicePolishMode`.
+- **`StreamJobSSEOptions.method` and `body`** — the SSE reader can now open a POST stream; the frame parser is unchanged and GET stays the default.
+
+The `voice` key on `AgentStatus.capabilities` needs nothing new here: capability keys are plain strings, and `voice` is what the backend reports when the developer enabled the feature.
+
 ## 7.2.0
 
 ### Added
