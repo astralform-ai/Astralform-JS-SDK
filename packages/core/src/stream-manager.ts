@@ -51,6 +51,15 @@ export interface SendOptions extends ModelChoiceOptions {
    * goal objective the backend drives to completion. Omit for a normal turn.
    */
   goal?: string;
+  /**
+   * The project this task belongs to (`owner/repo`), on a code-mode agent.
+   *
+   * Write-once server-side: send it on every turn and the first one wins, which
+   * is what keeps a client from having to know whether the task is bound yet.
+   * A first turn without it on a code-mode agent is refused. Astralform
+   * >= 0.70.0.
+   */
+  repository?: string;
 }
 
 export type StreamManagerEvent =
@@ -249,6 +258,7 @@ export class StreamManager {
         imageMode: options?.imageMode,
         videoMode: options?.videoMode,
         goal: options?.goal,
+        repository: options?.repository,
         provider: options?.provider,
         model: options?.model,
         reasoningEffort: options?.reasoningEffort,

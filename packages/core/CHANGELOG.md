@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.4.1
+
+### Fixed
+
+- **`StreamManager.send` now forwards `repository`.** 7.4.0 added the option to `ChatSession.send`, but the manager has its own `SendOptions` and its forward to the session is a second allowlist — so a client sending through `StreamManager` (which is what the chat app does) could set the option and have it silently dropped before the request was built. Same write-once semantics: send it on every turn, the first one wins.
+
 ## 7.4.0
 
 ### Added

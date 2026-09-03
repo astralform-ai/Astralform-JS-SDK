@@ -347,3 +347,37 @@ describe("the published surface", () => {
     expect(available.totalCount).toBe(0);
   });
 });
+
+describe("StreamManager.send carries the project", () => {
+  it("forwards repository to the session's send options", async () => {
+    // StreamManager has its OWN SendOptions, and its forward to session.send is
+    // a second allowlist — a field named in only one of the two reaches nothing.
+    // The chat client sends through the manager, so this is the path that ships.
+    const { StreamManager } = await import("../src/stream-manager.js");
+    const forwarded: unknown[] = [];
+    const session = {
+      conversationId: "c1",
+      isStreaming: false,
+      messages: [],
+      conversations: [],
+      createNewConversation: async () => "c1",
+      setActiveConversation: () => {},
+      invalidateLoadsInFlight: () => {},
+      loadConversation: async () => {},
+      send: async (_content: string, options?: unknown) => {
+        forwarded.push(options);
+      },
+      on: () => () => {},
+      client: {},
+    };
+
+    const manager = new StreamManager(
+      session as unknown as ConstructorParameters<typeof StreamManager>[0],
+    );
+    // No switchTo: `send` auto-creates its target, which is the path a first
+    // task takes anyway.
+    await manager.send("fix the flaky test", { repository: "acme/api" });
+
+    expect(forwarded[0]).toMatchObject({ repository: "acme/api" });
+  });
+});
