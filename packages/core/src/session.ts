@@ -417,6 +417,9 @@ export class ChatSession {
       image_mode: options?.imageMode,
       video_mode: options?.videoMode,
       goal: options?.goal,
+      // The project this task belongs to, on a code-mode agent. Write-once
+      // server-side: sent on every turn, honoured on the first.
+      repository: options?.repository,
       // Per-request model choice (client-side model selection).
       provider: options?.provider,
       model: options?.model,

@@ -132,6 +132,9 @@ export type {
 // Request / response types
 export type {
   ChatStreamRequest,
+  CodeProject,
+  AvailableRepository,
+  AvailableRepositories,
   EffortRung,
   ReasoningEffort,
   ThinkingDescriptor,

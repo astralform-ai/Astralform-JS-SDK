@@ -575,6 +575,12 @@ export interface Conversation {
   messageCount: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The project this task belongs to (`owner/repo`), or `null` for an ordinary
+   * conversation. Set on the first turn and immutable after. Absent (rather than
+   * null) from an Astralform older than 0.70.0.
+   */
+  repository?: string | null;
 }
 
 export interface Message {
@@ -629,6 +635,18 @@ export interface AgentInfo {
   isOrchestrator: boolean;
   isEnabled: boolean;
   avatarUrl?: string;
+  /**
+   * What the agent is for. A client shows Projects and Tasks only for `"code"`.
+   * Absent on Astralform older than 0.70.0 — treat that as `"chat"`, which is
+   * also the server's default.
+   *
+   * It is a property of the WORKSPACE, not of a persona: `GET /v1/agents` selects
+   * the workspace row itself and returns exactly one entry, so the mode is
+   * `agents[0].mode` rather than something that varies across the list. The
+   * workspace picker (`listAgents`) does not carry it, so a client learns an
+   * agent's mode after opening it.
+   */
+  mode?: "chat" | "code";
 }
 
 // --- Team / Agent discovery (OIDC user-token surface) ---
@@ -785,6 +803,15 @@ export interface ModelChoiceOptions {
 export interface ChatStreamRequest {
   message?: string;
   conversation_id?: string;
+  /**
+   * Which project (GitHub repository, `owner/repo`) this task belongs to.
+   *
+   * Required on the FIRST turn of a conversation on a code-mode agent and
+   * ignored afterwards — a task is bound to one repository for life, so a
+   * different repository means a new task. Chat-mode agents ignore it entirely.
+   * Astralform >= 0.70.0.
+   */
+  repository?: string;
   mcp_manifest?: ToolDefinition[];
   enabled_mcp?: string[];
   continue_from_message?: string;
@@ -808,6 +835,40 @@ export interface ChatStreamRequest {
   model?: string;
   reasoning_effort?: ReasoningEffort;
   temperature?: number;
+}
+
+/** One repository an app user works with on a code-mode agent. */
+export interface CodeProject {
+  repoFullName: string;
+  addedAt: string;
+}
+
+/** A repository the workspace's GitHub installations cover. */
+export interface AvailableRepository {
+  fullName: string;
+  private: boolean;
+}
+
+/**
+ * What an app user may add, and why the list might be empty.
+ *
+ * `state` separates the three empty cases a picker must not conflate:
+ * `ok` (connected, covers nothing new), `not_installed` (no installation to ask)
+ * and `unavailable` (GitHub could not be reached — try again, do not tell the
+ * user they have no repositories). `totalCount` is the installations' raw total
+ * BEFORE already-added projects are subtracted, so it is not the list's length.
+ */
+export interface AvailableRepositories {
+  state: "ok" | "unavailable" | "not_installed";
+  repositories: AvailableRepository[];
+  totalCount: number;
+  /**
+   * At least one of the workspace's GitHub installations could not be
+   * enumerated, so the list is missing whatever that one covers. It is NOT
+   * pagination — there is no next page to ask for. A picker should say some
+   * repositories may be missing rather than present the list as complete.
+   */
+  partial: boolean;
 }
 
 export interface ToolResultRequest {
@@ -1081,6 +1142,15 @@ export interface SendOptions extends ModelChoiceOptions {
    * it's complete. Omit for a normal turn.
    */
   goal?: string;
+  /**
+   * The project this task belongs to (`owner/repo`), on a code-mode agent.
+   *
+   * Send it on the turn that STARTS a task; the binding is write-once, so later
+   * turns can omit it (sending a different one is refused). A first turn without
+   * it on a code-mode agent is refused too — the run needs a repository before it
+   * can hold a credential scoped to one. Astralform >= 0.70.0.
+   */
+  repository?: string;
 }
 
 /**
