@@ -6,6 +6,8 @@ import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
   AgentInfo,
+  AvailableRepositories,
+  CodeProject,
   AstralformApiKeyConfig,
   AstralformConfig,
   ChatStreamEvent,
@@ -400,9 +402,23 @@ export class AstralformClient {
     };
   }
 
-  async getConversations(limit = 50, offset = 0): Promise<Conversation[]> {
+  /**
+   * A page of conversations, newest-updated first.
+   *
+   * `options.repository` narrows to one project's tasks (`owner/repo`) on a
+   * code-mode agent — the same paging applies within the filter, so a client
+   * showing tasks per project pages each project separately.
+   */
+  async getConversations(
+    limit = 50,
+    offset = 0,
+    options?: { repository?: string },
+  ): Promise<Conversation[]> {
     const safeLimit = Math.max(1, Math.min(200, Math.floor(Number(limit))));
     const safeOffset = Math.max(0, Math.floor(Number(offset)));
+    const filter = options?.repository
+      ? `&repository=${encodeURIComponent(options.repository)}`
+      : "";
     const raw = await this.get<
       {
         id: string;
@@ -410,8 +426,9 @@ export class AstralformClient {
         message_count: number;
         created_at: string;
         updated_at: string;
+        repository?: string | null;
       }[]
-    >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}`);
+    >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}${filter}`);
     return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));
   }
 
@@ -476,6 +493,7 @@ export class AstralformClient {
         is_orchestrator: boolean;
         is_enabled: boolean;
         avatar_url?: string;
+        mode?: "chat" | "code";
       }[]
     >("/v1/agents");
     return raw.map((a) => camelizeKeys<AgentInfo>(a as unknown as Record<string, unknown>));
@@ -813,6 +831,76 @@ export class AstralformClient {
     >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
     return raw.map((a) => camelizeKeys<TeamAgentSummary>(a as unknown as Record<string, unknown>));
   }
+
+  // --- Code mode: the app user's projects ---
+
+  /**
+   * The projects (GitHub repositories) this app user works with, and what they
+   * may add.
+   *
+   * A project list is per app user within a code-mode agent: the developer
+   * connects the workspace's GitHub account, and each user curates their own
+   * list from what that connection covers. Every method 404s on a chat-mode
+   * agent, so the surface is invisible rather than empty there.
+   */
+  readonly code = {
+    projects: {
+      /** This user's projects on the active agent, oldest first. */
+      list: async (): Promise<CodeProject[]> => {
+        const raw = await this.get<{ repo_full_name: string; added_at: string }[]>(
+          "/v1/code/projects",
+        );
+        return raw.map((p) => camelizeKeys<CodeProject>(p as unknown as Record<string, unknown>));
+      },
+
+      /**
+       * What the workspace's GitHub installations cover, minus what this user
+       * has already added. Read `state` before the list: an empty `repositories`
+       * means something different in each of its three values.
+       */
+      available: async (): Promise<AvailableRepositories> => {
+        const raw = await this.get<{
+          state: "ok" | "unavailable" | "not_installed";
+          repositories: { full_name: string; private: boolean }[];
+          total_count: number;
+          partial: boolean;
+        }>("/v1/code/projects/available");
+        return {
+          state: raw.state,
+          repositories: (raw.repositories ?? []).map((r) => ({
+            fullName: r.full_name,
+            private: r.private,
+          })),
+          totalCount: raw.total_count,
+          partial: raw.partial ?? false,
+        };
+      },
+
+      /**
+       * Add a repository. The server checks it against the workspace's own
+       * installations and answers a repository it cannot reach the same way it
+       * answers one owned by someone else — deliberately, so this call cannot be
+       * used to discover which organisations use Astralform.
+       */
+      add: async (repoFullName: string): Promise<CodeProject> => {
+        const raw = await this.post<{ repo_full_name: string; added_at: string }>(
+          "/v1/code/projects",
+          { repo_full_name: repoFullName },
+        );
+        return camelizeKeys<CodeProject>(raw as unknown as Record<string, unknown>);
+      },
+
+      /**
+       * Remove a project. Tasks already bound to that repository keep their
+       * binding — they simply stop grouping under it.
+       */
+      remove: async (owner: string, repo: string): Promise<void> => {
+        await this.del(
+          `/v1/code/projects/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        );
+      },
+    },
+  };
 
   // --- Jobs API ---
 
