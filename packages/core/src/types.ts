@@ -639,6 +639,12 @@ export interface AgentInfo {
    * What the agent is for. A client shows Projects and Tasks only for `"code"`.
    * Absent on Astralform older than 0.70.0 — treat that as `"chat"`, which is
    * also the server's default.
+   *
+   * It is a property of the WORKSPACE, not of a persona: `GET /v1/agents` selects
+   * the workspace row itself and returns exactly one entry, so the mode is
+   * `agents[0].mode` rather than something that varies across the list. The
+   * workspace picker (`listAgents`) does not carry it, so a client learns an
+   * agent's mode after opening it.
    */
   mode?: "chat" | "code";
 }
@@ -856,6 +862,12 @@ export interface AvailableRepositories {
   state: "ok" | "unavailable" | "not_installed";
   repositories: AvailableRepository[];
   totalCount: number;
+  /**
+   * At least one of the workspace's GitHub installations could not be
+   * enumerated, so the list is missing whatever that one covers. It is NOT
+   * pagination — there is no next page to ask for. A picker should say some
+   * repositories may be missing rather than present the list as complete.
+   */
   partial: boolean;
 }
 

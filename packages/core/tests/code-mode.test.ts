@@ -313,3 +313,37 @@ describe("session.send carries the project", () => {
     });
   });
 });
+
+describe("the published surface", () => {
+  it("exports the project types by name", async () => {
+    // `index.ts` exports types by explicit name — there is no `export *` — so a
+    // type omitted there does not exist for a consumer, however public it looks
+    // in `types.ts`. Phase 7 imports these to type its picker.
+    const entry = await import("../src/index.js");
+    const source = await import("node:fs").then((fs) =>
+      fs.readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"),
+    );
+    for (const name of [
+      "CodeProject",
+      "AvailableRepository",
+      "AvailableRepositories",
+    ]) {
+      expect(source).toContain(`  ${name},`);
+    }
+    expect(entry).toBeDefined();
+  });
+
+  it("counts nothing rather than undefined when GitHub was never reached", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/code/projects/available": {
+        status: 200,
+        body: { state: "unavailable", repositories: [] },
+      },
+    });
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+
+    const available = await client.code.projects.available();
+
+    expect(available.totalCount).toBe(0);
+  });
+});

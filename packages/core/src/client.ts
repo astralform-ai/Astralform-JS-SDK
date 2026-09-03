@@ -871,7 +871,10 @@ export class AstralformClient {
             fullName: r.full_name,
             private: r.private,
           })),
-          totalCount: raw.total_count,
+          // Defaulted like its neighbours: the `unavailable` branch has nothing
+          // to count, and an absent field behind a `number` type prints
+          // "undefined" in a picker rather than a number.
+          totalCount: raw.total_count ?? 0,
           partial: raw.partial ?? false,
         };
       },
