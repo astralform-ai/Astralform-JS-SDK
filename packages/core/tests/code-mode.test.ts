@@ -217,8 +217,8 @@ describe("tasks are conversations with a repository", () => {
   });
 });
 
-describe("agent mode", () => {
-  it("reads the mode a client branches on, and tolerates an older server", async () => {
+describe("whether an agent's tasks can bind a repository", () => {
+  it("reads codeProjectsEnabled, and tolerates an older server", async () => {
     const mockFetch = createMockFetch({
       "/v1/agents": {
         status: 200,
@@ -229,6 +229,7 @@ describe("agent mode", () => {
             description: "",
             is_orchestrator: true,
             is_enabled: true,
+            code_projects_enabled: true,
             mode: "code",
           },
           {
@@ -245,9 +246,40 @@ describe("agent mode", () => {
 
     const [coder, legacy] = await client.getAgents();
 
-    expect(coder.mode).toBe("code");
-    // Absent before Astralform 0.70.0 — a client must read that as chat.
+    expect(coder.codeProjectsEnabled).toBe(true);
+    // Absent before Astralform 0.71.0 — fall back to `mode` there.
+    expect(legacy.codeProjectsEnabled).toBeUndefined();
     expect(legacy.mode).toBeUndefined();
+  });
+
+  it("does not treat the deprecated mode as an alias for it", async () => {
+    // The server reports `mode` as the STORED value of the retired column for one
+    // release, so an agent that never had the toggle set still says "chat" while
+    // its tasks bind perfectly well. A client that reads `mode` to decide whether
+    // to show Projects gets the OLD answer on purpose — that is what keeps clients
+    // built before the change behaving as they did.
+    const mockFetch = createMockFetch({
+      "/v1/agents": {
+        status: 200,
+        body: [
+          {
+            name: "never-toggled",
+            display_name: "Never toggled",
+            description: "",
+            is_orchestrator: true,
+            is_enabled: true,
+            code_projects_enabled: true,
+            mode: "chat",
+          },
+        ],
+      },
+    });
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+
+    const [agent] = await client.getAgents();
+
+    expect(agent.codeProjectsEnabled).toBe(true);
+    expect(agent.mode).toBe("chat");
   });
 });
 

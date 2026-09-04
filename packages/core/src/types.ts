@@ -636,15 +636,30 @@ export interface AgentInfo {
   isEnabled: boolean;
   avatarUrl?: string;
   /**
-   * What the agent is for. A client shows Projects and Tasks only for `"code"`.
-   * Absent on Astralform older than 0.70.0 — treat that as `"chat"`, which is
-   * also the server's default.
+   * Whether this agent's tasks can name a repository — the workspace has GitHub
+   * connected and enabled here. A client shows Projects and Tasks on it.
+   *
+   * Derived by the server from the connector, so it cannot go stale the way the
+   * retired `mode` toggle could. It gates a SURFACE, not an ability: naming a
+   * repository is optional on every task, and a task that names none is an
+   * ordinary chat. Absent on Astralform older than 0.71.0 — fall back to `mode`
+   * there.
    *
    * It is a property of the WORKSPACE, not of a persona: `GET /v1/agents` selects
-   * the workspace row itself and returns exactly one entry, so the mode is
-   * `agents[0].mode` rather than something that varies across the list. The
-   * workspace picker (`listAgents`) does not carry it, so a client learns an
-   * agent's mode after opening it.
+   * the workspace row itself and returns exactly one entry, so read
+   * `agents[0].codeProjectsEnabled`. The workspace picker (`listAgents`) does not
+   * carry it, so a client learns this after opening an agent.
+   */
+  codeProjectsEnabled?: boolean;
+  /**
+   * @deprecated Removed in the next Astralform release. There is no agent mode —
+   * a repository belongs to the TASK, so one agent answers general questions and
+   * works in repositories from the same list. Read {@link codeProjectsEnabled}.
+   *
+   * Still reported for one release, as the STORED value of the retired column, so
+   * clients built before the change keep behaving exactly as they did. Do not
+   * treat it as an alias for `codeProjectsEnabled`: an agent that never had the
+   * toggle set still reports `"chat"` while its tasks can bind perfectly well.
    */
   mode?: "chat" | "code";
 }
@@ -806,11 +821,12 @@ export interface ChatStreamRequest {
   /**
    * Which project (GitHub repository, `owner/repo`) this task belongs to.
    *
-   * Required on the FIRST turn of a conversation on a code-mode agent, which
-   * binds it. A later turn may omit it or repeat the same value; a DIFFERENT
-   * value is refused (409), not ignored — a task is bound to one repository for
-   * life, so a different repository means a new task. Chat-mode agents ignore
-   * it entirely.
+   * Optional on every agent. The first turn that names one binds the task, and a
+   * later turn may omit it or repeat the same value; a DIFFERENT value is refused
+   * (409), not ignored — a task is bound to one repository for life, so a
+   * different repository means a new task. A task that never names one is an
+   * ordinary chat; since Astralform 0.71.0 there is no agent mode that requires
+   * one.
    * Astralform >= 0.70.0.
    */
   repository?: string;
@@ -839,7 +855,7 @@ export interface ChatStreamRequest {
   temperature?: number;
 }
 
-/** One repository an app user works with on a code-mode agent. */
+/** One repository an app user works with on an agent. */
 export interface CodeProject {
   repoFullName: string;
   addedAt: string;
@@ -1145,13 +1161,13 @@ export interface SendOptions extends ModelChoiceOptions {
    */
   goal?: string;
   /**
-   * The project this task belongs to (`owner/repo`), on a code-mode agent.
+   * The project this task belongs to (`owner/repo`), when it has one.
    *
    * Send it on the turn that STARTS a task; the binding is write-once, so a
    * later turn may omit it or repeat the same value, and a DIFFERENT value is
-   * refused (409) rather than ignored. A first turn without it on a code-mode
-   * agent is refused too (400) — the run needs a repository before it can hold a
-   * credential scoped to one. Astralform >= 0.70.0.
+   * refused (409) rather than ignored. Omit it entirely and the task is an
+   * ordinary chat — since Astralform 0.71.0 no agent requires one, and a first
+   * turn without it is no longer a 400. Astralform >= 0.70.0.
    */
   repository?: string;
 }

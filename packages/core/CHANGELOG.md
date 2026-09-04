@@ -1,5 +1,22 @@
 # Changelog
 
+## 7.5.0
+
+### Added
+
+- **`AgentInfo.codeProjectsEnabled`** — whether this agent's tasks can name a repository, i.e. the workspace has GitHub connected and enabled here (astralform-ai/Astralform#1079, #1082). Read it instead of `mode` to decide whether to show Projects and Tasks. The server derives it from the connector, so it cannot go stale the way the toggle it replaces could, and it gates a SURFACE rather than an ability: naming a repository is optional on every task now. Absent on Astralform older than 0.71.0 — fall back to `mode` there. Like `mode` it is a property of the WORKSPACE, so read `agents[0].codeProjectsEnabled`.
+
+### Changed
+
+- **A task may name a repository, or name none.** Astralform 0.71.0 removed the agent-level `chat | code` mode: a repository is a property of the TASK, so one agent answers general questions and works in repositories from the same list. `SendOptions.repository` / `ChatStreamRequest.repository` are now optional on every agent — a first turn without one is an ordinary chat task, where it used to be a 400 on a code-mode agent. Everything else about the binding is unchanged: the first turn that names a repository binds it, write-once, and a DIFFERENT value later is still refused with a 409 rather than ignored.
+- **`client.code.projects.*` no longer 404s per agent.** There is no mode in front of it. An agent with no GitHub lists nothing, reports `not_installed` from `available()`, and refuses `add()` — the same three answers, from the systems that actually know. Read `codeProjectsEnabled` to decide whether to render the surface at all.
+
+### Deprecated
+
+- **`AgentInfo.mode`** — removed in the next Astralform release, along with the column behind it. It is still reported for one release as the STORED value of the retired toggle, so clients built before this change keep behaving exactly as they did. **Do not read it as an alias for `codeProjectsEnabled`:** an agent that never had the toggle set reports `"chat"` while its tasks bind perfectly well. That is deliberate — deriving the alias instead would have flipped such agents to `"code"` and made older clients demand a project before a first send.
+
+Requires Astralform >= 0.71.0 for `codeProjectsEnabled` and for the optional-repository behaviour; against an older backend the field is absent and a code-mode agent still refuses a first turn with no repository.
+
 ## 7.4.1
 
 ### Fixed

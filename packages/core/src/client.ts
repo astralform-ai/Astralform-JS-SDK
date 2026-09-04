@@ -406,7 +406,7 @@ export class AstralformClient {
    * A page of conversations, newest-updated first.
    *
    * `options.repository` narrows to one project's tasks (`owner/repo`) on a
-   * code-mode agent — the same paging applies within the filter, so a client
+   * — the same paging applies within the filter, so a client
    * showing tasks per project pages each project separately.
    */
   async getConversations(
@@ -493,6 +493,7 @@ export class AstralformClient {
         is_orchestrator: boolean;
         is_enabled: boolean;
         avatar_url?: string;
+        code_projects_enabled?: boolean;
         mode?: "chat" | "code";
       }[]
     >("/v1/agents");
@@ -838,10 +839,11 @@ export class AstralformClient {
    * The projects (GitHub repositories) this app user works with, and what they
    * may add.
    *
-   * A project list is per app user within a code-mode agent: the developer
-   * connects the workspace's GitHub account, and each user curates their own
-   * list from what that connection covers. Every method 404s on a chat-mode
-   * agent, so the surface is invisible rather than empty there.
+   * A project list is per app user: the developer connects the workspace's GitHub
+   * account, and each user curates their own list from what that connection
+   * covers. There is no agent-level gate — an agent with no GitHub lists nothing,
+   * reports `not_installed` from `available()`, and refuses `add()`. Read
+   * {@link AgentInfo.codeProjectsEnabled} to decide whether to show the surface.
    */
   readonly code = {
     projects: {
