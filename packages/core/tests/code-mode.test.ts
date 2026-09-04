@@ -1,10 +1,17 @@
 /**
- * Code mode: a task belongs to a project, and a project list is per app user.
+ * Projects: a task may belong to one, and a project list is per app user.
  *
- * The wire fields are the whole contract here — the SDK's types are what a
- * client can see, so a field the mappers or the request builder drop is a field
- * that does not exist as far as the chat app is concerned. These pin each one
- * against the path and payload the backend actually serves.
+ * The wire fields are the whole contract here — a field the mappers or the
+ * request builder drop is a field that does not exist as far as the chat app is
+ * concerned. These pin each one against the path and payload the backend
+ * actually serves.
+ *
+ * RUNTIME only. `tsconfig.json` excludes `tests` and vitest runs no `typecheck`
+ * project, so nothing here pins a TYPE: `getAgents` maps through the structural
+ * `camelizeKeys`, so deleting a field from `AgentInfo` leaves every assertion
+ * below passing. Closing that would mean type-checking the suite, which today
+ * carries about ten pre-existing errors across other files — worth doing, and
+ * too big to smuggle into a feature change.
  */
 import { describe, it, expect } from "vitest";
 import { AstralformClient } from "../src/client.js";
@@ -217,8 +224,8 @@ describe("tasks are conversations with a repository", () => {
   });
 });
 
-describe("agent mode", () => {
-  it("reads the mode a client branches on, and tolerates an older server", async () => {
+describe("whether an agent's tasks can bind a repository", () => {
+  it("reads codeProjectsEnabled, and tolerates an older server", async () => {
     const mockFetch = createMockFetch({
       "/v1/agents": {
         status: 200,
@@ -229,6 +236,7 @@ describe("agent mode", () => {
             description: "",
             is_orchestrator: true,
             is_enabled: true,
+            code_projects_enabled: true,
             mode: "code",
           },
           {
@@ -245,9 +253,40 @@ describe("agent mode", () => {
 
     const [coder, legacy] = await client.getAgents();
 
-    expect(coder.mode).toBe("code");
-    // Absent before Astralform 0.70.0 — a client must read that as chat.
+    expect(coder.codeProjectsEnabled).toBe(true);
+    // Absent before Astralform 0.71.0 — fall back to `mode` there.
+    expect(legacy.codeProjectsEnabled).toBeUndefined();
     expect(legacy.mode).toBeUndefined();
+  });
+
+  it("does not treat the deprecated mode as an alias for it", async () => {
+    // The server reports `mode` as the STORED value of the retired column for one
+    // release, so an agent that never had the toggle set still says "chat" while
+    // its tasks bind perfectly well. A client that reads `mode` to decide whether
+    // to show Projects gets the OLD answer on purpose — that is what keeps clients
+    // built before the change behaving as they did.
+    const mockFetch = createMockFetch({
+      "/v1/agents": {
+        status: 200,
+        body: [
+          {
+            name: "never-toggled",
+            display_name: "Never toggled",
+            description: "",
+            is_orchestrator: true,
+            is_enabled: true,
+            code_projects_enabled: true,
+            mode: "chat",
+          },
+        ],
+      },
+    });
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+
+    const [agent] = await client.getAgents();
+
+    expect(agent.codeProjectsEnabled).toBe(true);
+    expect(agent.mode).toBe("chat");
   });
 });
 

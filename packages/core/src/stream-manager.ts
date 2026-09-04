@@ -52,14 +52,15 @@ export interface SendOptions extends ModelChoiceOptions {
    */
   goal?: string;
   /**
-   * The project this task belongs to (`owner/repo`), on a code-mode agent.
+   * The project this task belongs to (`owner/repo`), when it has one.
    *
    * Write-once server-side, and the refusal is the part that matters: the FIRST
-   * turn binds the task, a later turn may omit it or repeat the same value, and
-   * a DIFFERENT value is refused (409) rather than ignored — silently acting on
-   * the wrong repository is the failure that rule exists to prevent. A first
-   * turn without it on a code-mode agent is refused too (400). Astralform
-   * >= 0.70.0.
+   * turn that names a repository binds the task, a later turn may omit it or
+   * repeat the same value, and a DIFFERENT value is refused (409) rather than
+   * ignored — silently acting on the wrong repository is the failure that rule
+   * exists to prevent. Omit it entirely and the task is an ordinary chat: since
+   * Astralform 0.71.0 there is no agent mode that requires one, so a first turn
+   * without it is no longer a 400. Astralform >= 0.70.0.
    */
   repository?: string;
 }

@@ -53,6 +53,17 @@ const MESSAGES = [
   },
 ];
 
+/** B's list, so a test can tell WHICH conversation's rows got installed. */
+const B_MESSAGES = [
+  {
+    id: "m-b",
+    conversation_id: "conv-b",
+    role: "user",
+    content: "B's prompt",
+    created_at: "2026-01-01T00:00:00Z",
+  },
+];
+
 const JOBS = [{ job_id: "job-1", status: "completed", message_id: "m-1" }];
 
 const EVENTS = [
@@ -106,7 +117,8 @@ function recordingBackend(openingGate: Promise<void>): {
       await openingGate;
     }
     if (kind === "probe") return json({ job_id: null, status: "none" });
-    if (kind === "messages") return json(MESSAGES);
+    if (kind === "messages")
+      return json(url.includes("conv-b") ? B_MESSAGES : MESSAGES);
     if (kind === "jobs") return json(JOBS);
     if (url.includes("/events")) return json(EVENTS);
     return json([]);
@@ -196,5 +208,9 @@ describe("the restoring announcement is a re-entrancy door", () => {
     expect(manager.activeConversationId).toBe("conv-b");
     expect(session.conversationId).toBe("conv-b");
     expect(session.messagesConversationId).toBe("conv-b");
+    // The rows themselves, not just the pointer that labels them: the two
+    // conversations answer with different lists precisely so that "whose
+    // messages are installed" is observable here rather than assumed.
+    expect(session.messages.map((m) => m.content)).toEqual(["B's prompt"]);
   });
 });
