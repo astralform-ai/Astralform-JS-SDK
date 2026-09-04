@@ -59,8 +59,8 @@ export interface SendOptions extends ModelChoiceOptions {
    * repeat the same value, and a DIFFERENT value is refused (409) rather than
    * ignored — silently acting on the wrong repository is the failure that rule
    * exists to prevent. Omit it entirely and the task is an ordinary chat: since
-   * Astralform 0.71.0 there is no agent mode that requires one, so a first turn
-   * without it is no longer a 400. Astralform >= 0.70.0.
+   * Astralform 0.69.50 there is no agent mode that requires one, so a first turn
+   * without it is no longer a 400. Astralform >= 0.69.46.
    */
   repository?: string;
 }
