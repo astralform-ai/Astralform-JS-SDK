@@ -412,6 +412,14 @@ describe("a send during the probe window goes to the displayed conversation", ()
    * still points at A, and `send`/`regenerate` are the two things that read
    * the session's pointer.
    *
+   * B takes the `skipHistoryReplay` fast path, which is where that lag now
+   * lives: the full restore issues its probe and its `loadConversation`
+   * together, so its pointer move is no longer an await behind the switch and
+   * this window does not open on that path at all. The fast path still probes
+   * FIRST and loads only once the probe says nothing is live, so it holds the
+   * window open exactly as the full path used to — and `send`/`regenerate`
+   * still have to defend it.
+   *
    * Interleaving: park A on its `/messages` fetch and B on its `/active-job`
    * probe, then release A. A's restore stops (superseded), but the session is
    * left on A while the user is looking at B.
@@ -488,7 +496,7 @@ describe("a send during the probe window goes to the displayed conversation", ()
 
     const restoringA = manager.switchTo("conv-a");
     await flush(); // A reaches loadConversation("conv-a") and parks on /messages
-    const restoringB = manager.switchTo("conv-b"); // parks on /active-job
+    const restoringB = manager.switchTo("conv-b", { skipHistoryReplay: true }); // parks on /active-job
     await flush();
 
     slowA.open();
@@ -2776,10 +2784,13 @@ describe("both halves of a create consult a counter that has actually moved", ()
     // its own. Anything else is "manager on B, session on the new id".
     expect(manager.activeConversationId).toBe("conv-b");
     expect(session.conversationId).not.toBe(created);
-    // Still null rather than "conv-b": B's `loadConversation` is what points
-    // the session, and it is parked behind the probe. That lag is the whole
-    // reason the two counters disagree.
-    expect(session.conversationId).toBeNull();
+    // "conv-b" rather than the null this read while B's `loadConversation` sat
+    // behind its probe: B now issues the probe and the load together, so the
+    // session points where the manager does from the switch onwards. The
+    // stronger of the two readings — the counters still disagree (the create
+    // declines), and there is no longer a window in which the session has
+    // moved nowhere at all.
+    expect(session.conversationId).toBe("conv-b");
 
     probe.open();
     await switching;
@@ -3290,10 +3301,18 @@ describe("the create halves agree in both directions", () => {
     // bumps `loadGeneration` ALONE, so the session can decline while the
     // manager's generation is untouched, and the manager relocates over it.
     //
-    // Ordinary two-click sequence: switch to A, then "New chat" while A's
-    // restore is still on its probe. A's `loadConversation` fires inside the
-    // storage create and bumps `loadGeneration`; the session then declines and
-    // the manager, reading only its own counter, did not.
+    // Ordinary two-click sequence: "New chat", then switch to A while the
+    // storage create is still in flight. A's `loadConversation` fires from
+    // `restore` and bumps `loadGeneration` while the create waits on storage;
+    // the session then declines and the manager, reading only its own counter,
+    // did not.
+    //
+    // The create is started FIRST because `restore` now issues its
+    // `loadConversation` with the probe rather than behind it. The bump this
+    // test turns on therefore lands at the switch, so a create that is to find
+    // its token stale has to have captured it before the switch, not after.
+    // The scenario is the same one — a create resolving across a bump it did
+    // not make — reached by the ordering that still contains a bump.
     const probe = gate();
     const slowCreate = gate();
     const session = new ChatSession(
@@ -3332,18 +3351,19 @@ describe("the create halves agree in both directions", () => {
     );
     const manager = new StreamManager(session);
 
-    const restoring = manager.switchTo("conv-a");
-    await flush(); // parked on A's active-job probe
-
     const creating = manager.createConversation();
     await flush(); // parked inside storage.createConversation
 
-    probe.open(); // A's restore resumes → loadConversation(A) bumps loadGeneration
-    await flush();
+    // A's restore issues loadConversation(A) with its probe, bumping
+    // `loadGeneration` under the create that is still parked in storage.
+    const restoring = manager.switchTo("conv-a");
+    await flush(); // parked on A's active-job probe
 
     slowCreate.open();
     const created = await creating;
     await flush();
+
+    probe.open();
 
     // The session declined, so the manager must have too.
     expect(session.conversationId).toBe("conv-a");

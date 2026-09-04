@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.5.1
+
+### Changed
+
+- **A restore opens its three requests together.** `StreamManager.restore` needs the active-job probe, the message list and the conversation's job list before it can plan a replay, and none of the three is an input to another — they are all addressed by the conversation id alone. They were issued one round trip apart, so a restore paid the SUM of three round trips (~1.2 s from a real client) before asking for a single event, and any one that stalled blocked the two behind it. They now leave together and the restore waits for the slowest. Nothing about the ORDER the results are consumed in changes: `loadConversation` still lands before the replay that reads the list it installs, and the job list is handed to the replay as a promise it awaits inside the try that already treated a failed history load as non-blocking. One consequence worth naming: the window in which the manager pointed at the new conversation while `session.conversationId` still pointed at the old one — an await wide, because the pointer moved only when `loadConversation` was reached — no longer opens on this path. It remains open on the `skipHistoryReplay` fast path, which still probes before it loads, and `send`/`regenerate` still defend it there. The load being synchronous with the `restoring` announcement also moves a re-entrancy door: `setState` emits synchronously, so a handler that `switchTo`s from inside that emit used to be caught by the supersession check behind the probe's await, and is now caught by one placed directly after the announcement. (astralform-ai/Astralform-JS-SDK#52, refs astralform-ai/Astralform#1014)
+
 ## 7.5.0
 
 ### Added

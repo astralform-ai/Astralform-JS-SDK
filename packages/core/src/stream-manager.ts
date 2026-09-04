@@ -92,6 +92,14 @@ export type StreamManagerEvent =
 
 type EventHandler = (event: StreamManagerEvent) => void;
 
+/** One turn as the conversation's job list describes it. */
+interface RestoreJob {
+  job_id: string;
+  status: string;
+  message_id?: string | null;
+  metrics?: Record<string, unknown>;
+}
+
 // =============================================================================
 // StreamManager
 // =============================================================================
@@ -807,6 +815,19 @@ export class StreamManager {
 
   // ── Internal: restore ─────────────────────────────────────────
 
+  /**
+   * A conversation's turns, oldest first.
+   *
+   * Its own method so ``restore`` can put the request on the wire beside the
+   * probe and the message list while ``replayHistory``, which consumes it,
+   * keeps owning the shape it reads.
+   */
+  private jobList(conversationId: string): Promise<RestoreJob[]> {
+    return this.session.client.get<RestoreJob[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/jobs`,
+    );
+  }
+
   private async restore(conversationId: string, gen: number): Promise<void> {
     /**
      * Has the user moved on since this restore started?
@@ -856,18 +877,67 @@ export class StreamManager {
     const turn = this.turnCounter;
     const announcedRestoring = !this.session.isStreaming;
     if (announcedRestoring) this.setState("restoring");
-
-    // Check for active job
-    let activeJobId: string | null = null;
-    try {
-      const res = await this.session.client.getActiveJob(conversationId);
-      activeJobId = res.jobId;
-    } catch {
-      // Network error — assume no active job
-    }
+    // Re-checked, because `setState` emits SYNCHRONOUSLY and a handler routing
+    // on `stateChange` can `switchTo` from inside it — the same re-entrancy
+    // door as the check above, one line later. It did not have to be guarded
+    // while `loadConversation` sat behind the probe's await and its own
+    // supersession check; issuing the load WITH the probe puts it back in this
+    // emit's synchronous path, where an unguarded load runs AFTER the newer
+    // switch's and so claims the newer token — leaving the session holding the
+    // abandoned conversation's id and messages under a manager pointing at the
+    // one the user chose.
+    //
+    // Returning having announced `restoring` is what the check after the probe
+    // already did: the superseding switch announces and settles its own state.
     if (superseded()) return;
 
-    await this.session.loadConversation(conversationId);
+    // The three requests a restore opens with, issued TOGETHER. None is an
+    // input to another — the active-job probe, the message list and the job
+    // list are all addressed by `conversationId` alone — so serially they cost
+    // the SUM of three round trips before a single event is asked for, and any
+    // one that stalls blocks the two behind it. Fired together, the restore
+    // waits for the slowest instead.
+    //
+    // What that does NOT change is the order the results are consumed in.
+    // `loadConversation` still lands before the replay, because the replay
+    // reads the list it installs; parallelising the fetch moves when the
+    // request leaves, not when its effect is observed.
+    //
+    // The two supersession checks either side of `loadConversation` collapse
+    // into the one after the joint await: a joint await is still a single
+    // await boundary. What does NOT collapse with them is the check above,
+    // which now covers the announcement rather than the probe — the load is
+    // synchronous with the emit, so that is where the door it has to close
+    // moved to. `loadConversation` moving the session pointer sooner is
+    // otherwise safe for the reason it is safe at all: `setActiveConversation`
+    // bumps the session's load token, so an ASYNCHRONOUS switch landing in this
+    // window makes the load in flight lose and its snapshot is never installed.
+    const probeRequest = this.session.client
+      .getActiveJob(conversationId)
+      // Network error — assume no active job.
+      .catch(() => null);
+    const loadRequest = this.session.loadConversation(conversationId);
+    // Handed to `replayHistory` rather than joined here, so that a stalled job
+    // list cannot hold up the checks below, and so that its failure still
+    // arrives inside the try that already treats a failed history load as
+    // non-blocking. The `catch` is only to mark the rejection handled for the
+    // paths that reach neither (superseded, or a live turn holding the view) —
+    // `replayHistory` awaits the original and handles it itself.
+    //
+    // Gated on `announcedRestoring`, which `replayHistory` is gated on too:
+    // reopening a conversation whose turn is still live takes the reconnect
+    // and never replays, so fetching the list there would buy a whole round
+    // trip to throw away — a regression in the one thing this change is about.
+    // The flag is known synchronously, so keeping it costs no serialisation.
+    // The other two discard paths cannot be gated the same way: both are
+    // answers that only exist after the await this request is racing.
+    const jobsRequest = announcedRestoring
+      ? this.jobList(conversationId)
+      : null;
+    void jobsRequest?.catch(() => {});
+
+    const [probe] = await Promise.all([probeRequest, loadRequest]);
+    const activeJobId = probe?.jobId ?? null;
     if (superseded()) return;
 
     // History first, in BOTH branches. A live turn used to skip it entirely and
@@ -907,9 +977,18 @@ export class StreamManager {
     // a send or regenerate) and the never-cleared path still falls through to
     // the reconnect exactly as before.
     if (announcedRestoring && this.viewTakenOverByLiveTurn()) return;
+    // Tested on `jobsRequest` rather than `announcedRestoring`: the two are the
+    // same condition by construction above, and this spelling is the one that
+    // narrows the request away from null.
     if (
-      announcedRestoring &&
-      !(await this.replayHistory(conversationId, gen, activeJobId, turn))
+      jobsRequest &&
+      !(await this.replayHistory(
+        conversationId,
+        gen,
+        activeJobId,
+        turn,
+        jobsRequest,
+      ))
     )
       return;
 
@@ -985,12 +1064,19 @@ export class StreamManager {
    * that started it, which is emitted as a bubble with no events — the whole
    * reason a conversation reopened mid-turn now shows the message that started
    * that turn.
+   *
+   * ``jobsRequest`` is the job list already IN FLIGHT — issued by ``restore``
+   * alongside the probe and the message list rather than fetched here, so the
+   * three round trips overlap. It is awaited inside the try below, which is
+   * what keeps a failed job list non-blocking exactly as it was when the fetch
+   * lived here.
    */
   private async replayHistory(
     conversationId: string,
     gen: number,
     activeJobId: string | null,
     turn: number,
+    jobsRequest: Promise<RestoreJob[]>,
   ): Promise<boolean> {
     // Three ways to lose the right to replay, checked at every await boundary
     // below because all of them arrive from outside this function while it
@@ -1006,21 +1092,16 @@ export class StreamManager {
       this.viewTakenOverByLiveTurn() ||
       this.turnStarted(turn);
     try {
-      const jobs = await this.session.client.get<
-        {
-          job_id: string;
-          status: string;
-          message_id?: string | null;
-          metrics?: Record<string, unknown>;
-        }[]
-      >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
+      const jobs = await jobsRequest;
       if (stopReplay()) return false;
       // Every job EXCEPT the one we are about to reconnect to. The probe and
-      // this list are two awaits apart (`loadConversation` sits between them),
-      // so a turn that ENDS in that window comes back settled here while
-      // `activeJobId` still names it — putting the same job in the replay set
-      // AND `runningJob`, which `planRestore` walks twice and `eventsByJobId`
-      // then replays twice, before the reconnect delivers it a third time.
+      // this list now LEAVE together, but they are still answered
+      // independently, so a turn that ENDS between the two replies comes back
+      // settled here while `activeJobId` still names it — putting the same job
+      // in the replay set AND `runningJob`, which `planRestore` walks twice and
+      // `eventsByJobId` then replays twice, before the reconnect delivers it a
+      // third time. The window is narrower than it was (it used to span
+      // `loadConversation` too) but it does not close, so the exclusion stays.
       //
       // Excluding it settles both halves at once: the job we reconnect to is
       // never in the events wave and can only enter the plan as the running
