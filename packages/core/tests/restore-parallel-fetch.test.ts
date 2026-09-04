@@ -127,6 +127,10 @@ describe("a restore opens its three independent requests together", () => {
     await flush();
 
     expect([...backend.issued].sort()).toEqual(["jobs", "messages", "probe"]);
+    // Nothing has been answered, so the pointer moved WITH the switch rather
+    // than an await behind it — the window `send`/`regenerate` had to defend,
+    // and the one thing a serial restore cannot satisfy at this point.
+    expect(session.conversationId).toBe("conv-a");
 
     opening.open();
     await restoring;
@@ -158,5 +162,39 @@ describe("a restore opens its three independent requests together", () => {
     expect(session.conversationId).toBe("conv-a");
     expect(session.messages.map((m) => m.content)).toEqual(["A's prompt"]);
     expect(manager.state).toBe("idle");
+  });
+});
+
+describe("the restoring announcement is a re-entrancy door", () => {
+  it("does not load the abandoned conversation when a handler switches from the emit", async () => {
+    // `setState` emits SYNCHRONOUSLY, and a handler routing on `stateChange`
+    // can `switchTo` from inside it — the same door the check above the
+    // announcement exists for, one line later. It did not have to be guarded
+    // while `loadConversation` sat behind the probe's await and its
+    // supersession check; issuing the load WITH the probe puts it back in the
+    // synchronous path of this emit.
+    //
+    // Unguarded, A's load runs after B's and claims the newer token, so B's
+    // load loses and A's wins: the manager points at B while the session holds
+    // A's id AND A's messages — `send` posts to the conversation the user
+    // left, and `regenerate` no-ops forever on the pointer mismatch.
+    const backend = recordingBackend(Promise.resolve());
+    const session = new ChatSession({ ...baseConfig, fetch: backend.fetch });
+    const manager = new StreamManager(session);
+
+    let switched = false;
+    manager.on((e) => {
+      if (e.type === "stateChange" && e.state === "restoring" && !switched) {
+        switched = true;
+        void manager.switchTo("conv-b");
+      }
+    });
+
+    await manager.switchTo("conv-a");
+    await flush();
+
+    expect(manager.activeConversationId).toBe("conv-b");
+    expect(session.conversationId).toBe("conv-b");
+    expect(session.messagesConversationId).toBe("conv-b");
   });
 });

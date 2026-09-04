@@ -876,6 +876,19 @@ export class StreamManager {
     const turn = this.turnCounter;
     const announcedRestoring = !this.session.isStreaming;
     if (announcedRestoring) this.setState("restoring");
+    // Re-checked, because `setState` emits SYNCHRONOUSLY and a handler routing
+    // on `stateChange` can `switchTo` from inside it — the same re-entrancy
+    // door as the check above, one line later. It did not have to be guarded
+    // while `loadConversation` sat behind the probe's await and its own
+    // supersession check; issuing the load WITH the probe puts it back in this
+    // emit's synchronous path, where an unguarded load runs AFTER the newer
+    // switch's and so claims the newer token — leaving the session holding the
+    // abandoned conversation's id and messages under a manager pointing at the
+    // one the user chose.
+    //
+    // Returning having announced `restoring` is what the check after the probe
+    // already did: the superseding switch announces and settles its own state.
+    if (superseded()) return;
 
     // The three requests a restore opens with, issued TOGETHER. None is an
     // input to another — the active-job probe, the message list and the job
@@ -890,13 +903,14 @@ export class StreamManager {
     // request leaves, not when its effect is observed.
     //
     // The two supersession checks either side of `loadConversation` collapse
-    // into the one after the joint await, which is the same guarantee: a joint
-    // await is still a single await boundary, and nothing between the two
-    // checks did anything a superseded restore could regret. `loadConversation`
-    // moving the session pointer sooner is safe for the same reason it is safe
-    // at all — `setActiveConversation` bumps the session's load token, so a
-    // switch landing in this window makes the load in flight lose and its
-    // snapshot is never installed.
+    // into the one after the joint await: a joint await is still a single
+    // await boundary. What does NOT collapse with them is the check above,
+    // which now covers the announcement rather than the probe — the load is
+    // synchronous with the emit, so that is where the door it has to close
+    // moved to. `loadConversation` moving the session pointer sooner is
+    // otherwise safe for the reason it is safe at all: `setActiveConversation`
+    // bumps the session's load token, so an ASYNCHRONOUS switch landing in this
+    // window makes the load in flight lose and its snapshot is never installed.
     const probeRequest = this.session.client
       .getActiveJob(conversationId)
       // Network error — assume no active job.
@@ -906,11 +920,20 @@ export class StreamManager {
     // list cannot hold up the checks below, and so that its failure still
     // arrives inside the try that already treats a failed history load as
     // non-blocking. The `catch` is only to mark the rejection handled for the
-    // paths that never reach `replayHistory` (superseded, or a live turn
-    // holding the view) — `replayHistory` awaits the original and handles it
-    // itself.
-    const jobsRequest = this.jobList(conversationId);
-    void jobsRequest.catch(() => {});
+    // paths that reach neither (superseded, or a live turn holding the view) —
+    // `replayHistory` awaits the original and handles it itself.
+    //
+    // Gated on `announcedRestoring`, which `replayHistory` is gated on too:
+    // reopening a conversation whose turn is still live takes the reconnect
+    // and never replays, so fetching the list there would buy a whole round
+    // trip to throw away — a regression in the one thing this change is about.
+    // The flag is known synchronously, so keeping it costs no serialisation.
+    // The other two discard paths cannot be gated the same way: both are
+    // answers that only exist after the await this request is racing.
+    const jobsRequest = announcedRestoring
+      ? this.jobList(conversationId)
+      : null;
+    void jobsRequest?.catch(() => {});
 
     const [probe] = await Promise.all([probeRequest, loadRequest]);
     const activeJobId = probe?.jobId ?? null;
@@ -953,8 +976,11 @@ export class StreamManager {
     // a send or regenerate) and the never-cleared path still falls through to
     // the reconnect exactly as before.
     if (announcedRestoring && this.viewTakenOverByLiveTurn()) return;
+    // Tested on `jobsRequest` rather than `announcedRestoring`: the two are the
+    // same condition by construction above, and this spelling is the one that
+    // narrows the request away from null.
     if (
-      announcedRestoring &&
+      jobsRequest &&
       !(await this.replayHistory(
         conversationId,
         gen,
