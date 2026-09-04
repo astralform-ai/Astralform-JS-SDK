@@ -578,7 +578,7 @@ export interface Conversation {
   /**
    * The project this task belongs to (`owner/repo`), or `null` for an ordinary
    * conversation. Set on the first turn and immutable after. Absent (rather than
-   * null) from an Astralform older than 0.70.0.
+   * null) from an Astralform older than 0.69.46.
    */
   repository?: string | null;
 }
@@ -642,7 +642,7 @@ export interface AgentInfo {
    * Derived by the server from the connector, so it cannot go stale the way the
    * retired `mode` toggle could. It gates a SURFACE, not an ability: naming a
    * repository is optional on every task, and a task that names none is an
-   * ordinary chat. Absent on Astralform older than 0.71.0 — fall back to `mode`
+   * ordinary chat. Absent on Astralform older than 0.69.50 — fall back to `mode`
    * there.
    *
    * It is a property of the WORKSPACE, not of a persona: `GET /v1/agents` selects
@@ -825,9 +825,9 @@ export interface ChatStreamRequest {
    * later turn may omit it or repeat the same value; a DIFFERENT value is refused
    * (409), not ignored — a task is bound to one repository for life, so a
    * different repository means a new task. A task that never names one is an
-   * ordinary chat; since Astralform 0.71.0 there is no agent mode that requires
+   * ordinary chat; since Astralform 0.69.50 there is no agent mode that requires
    * one.
-   * Astralform >= 0.70.0.
+   * Astralform >= 0.69.46.
    */
   repository?: string;
   mcp_manifest?: ToolDefinition[];
@@ -1166,8 +1166,8 @@ export interface SendOptions extends ModelChoiceOptions {
    * Send it on the turn that STARTS a task; the binding is write-once, so a
    * later turn may omit it or repeat the same value, and a DIFFERENT value is
    * refused (409) rather than ignored. Omit it entirely and the task is an
-   * ordinary chat — since Astralform 0.71.0 no agent requires one, and a first
-   * turn without it is no longer a 400. Astralform >= 0.70.0.
+   * ordinary chat — since Astralform 0.69.50 no agent requires one, and a first
+   * turn without it is no longer a 400. Astralform >= 0.69.46.
    */
   repository?: string;
 }
