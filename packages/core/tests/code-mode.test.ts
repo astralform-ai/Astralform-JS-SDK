@@ -376,8 +376,24 @@ describe("StreamManager.send carries the project", () => {
     );
     // No switchTo: `send` auto-creates its target, which is the path a first
     // task takes anyway.
-    await manager.send("fix the flaky test", { repository: "acme/api" });
+    await manager.send("fix the flaky test", {
+      repository: "acme/api",
+      goal: "open a PR",
+      planMode: true,
+      agentName: "coder",
+      uploadIds: ["u1"],
+    });
 
-    expect(forwarded[0]).toMatchObject({ repository: "acme/api" });
+    // Every field, not just the new one: the defect was the hand-copied
+    // allowlist, so pinning one field would leave the next addition free to
+    // drop the same way.
+    expect(forwarded[0]).toMatchObject({
+      conversationId: "c1",
+      repository: "acme/api",
+      goal: "open a PR",
+      planMode: true,
+      agentName: "coder",
+      uploadIds: ["u1"],
+    });
   });
 });
