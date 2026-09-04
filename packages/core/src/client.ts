@@ -405,9 +405,10 @@ export class AstralformClient {
   /**
    * A page of conversations, newest-updated first.
    *
-   * `options.repository` narrows to one project's tasks (`owner/repo`) on a
-   * — the same paging applies within the filter, so a client
-   * showing tasks per project pages each project separately.
+   * `options.repository` narrows to one project's tasks (`owner/repo`) — the same
+   * paging applies within the filter, so a client showing tasks per project pages
+   * each project separately. Tasks that named no repository fall outside every
+   * such filter; list them with no filter at all.
    */
   async getConversations(
     limit = 50,
@@ -833,7 +834,7 @@ export class AstralformClient {
     return raw.map((a) => camelizeKeys<TeamAgentSummary>(a as unknown as Record<string, unknown>));
   }
 
-  // --- Code mode: the app user's projects ---
+  // --- Projects: the repositories this app user works with ---
 
   /**
    * The projects (GitHub repositories) this app user works with, and what they

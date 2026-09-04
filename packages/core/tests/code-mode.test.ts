@@ -1,10 +1,17 @@
 /**
- * Code mode: a task belongs to a project, and a project list is per app user.
+ * Projects: a task may belong to one, and a project list is per app user.
  *
- * The wire fields are the whole contract here — the SDK's types are what a
- * client can see, so a field the mappers or the request builder drop is a field
- * that does not exist as far as the chat app is concerned. These pin each one
- * against the path and payload the backend actually serves.
+ * The wire fields are the whole contract here — a field the mappers or the
+ * request builder drop is a field that does not exist as far as the chat app is
+ * concerned. These pin each one against the path and payload the backend
+ * actually serves.
+ *
+ * RUNTIME only. `tsconfig.json` excludes `tests` and vitest runs no `typecheck`
+ * project, so nothing here pins a TYPE: `getAgents` maps through the structural
+ * `camelizeKeys`, so deleting a field from `AgentInfo` leaves every assertion
+ * below passing. Closing that would mean type-checking the suite, which today
+ * carries about ten pre-existing errors across other files — worth doing, and
+ * too big to smuggle into a feature change.
  */
 import { describe, it, expect } from "vitest";
 import { AstralformClient } from "../src/client.js";
