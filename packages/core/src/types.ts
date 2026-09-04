@@ -806,9 +806,11 @@ export interface ChatStreamRequest {
   /**
    * Which project (GitHub repository, `owner/repo`) this task belongs to.
    *
-   * Required on the FIRST turn of a conversation on a code-mode agent and
-   * ignored afterwards — a task is bound to one repository for life, so a
-   * different repository means a new task. Chat-mode agents ignore it entirely.
+   * Required on the FIRST turn of a conversation on a code-mode agent, which
+   * binds it. A later turn may omit it or repeat the same value; a DIFFERENT
+   * value is refused (409), not ignored — a task is bound to one repository for
+   * life, so a different repository means a new task. Chat-mode agents ignore
+   * it entirely.
    * Astralform >= 0.70.0.
    */
   repository?: string;
@@ -1145,10 +1147,11 @@ export interface SendOptions extends ModelChoiceOptions {
   /**
    * The project this task belongs to (`owner/repo`), on a code-mode agent.
    *
-   * Send it on the turn that STARTS a task; the binding is write-once, so later
-   * turns can omit it (sending a different one is refused). A first turn without
-   * it on a code-mode agent is refused too — the run needs a repository before it
-   * can hold a credential scoped to one. Astralform >= 0.70.0.
+   * Send it on the turn that STARTS a task; the binding is write-once, so a
+   * later turn may omit it or repeat the same value, and a DIFFERENT value is
+   * refused (409) rather than ignored. A first turn without it on a code-mode
+   * agent is refused too (400) — the run needs a repository before it can hold a
+   * credential scoped to one. Astralform >= 0.70.0.
    */
   repository?: string;
 }

@@ -51,6 +51,17 @@ export interface SendOptions extends ModelChoiceOptions {
    * goal objective the backend drives to completion. Omit for a normal turn.
    */
   goal?: string;
+  /**
+   * The project this task belongs to (`owner/repo`), on a code-mode agent.
+   *
+   * Write-once server-side, and the refusal is the part that matters: the FIRST
+   * turn binds the task, a later turn may omit it or repeat the same value, and
+   * a DIFFERENT value is refused (409) rather than ignored — silently acting on
+   * the wrong repository is the failure that rule exists to prevent. A first
+   * turn without it on a code-mode agent is refused too (400). Astralform
+   * >= 0.70.0.
+   */
+  repository?: string;
 }
 
 export type StreamManagerEvent =
@@ -235,24 +246,15 @@ export class StreamManager {
     this.setState("streaming");
 
     try {
+      // Spread, not a hand-copied allowlist: this forward used to name each
+      // field, and a field added to the session's options but not here was
+      // dropped silently with types that said otherwise — which is exactly how
+      // `repository` was lost. The manager's `SendOptions` carries no key the
+      // session does not accept, so the spread is equivalent today and cannot
+      // drift tomorrow.
       await this.session.send(content, {
-        // Address the send explicitly. `ChatSession.send` otherwise falls back
-        // to `session.conversationId`, which LAGS this pointer: a restore
-        // assigns it synchronously but only reaches the next switch's own
-        // `loadConversation` an await later, so between the two the session
-        // still names the conversation the user left. The manager's pointer
-        // moved the moment the user clicked; it is the authority.
+        ...options,
         conversationId: target ?? undefined,
-        agentName: options?.agentName,
-        uploadIds: options?.uploadIds,
-        planMode: options?.planMode,
-        imageMode: options?.imageMode,
-        videoMode: options?.videoMode,
-        goal: options?.goal,
-        provider: options?.provider,
-        model: options?.model,
-        reasoningEffort: options?.reasoningEffort,
-        temperature: options?.temperature,
       });
     } catch {
       // AbortError from detach is expected
