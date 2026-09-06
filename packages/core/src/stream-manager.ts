@@ -175,16 +175,6 @@ export class StreamManager {
    */
   private toolOutputs: ToolOutputMode = "inline";
 
-  /**
-   * Ask restore for stubbed tool outputs, resolved on demand.
-   *
-   * Only worth turning on by a consumer that can actually resolve a stub —
-   * see `isToolOutputStub` and `client.getToolOutput`. One that cannot will
-   * render nothing where large tool results belong.
-   */
-  setToolOutputMode(mode: ToolOutputMode): void {
-    this.toolOutputs = mode;
-  }
   private _state: StreamState = "idle";
   private _activeConversationId: string | null = null;
   private _backgroundJobs = new Map<string, string>();
@@ -237,6 +227,18 @@ export class StreamManager {
     return () => {
       this.handlers = this.handlers.filter((h) => h !== handler);
     };
+  }
+
+  /**
+   * Ask restore for stubbed tool outputs, resolved on demand.
+   *
+   * Only worth turning on by a consumer that can actually resolve a stub —
+   * see `isToolOutputStub` and `client.getToolOutput`. One that cannot does
+   * not render an empty result: it renders the stub OBJECT where the output
+   * belongs, because that is what arrives in `final.output`.
+   */
+  setToolOutputMode(mode: ToolOutputMode): void {
+    this.toolOutputs = mode;
   }
 
   private emit(event: StreamManagerEvent): void {

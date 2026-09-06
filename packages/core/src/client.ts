@@ -29,6 +29,7 @@ import type {
   TeamSummary,
   ToolApprovalRequest,
   ToolOutputMode,
+  ToolOutputStub,
   ToolResultRequest,
   VoiceConfig,
   VoicePolishEvent,
@@ -706,10 +707,28 @@ export class AstralformClient {
    */
   async getToolOutput(
     conversationId: string,
+    stub: ToolOutputStub,
+  ): Promise<unknown>;
+  async getToolOutput(
+    conversationId: string,
     callId: string,
     jobId?: string,
+  ): Promise<unknown>;
+  async getToolOutput(
+    conversationId: string,
+    callIdOrStub: string | ToolOutputStub,
+    jobId?: string,
   ): Promise<unknown> {
-    const query = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
+    // Prefer handing the stub straight in. Every paragraph above says "pass
+    // `job_id`", which is a sign an optional parameter is the wrong shape for
+    // it: dropping it type-checks, and the failure is invisible until someone
+    // regenerates a turn. The stub already carries the id, so this overload
+    // makes forgetting it impossible rather than merely documented.
+    const callId =
+      typeof callIdOrStub === "string" ? callIdOrStub : callIdOrStub.call_id;
+    const job =
+      typeof callIdOrStub === "string" ? jobId : callIdOrStub.job_id;
+    const query = job ? `?job_id=${encodeURIComponent(job)}` : "";
     const res = await this.get<{ call_id: string; output: unknown }>(
       `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(callId)}${query}`,
     );

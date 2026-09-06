@@ -1113,10 +1113,18 @@ export interface ToolOutputStub {
  * where the result belongs.
  */
 export function isToolOutputStub(value: unknown): value is ToolOutputStub {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<ToolOutputStub>;
+  // Every field the assertion promises, not just the marker. Narrowing on
+  // `__stub` alone would hand a caller a `call_id` typed `string` that is
+  // actually undefined, and the very next line is a fetch keyed on it — a
+  // request for `/tool-output/undefined`. The type says these are present, so
+  // the guard has to be the thing that makes that true.
   return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as { __stub?: unknown }).__stub === "tool_output"
+    v.__stub === "tool_output" &&
+    typeof v.call_id === "string" &&
+    v.call_id.length > 0 &&
+    typeof v.size_bytes === "number"
   );
 }
 

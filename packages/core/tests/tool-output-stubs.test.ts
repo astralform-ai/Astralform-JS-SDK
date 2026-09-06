@@ -181,6 +181,26 @@ describe("tool-output stubs", () => {
     expect(isToolOutputStub({ stub: true })).toBe(false);
   });
 
+  it("refuses a marker without the fields it promises", () => {
+    // The predicate asserts `call_id: string`, so narrowing on `__stub` alone
+    // would hand a caller a `call_id` that is actually undefined — and the
+    // next line is a fetch keyed on it, i.e. `/tool-output/undefined`.
+    expect(isToolOutputStub({ __stub: "tool_output" })).toBe(false);
+    expect(isToolOutputStub({ __stub: "tool_output", call_id: "" })).toBe(false);
+    expect(
+      isToolOutputStub({ __stub: "tool_output", call_id: "c", size_bytes: "big" }),
+    ).toBe(false);
+  });
+
+  it("takes the stub itself, so job_id cannot be forgotten", async () => {
+    // The safe overload: the stub carries the id, so the caller cannot drop it.
+    const h = harness();
+    const out = await h.session.client.getToolOutput("conv-a", STUB);
+    expect(out).toBe("the full body");
+    const url = h.urls.find((u) => u.includes("/tool-output/"))!;
+    expect(url).toContain("job_id=job-3");
+  });
+
   it("fetches the body scoped to the stub's job", async () => {
     const h = harness();
     const out = await h.session.client.getToolOutput("conv-a", STUB.call_id, STUB.job_id);
