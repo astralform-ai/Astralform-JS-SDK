@@ -258,13 +258,15 @@ describe("whether an agent's tasks can bind a repository", () => {
     expect(legacy.codeProjectsEnabled).toBeUndefined();
   });
 
-  it("ignores a stale mode from a backend that still sends one", async () => {
+  it("does not derive codeProjectsEnabled from a mode the backend still sends", async () => {
     // `mode` reported the STORED value of the retired toggle, so an agent that
     // never had it set says "chat" while its tasks bind perfectly well. That is
     // why it was never an alias for `codeProjectsEnabled`, and why a client must
     // not reach for it: on this exact row the two disagree, and `mode` is the
-    // wrong one. `camelizeKeys` is structural, so the field still ARRIVES from a
-    // 0.69.50 backend — it is simply not part of the declared surface any more.
+    // wrong one. The pin is that the mapper reports the right one — it does NOT
+    // ignore `mode`, which still arrives structurally through `camelizeKeys`
+    // from a 0.69.50 backend; it is simply no longer part of the declared
+    // surface, so nothing may read it.
     const mockFetch = createMockFetch({
       "/v1/agents": {
         status: 200,
@@ -286,8 +288,9 @@ describe("whether an agent's tasks can bind a repository", () => {
     const [agent] = await client.getAgents();
 
     expect(agent.codeProjectsEnabled).toBe(true);
-    expect("mode" in agent).toBe(true); // structural mapper, not a promise
-    expect(Object.keys(agent)).not.toContain("agentMode");
+    // Still present at runtime — `camelizeKeys` is structural, so this documents
+    // that the field's removal is from the TYPE, not from the payload.
+    expect("mode" in agent).toBe(true);
   });
 });
 

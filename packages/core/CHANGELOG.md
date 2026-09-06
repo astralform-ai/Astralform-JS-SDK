@@ -13,7 +13,7 @@ The field survived one release as the STORED value of the retired column, so cli
 - They answer different questions, and on a real population they disagree. An agent that never had the toggle set reports `mode: "chat"` while its tasks bind perfectly well — which is exactly why `mode` was never an alias for `codeProjectsEnabled` and why the migration is not a rename.
 - `codeProjectsEnabled` gates a SURFACE, not an ability. Naming a repository is optional on every task, and a task that names none is an ordinary chat, so nothing should refuse a send on it. If your client blocks a first send until a project is picked, that gate goes away with this upgrade.
 
-`codeProjectsEnabled` is absent on Astralform older than 0.69.50; read that as false. Requires Astralform >= 0.69.50.
+Requires Astralform >= 0.69.50. Against an older backend `codeProjectsEnabled` is simply absent, and since this release no longer carries `mode` there is nothing left to fall back to — such a client sees no Projects surface at all, which is the cost of the window having closed.
 
 ## 7.5.1
 
