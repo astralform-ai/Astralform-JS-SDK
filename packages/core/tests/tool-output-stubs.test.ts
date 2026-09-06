@@ -181,15 +181,22 @@ describe("tool-output stubs", () => {
     expect(isToolOutputStub({ stub: true })).toBe(false);
   });
 
-  it("refuses a marker without the fields it promises", () => {
+  it("refuses a marker without a usable call_id", () => {
     // The predicate asserts `call_id: string`, so narrowing on `__stub` alone
     // would hand a caller a `call_id` that is actually undefined — and the
     // next line is a fetch keyed on it, i.e. `/tool-output/undefined`.
     expect(isToolOutputStub({ __stub: "tool_output" })).toBe(false);
     expect(isToolOutputStub({ __stub: "tool_output", call_id: "" })).toBe(false);
+  });
+
+  it("still accepts a stub whose size hint is missing or odd", () => {
+    // `size_bytes` is a display hint nothing here reads. Rejecting over it
+    // would drop a usable stub to "not a stub" and render the handle where the
+    // output belongs — worse than showing no size.
+    expect(isToolOutputStub({ __stub: "tool_output", call_id: "c" })).toBe(true);
     expect(
       isToolOutputStub({ __stub: "tool_output", call_id: "c", size_bytes: "big" }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("takes the stub itself, so job_id cannot be forgotten", async () => {

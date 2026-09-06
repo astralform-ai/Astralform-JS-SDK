@@ -1091,7 +1091,15 @@ export interface ChatStreamEvent {
 export interface ToolOutputStub {
   __stub: "tool_output";
   call_id: string;
-  size_bytes: number;
+  /**
+   * Size of the output this replaces, for a "load 240 KB" affordance.
+   *
+   * Optional because nothing in this SDK reads it, and the guard therefore
+   * does not require it: rejecting an otherwise-valid stub over a display
+   * field would drop it to "not a stub" and render the handle where the
+   * output belongs — a worse outcome than a missing size label.
+   */
+  size_bytes?: number;
   /**
    * The job this call belongs to. **Hand it back to `getToolOutput`.**
    *
@@ -1120,11 +1128,14 @@ export function isToolOutputStub(value: unknown): value is ToolOutputStub {
   // actually undefined, and the very next line is a fetch keyed on it — a
   // request for `/tool-output/undefined`. The type says these are present, so
   // the guard has to be the thing that makes that true.
+  // `call_id` and nothing else: it is the field the next line feeds into a
+  // URL, so it is the one the assertion must actually make true. `size_bytes`
+  // is a display hint no code here reads, and requiring it would reject a
+  // usable stub for a cosmetic omission.
   return (
     v.__stub === "tool_output" &&
     typeof v.call_id === "string" &&
-    v.call_id.length > 0 &&
-    typeof v.size_bytes === "number"
+    v.call_id.length > 0
   );
 }
 

@@ -698,17 +698,25 @@ export class AstralformClient {
   /**
    * The full output behind a {@link ToolOutputStub}.
    *
-   * Pass the stub's `job_id`. `/events?job_id=X` returns jobs that
-   * regeneration has replaced, while this route excludes them unless scoped —
-   * so an unscoped fetch 404s on exactly the pills a version-switched read is
-   * displaying, where an inline restore would have carried the body. Restore
-   * fetches events per job and always passes `job_id`, so that is the normal
-   * path, not an edge case.
+   * The safe form: the stub carries its own `job_id`, so the scoping that a
+   * version-switched read depends on cannot be dropped. See the id overload
+   * below for what that scoping is and why omitting it 404s.
    */
   async getToolOutput(
     conversationId: string,
     stub: ToolOutputStub,
   ): Promise<unknown>;
+  /**
+   * By ids. **Pass `jobId`** — this is the form that can get it wrong.
+   *
+   * `/events?job_id=X` deliberately returns jobs that regeneration has
+   * replaced, since reading a superseded version is the whole purpose of that
+   * parameter, while this route excludes them unless scoped to a job. Omit it
+   * and the fetch 404s on exactly the pills a version-switched read is
+   * displaying. Restore fetches events per job, so that is the normal path.
+   *
+   * Prefer the overload above, which takes the stub and cannot be got wrong.
+   */
   async getToolOutput(
     conversationId: string,
     callId: string,
