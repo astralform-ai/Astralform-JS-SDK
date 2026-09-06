@@ -1,5 +1,21 @@
 # Changelog
 
+## 8.2.0
+
+### Added
+
+- **`StreamManager.setToolOutputMode("stub")`** — ask restore for tool outputs as fetch handles instead of inline bodies. Tool outputs are the largest rows a restore carries (100-236 KB in a single `block_stop`, 1.5-1.9 MB for a big turn); 8.1.0's paging bounds how MANY the first render pays for, and this bounds how BIG each one is. Default is `"inline"`, so this is inert until a consumer opts in — and only worth opting into by one that can resolve a stub.
+- **`isToolOutputStub(value)` and the `ToolOutputStub` type.** Only the `output` of a `tool_use` final is ever replaced: name, arguments, status, duration and the hoisted image previews all survive, so a stubbed tool call renders like a resolved one until the reader opens it.
+- **`client.getToolOutput(conversationId, stub)`** — the body behind a stub. Prefer handing the stub straight in: it already carries the `job_id`, so the overload makes forgetting it impossible rather than merely documented. (A `(conversationId, callId, jobId?)` form exists for callers that have only the ids.) **Pass the stub's `job_id`.** `/events?job_id=X` deliberately returns jobs that regeneration has replaced, since reading a superseded version is the whole purpose of that parameter, while this route excludes them unless scoped to a job. An unscoped fetch therefore 404s on exactly the pills a version-switched read is displaying — and restore fetches events per job, always passing `job_id`, so that is the normal path rather than an edge case.
+
+### Changed
+
+- The mode applies to BOTH event waves from one setting — the newest page and every `loadEarlierTurns` page. Stubs in one and not the other would make the same pill behave differently depending on where it sits in the transcript, which is worse than not having them.
+
+### Compatibility
+
+- Opt-in and additive. With the default the request is byte-identical to 8.1.0's: the `tool_outputs` parameter is omitted entirely rather than sent as `inline`. Stub support needs Astralform >= 0.69.50; an older backend ignores the unknown parameter and returns inline bodies, which `isToolOutputStub` simply reports as `false`.
+
 ## 8.1.0
 
 ### Added

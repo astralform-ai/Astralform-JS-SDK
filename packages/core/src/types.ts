@@ -1080,6 +1080,68 @@ export interface ChatStreamEvent {
   data: string;
 }
 
+/**
+ * A tool output the server declined to inline, with a handle to fetch it.
+ *
+ * Restore can ask for these with `toolOutputs: "stub"`. Only the `output` of a
+ * `tool_use` final is ever replaced — name, arguments, status, duration and the
+ * hoisted image previews all survive — so a stubbed tool call renders like a
+ * resolved one until the reader opens it.
+ */
+export interface ToolOutputStub {
+  __stub: "tool_output";
+  call_id: string;
+  /**
+   * Size of the output this replaces, for a "load 240 KB" affordance.
+   *
+   * Optional because nothing in this SDK reads it, and the guard therefore
+   * does not require it: rejecting an otherwise-valid stub over a display
+   * field would drop it to "not a stub" and render the handle where the
+   * output belongs — a worse outcome than a missing size label.
+   */
+  size_bytes?: number;
+  /**
+   * The job this call belongs to. **Hand it back to `getToolOutput`.**
+   *
+   * `/events?job_id=X` deliberately returns jobs that regeneration has
+   * replaced — reading a superseded version is the whole purpose of that
+   * parameter — while the fetch route excludes them unless scoped to a job. A
+   * fetch that drops this therefore 404s on exactly the pills a
+   * version-switched read is displaying. Absent only when the event carried no
+   * job id, in which case the unscoped fetch is the correct one.
+   */
+  job_id?: string;
+}
+
+/**
+ * Is this tool output a stub to fetch rather than the output itself?
+ *
+ * One obvious way to ask. Left to sniff `__stub` themselves, consumers get it
+ * wrong in the direction that renders the stub object into the transcript
+ * where the result belongs.
+ */
+export function isToolOutputStub(value: unknown): value is ToolOutputStub {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<ToolOutputStub>;
+  // Every field the assertion promises, not just the marker. Narrowing on
+  // `__stub` alone would hand a caller a `call_id` typed `string` that is
+  // actually undefined, and the very next line is a fetch keyed on it — a
+  // request for `/tool-output/undefined`. The type says these are present, so
+  // the guard has to be the thing that makes that true.
+  // `call_id` and nothing else: it is the field the next line feeds into a
+  // URL, so it is the one the assertion must actually make true. `size_bytes`
+  // is a display hint no code here reads, and requiring it would reject a
+  // usable stub for a cosmetic omission.
+  return (
+    v.__stub === "tool_output" &&
+    typeof v.call_id === "string" &&
+    v.call_id.length > 0
+  );
+}
+
+/** How a restore asks for tool outputs. */
+export type ToolOutputMode = "inline" | "stub";
+
 export interface ConversationEvent {
   seq: number;
   event: string;

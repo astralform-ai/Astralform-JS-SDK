@@ -6,15 +6,16 @@ import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
   AgentInfo,
-  AvailableRepositories,
-  CodeProject,
+  AgentStatus,
   AstralformApiKeyConfig,
   AstralformConfig,
+  AvailableRepositories,
   ChatStreamEvent,
   ChatStreamRequest,
+  CodeProject,
+  Conversation,
   ConversationAsset,
   ConversationEvent,
-  Conversation,
   FeedbackRequest,
   FeedbackResponse,
   JobCreateResponse,
@@ -23,11 +24,12 @@ import type {
   Message,
   ModelOption,
   MyToolGrantsPage,
-  AgentStatus,
-  TeamAgentSummary,
   SkillInfo,
+  TeamAgentSummary,
   TeamSummary,
   ToolApprovalRequest,
+  ToolOutputMode,
+  ToolOutputStub,
   ToolResultRequest,
   VoiceConfig,
   VoicePolishEvent,
@@ -677,10 +679,68 @@ export class AstralformClient {
   async getConversationEvents(
     conversationId: string,
     jobId?: string,
+    options?: { toolOutputs?: ToolOutputMode },
   ): Promise<ConversationEvent[]> {
-    let url = `/v1/conversations/${encodeURIComponent(conversationId)}/events`;
-    if (jobId) url += `?job_id=${encodeURIComponent(jobId)}`;
-    return this.get(url);
+    const params = new URLSearchParams();
+    if (jobId) params.set("job_id", jobId);
+    // Only ever SET for "stub". Omitting it entirely when inline keeps the
+    // request byte-identical to what every installed client already sends,
+    // which is what makes this opt-in rather than a wire change.
+    if (options?.toolOutputs === "stub") params.set("tool_outputs", "stub");
+    const query = params.toString();
+    return this.get(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/events${
+        query ? `?${query}` : ""
+      }`,
+    );
+  }
+
+  /**
+   * The full output behind a {@link ToolOutputStub}.
+   *
+   * The safe form: the stub carries its own `job_id`, so the scoping that a
+   * version-switched read depends on cannot be dropped. See the id overload
+   * below for what that scoping is and why omitting it 404s.
+   */
+  async getToolOutput(
+    conversationId: string,
+    stub: ToolOutputStub,
+  ): Promise<unknown>;
+  /**
+   * By ids. **Pass `jobId`** — this is the form that can get it wrong.
+   *
+   * `/events?job_id=X` deliberately returns jobs that regeneration has
+   * replaced, since reading a superseded version is the whole purpose of that
+   * parameter, while this route excludes them unless scoped to a job. Omit it
+   * and the fetch 404s on exactly the pills a version-switched read is
+   * displaying. Restore fetches events per job, so that is the normal path.
+   *
+   * Prefer the overload above, which takes the stub and cannot be got wrong.
+   */
+  async getToolOutput(
+    conversationId: string,
+    callId: string,
+    jobId?: string,
+  ): Promise<unknown>;
+  async getToolOutput(
+    conversationId: string,
+    callIdOrStub: string | ToolOutputStub,
+    jobId?: string,
+  ): Promise<unknown> {
+    // Prefer handing the stub straight in. Every paragraph above says "pass
+    // `job_id`", which is a sign an optional parameter is the wrong shape for
+    // it: dropping it type-checks, and the failure is invisible until someone
+    // regenerates a turn. The stub already carries the id, so this overload
+    // makes forgetting it impossible rather than merely documented.
+    const callId =
+      typeof callIdOrStub === "string" ? callIdOrStub : callIdOrStub.call_id;
+    const job =
+      typeof callIdOrStub === "string" ? jobId : callIdOrStub.job_id;
+    const query = job ? `?job_id=${encodeURIComponent(job)}` : "";
+    const res = await this.get<{ call_id: string; output: unknown }>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(callId)}${query}`,
+    );
+    return res.output;
   }
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {
