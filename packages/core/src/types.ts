@@ -763,10 +763,13 @@ export interface SlashCommand {
    */
   argsHint: string;
   /**
-   * Which surfaces can run this command (`"web"`, `"telegram"`). Only
-   * populated when the caller asked for `"all"`; a surface-scoped list has
-   * already filtered on it. Empty rather than undefined for the same reason
-   * as `argsHint`.
+   * Which surfaces can run this command (`"web"`, `"telegram"`).
+   *
+   * Always populated, whatever surface was asked for — a scoped list has
+   * already filtered on it, so every row there names at least the surface
+   * requested. It carries information only for `"all"`, where rows that
+   * cannot run everywhere sit next to rows that can. Empty rather than
+   * undefined for the same reason as `argsHint`.
    */
   surfaces: string[];
 }
