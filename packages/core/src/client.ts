@@ -685,7 +685,8 @@ export class AstralformClient {
    * @param surface Who will execute them. Omit for the server's default,
    *   `"web"`: what `POST /v1/jobs` runs itself. `"telegram"` returns the
    *   bot's commands under Telegram-valid names; `"all"` returns every
-   *   command with its `surfaces` populated.
+   *   command, including those the other surfaces filter out — `surfaces` is
+   *   set on every row either way, and is what tells them apart here.
    *
    * The default surface is not sent as a query parameter. The server already
    * defaults to `web`, so omitting it keeps the request byte-identical to
