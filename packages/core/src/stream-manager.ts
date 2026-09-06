@@ -1147,7 +1147,10 @@ export class StreamManager {
    * announces and loads its own.
    */
   private reloadUnwindowed(conversationId: string): void {
-    void this.session.loadConversation(conversationId);
+    // Rejects when the API fetch and the storage fallback both fail — the
+    // known-down network the `finally` in `replayHistory` fires this from.
+    // Nothing downstream can act on it, so the rejection is marked handled.
+    void this.session.loadConversation(conversationId).catch(() => {});
   }
 
   /**

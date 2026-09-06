@@ -444,6 +444,25 @@ describe("tail-first restore", () => {
     expect(h.session.messages.length).toBe(60);
   });
 
+  it("swallows a reload that fails after the history read itself failed", async () => {
+    // The reload in `replayHistory`'s `finally` also fires when the job list
+    // failed — the one path where the network is KNOWN to be down. A second
+    // load that then fails, with the local cache failing too, must not escape
+    // as an unhandled rejection: the caller has already been told to proceed,
+    // so nothing downstream can act on it.
+    const h = harness(60);
+    const client = h.session.client;
+    vi.spyOn(client, "getConversationJobsPage").mockRejectedValue(new Error("500"));
+    vi.spyOn(client, "getMessages").mockRejectedValue(new Error("500"));
+    vi.spyOn(h.session.storage, "fetchMessages").mockRejectedValue(new Error("no cache"));
+    await h.manager.switchTo("conv-a");
+    await flush();
+
+    // The windowed load still installed what it could, and nothing threw.
+    expect(h.session.conversationId).toBe("conv-a");
+    expect(h.session.hasMoreTurns).toBe(false);
+  });
+
   it("does not truncate a restore that will never replay or page", async () => {
     // When a send has already taken the view, the job list is not fetched and
     // `replayHistory` never runs, so nothing writes a turn cursor. Windowing
