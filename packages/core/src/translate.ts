@@ -170,6 +170,13 @@ export function translateCustomEvent(
         key: (data.key as string | null) ?? null,
         namespace: (data.namespace as string | null) ?? null,
       };
+    case "memory_provider_error":
+      return {
+        type: "memory_provider_error",
+        provider: (data.provider as string) ?? "",
+        op: (data.op as string) ?? "",
+        error: (data.error as string) ?? "",
+      };
     case "desktop_stream":
       return {
         type: "desktop_stream",
@@ -228,6 +235,24 @@ export function translateCustomEvent(
         callId: (data.call_id as string) ?? "",
         message: (data.message as string | null) ?? null,
         details: (data.details as Record<string, unknown> | null) ?? null,
+      };
+    case "tool_progress":
+      return {
+        type: "tool_progress",
+        callId: (data.call_id as string) ?? "",
+        stream: (data.stream as string) ?? "progress",
+        chunk: (data.chunk as string) ?? "",
+      };
+    case "nested_llm_usage":
+      return {
+        type: "nested_llm_usage",
+        source: (data.source as string) ?? "",
+        callId: (data.call_id as string) ?? "",
+        inputTokens: (data.input_tokens as number) ?? 0,
+        outputTokens: (data.output_tokens as number) ?? 0,
+        cachedTokens: (data.cached_tokens as number) ?? 0,
+        cacheCreationTokens: (data.cache_creation_tokens as number) ?? 0,
+        llmCalls: (data.llm_calls as number) ?? 0,
       };
     case "user_unavailable":
       return {
