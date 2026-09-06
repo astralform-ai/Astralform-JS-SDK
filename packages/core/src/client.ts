@@ -28,9 +28,11 @@ import type {
   TeamAgentSummary,
   TeamSummary,
   ToolApprovalRequest,
+  ToolCallRequest,
   ToolOutputMode,
   ToolOutputStub,
   ToolResultRequest,
+  ToolSource,
   VoiceConfig,
   VoicePolishEvent,
   VoicePolishRequest,
@@ -78,13 +80,32 @@ type AuthMode =
     };
 
 /** The message row as the REST API sends it. */
+interface RawToolCall {
+  call_id: string;
+  tool_name: string;
+  display_name?: string;
+  description?: string;
+  arguments?: Record<string, unknown>;
+  is_client_tool?: boolean;
+  tool_category?: string;
+  icon_url?: string;
+}
+
 interface RawMessage {
   id: string;
   conversation_id: string;
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "tool" | "system";
   content: string;
   parent_id?: string;
   created_at: string;
+  // Result typing joined from the tool call's `block_stop.final`. Every one is
+  // nullable: the server sends null when no block stop matched the row.
+  tool_calls?: RawToolCall[] | null;
+  sources?: ToolSource[] | null;
+  duration_ms?: number | null;
+  is_error?: boolean | null;
+  denied_by?: string | null;
+  denial_kind?: string | null;
 }
 
 /** ONE mapping, shared by the paged and unbounded message reads.
@@ -101,6 +122,29 @@ function toMessage(m: RawMessage): Message {
     parentId: m.parent_id,
     status: "complete" as const,
     createdAt: m.created_at,
+    // Server-joined result typing. `?? undefined` rather than `?? null` so an
+    // absent field and an explicit null both read as "the server said nothing",
+    // which is the one distinction a renderer actually makes here.
+    toolCalls: m.tool_calls?.map(toToolCallRequest) ?? undefined,
+    sources: m.sources ?? undefined,
+    durationMs: m.duration_ms ?? undefined,
+    isError: m.is_error ?? undefined,
+    deniedBy: m.denied_by ?? undefined,
+    denialKind: m.denial_kind ?? undefined,
+  };
+}
+
+/** The history row's tool call, in the shape the streaming path already uses. */
+function toToolCallRequest(t: RawToolCall): ToolCallRequest {
+  return {
+    callId: t.call_id,
+    toolName: t.tool_name,
+    displayName: t.display_name,
+    description: t.description,
+    arguments: t.arguments ?? {},
+    isClientTool: t.is_client_tool ?? false,
+    toolCategory: t.tool_category,
+    iconUrl: t.icon_url,
   };
 }
 
