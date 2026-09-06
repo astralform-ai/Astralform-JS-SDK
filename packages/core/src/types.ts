@@ -635,15 +635,60 @@ export interface Conversation {
   repository?: string | null;
 }
 
+/** One citation on a `web_search`-style tool row, as the clients parse it. */
+export interface ToolSource {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
-  role: "user" | "assistant" | "system";
+  /**
+   * `"tool"` is the role every tool-result row carries, and it was missing
+   * here — which is why those rows could not be typed at all.
+   *
+   * `"system"` is retained but DEAD: `MessageResponse.role` is
+   * `Literal["user", "assistant", "tool"]`, and the server skips system rows
+   * before responding, so it cannot occur. Narrowing the union would be a
+   * source-breaking change for anyone matching on it, so it is grouped with
+   * the other breaking cleanups for one deliberate major rather than
+   * dribbling a major out of an otherwise additive change.
+   */
+  role: "user" | "assistant" | "tool" | "system";
   content: string;
   parentId?: string;
   status: "sending" | "streaming" | "complete" | "error";
   createdAt: string;
   toolCalls?: ToolCallRequest[];
+
+  /**
+   * Result typing for a `role="tool"` row, joined server-side from the tool
+   * call's `block_stop.final`. These exist so history rendered from REST —
+   * older turns paged in on scroll, or the fallback when replay yields
+   * nothing — renders a settled tool row the way its replayed twin does,
+   * instead of as raw output under a generic label.
+   *
+   * All are `undefined` when no block stop matched, which degrades to the
+   * row's plain content.
+   */
+  sources?: ToolSource[];
+  durationMs?: number;
+  isError?: boolean;
+  /**
+   * Human-readable prose — a fixed phrase, or a policy rule's own free-text
+   * reason. PRESENCE, not value, is the denial signal: a denied tool reports
+   * `isError: false` and nothing else on the row distinguishes it.
+   */
+  deniedBy?: string;
+  /**
+   * The same denial's machine-readable half: `"policy_rule"` | `"headless"` |
+   * `"user"` | `"hook"`. Absent both when the row is not a denial and when the
+   * denial predates the field, so branch on it only after `deniedBy` has
+   * established there WAS one.
+   */
+  denialKind?: string;
 }
 
 export interface UIComponentsConfig {

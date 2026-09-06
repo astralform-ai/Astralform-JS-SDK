@@ -157,6 +157,7 @@ export type {
   ToolGrant,
   MyToolGrantsPage,
   ToolCallRequest,
+  ToolSource,
   JobCreateResponse,
   JobStatus,
   JobSummary,

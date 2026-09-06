@@ -1,5 +1,20 @@
 # Changelog
 
+## 8.5.0
+
+### Added
+
+- **A REST history row carries its tool result typing.** `toMessage` is an allowlist — it copied seven keys and dropped every other field the server sent — so `tool_calls`, `sources`, `duration_ms`, `is_error` and `denied_by`, served by `MessageResponse` since Astralform#1032, never reached a consumer of `getMessages` / `getMessagesPage`. A client rendering history from REST (older turns paged in on scroll, or the fallback when replay yields nothing, e.g. a window landing mid-turn) therefore drew every tool row as raw output under a generic label: a search result as a JSON string instead of a source list. `Message` now carries `toolCalls`, `sources`, `durationMs`, `isError` and `deniedBy`.
+- **`Message.denialKind`** — the denial's machine-readable half (`"policy_rule"` | `"headless"` | `"user"` | `"hook"`), new on the wire in Astralform#1103/#1107. `deniedBy` is prose a client SHOWS — a fixed phrase, or a policy rule's own free-text reason — so it answers *whether*, never *why*. Branch on `denialKind` only after `deniedBy` has established there was a denial: it is absent both when the row is not a denial and when the denial predates the field.
+- **`"tool"` in `Message["role"]`.** It is the role every one of these rows carries and it was not in the union at all, so a tool row could not be typed even where the data arrived.
+- **`ToolSource`** is now exported. It is the element type of `Message.sources`; `index.ts` re-exports through an explicit named list, so a type referenced by a public field still ships unnameable unless it is on that list.
+
+### Compatibility
+
+- Additive. Every new field is optional and reads `undefined` against a server that does not send it, which is the shape installed clients already render. `sources`/`durationMs`/`isError`/`deniedBy` need Astralform >= 0.69.x (#1032); `denialKind` needs the release carrying #1103.
+- **An exhaustive `switch` on `Message["role"]` needs a new arm.** Widening a union in OUTPUT position is the source-breaking direction — a consumer whose `default:` feeds `assertNever(msg.role)` stops compiling, because `"tool"` is no longer assignable to `never`. Shipped as a minor anyway: the alternative is a major for a bug fix, and any consumer this reaches was already being handed those rows mistyped.
+- `Message["role"]` **gains** `"tool"` and retains `"system"`. `"system"` is dead — `MessageResponse.role` is `Literal["user", "assistant", "tool"]` and the server skips system rows before responding — but narrowing the union is source-breaking for anyone matching on it, so it is grouped with the other breaking cleanups for one deliberate major rather than dribbling a major out of an additive change.
+
 ## 8.4.0
 
 ### Added
