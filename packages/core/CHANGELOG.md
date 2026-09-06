@@ -16,6 +16,10 @@
 
 ### Fixed during review
 
+- `historyPageEnd` now carries `complete`. A page whose replay stopped partway leaves its prefix drawn in the live transcript and its cursor deliberately unadvanced, so the next request replays those same turns — the event has to say which it was, and a consumer must drop what it buffered when `complete` is `false`.
+- The message load is windowed only when the restore will actually replay and page. On the path where a send already owns the view, the job list is never fetched and no turn cursor is written, so windowing there truncated the transcript to one page with no pager able to extend it — worse than the unbounded load that path did before.
+- `hasMoreTurns` is written by the job page alone. Written from the message page it could be true while the cursor was null, so the pager failed its own guard on every call and a sentinel driven off the flag could never retire.
+
 - A page whose replay stopped partway (a live turn taking the view over mid-walk) still advanced the cursor, because `break` falls through to it — leaving a permanent, silent hole in the scrolled-up transcript with `historyPageEnd` reporting success over it. The cursor now moves only on a complete walk; the bracket still closes either way.
 - The span bound a prepended page plans against was seeded from `jobs[].message_id`, which is NOT NULL on the wire and can name a row absent from the message list (a goal continuation's seed is hidden from it). An unresolved bound then fell back to the WHOLE window — the unbounded case that re-emits every earlier prompt as a steer bubble. It is now seeded from the prompt the plan actually drew, and an unresolved bound fails toward a missing bubble rather than a duplicated one.
 - `oldestTurnCursor` survived a `loadConversation` to a different conversation, so a `loadEarlierTurns` on the new one could pass its guard holding the old one's cursor and prepend whatever that returned. The window is cleared where it is owned.

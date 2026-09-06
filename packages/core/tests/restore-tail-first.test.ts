@@ -309,21 +309,32 @@ describe("tail-first restore", () => {
     // And the cursor did NOT skip the turns it failed to draw.
     expect(h.session.oldestTurnCursor).toBe(cursorBefore);
     expect(h.session.hasMoreTurns).toBe(true);
-    // The bracket still closed, so a consumer buffering between them is not
-    // left holding an open page.
-    expect(h.mgr.some((e) => e.type === "historyPageEnd")).toBe(true);
+    // The bracket closed, AND it says the page was partial — without which a
+    // consumer keeps the prefix it buffered and the retry (the cursor did not
+    // advance) draws those same turns a second time.
+    const end = h.mgr.find((e) => e.type === "historyPageEnd") as
+      | { complete: boolean; hasMore: boolean }
+      | undefined;
+    expect(end).toBeDefined();
+    expect(end!.complete).toBe(false);
+    expect(end!.hasMore).toBe(true);
   });
 
-  it("does not re-draw earlier prompts when the span bound cannot resolve", async () => {
-    // The bound is the oldest prompt already drawn. Seeded from the WIRE
-    // field it could name a row absent from the message list — `message_id` is
-    // NOT NULL and a goal continuation's seed is hidden from that list — and
-    // an unresolved bound used to fall back to the whole window, which is the
-    // unbounded case that re-emits every earlier prompt as a steer bubble.
-    const h = harness(25, { hiddenPromptAt: 15 });
+  it("does not re-draw earlier prompts when a page holds a hidden prompt", async () => {
+    // A goal continuation's seed is hidden from the message list, so a turn in
+    // the page can have a `message_id` that resolves to nothing. The prompt
+    // is hidden at 20 — the MIDDLE of the newest page (15…24), not its head:
+    // `planRestore` classifies a job as a continuation only past `firstLinked`,
+    // so an unlinked HEAD job sends the whole page down the positional branch
+    // instead and pairs it with the wrong prompts entirely. Hiding the head is
+    // a different scenario wearing this one's name.
+    const h = harness(25, { hiddenPromptAt: 20 });
     await h.manager.switchTo("conv-a");
     await flush();
     const first = drawn(h.chat);
+    // The head of the newest page still pairs with its own prompt — i.e. the
+    // fixture did not tip `planRestore` into the positional branch.
+    expect(first[0]).toBe("prompt 15");
 
     await h.manager.loadEarlierTurns("conv-a");
     await flush();
@@ -353,6 +364,48 @@ describe("tail-first restore", () => {
     h.urls.length = 0;
     expect(await h.manager.loadEarlierTurns("conv-b")).toBe(0);
     expect(h.urls.some((u) => u.includes(`before=${aCursor}`))).toBe(false);
+  });
+
+  it("does not truncate a restore that will never replay or page", async () => {
+    // When a send has already taken the view, the job list is not fetched and
+    // `replayHistory` never runs, so nothing writes a turn cursor. Windowing
+    // the MESSAGE load there truncated the transcript to one page with no
+    // pager able to extend it — strictly worse than the unbounded load this
+    // path did before the PR.
+    const h = harness(25);
+    h.session.isStreaming = true; // a send owns the view
+
+    await h.manager.switchTo("conv-a");
+    await flush();
+
+    // The whole branch loaded, not a 40-message window.
+    expect(h.session.messages.length).toBe(25);
+    // And no load-more affordance is offered, because nothing can serve it.
+    expect(h.session.hasMoreTurns).toBe(false);
+    const windowed = h.urls.filter(
+      (u) => u.includes("/messages") && u.includes("limit="),
+    );
+    expect(windowed).toEqual([]);
+  });
+
+  it("never claims more turns without a cursor to fetch them with", async () => {
+    // `hasMoreTurns` gates a pager that needs a cursor. Written from the
+    // MESSAGE page it could be true while the cursor was null, so the pager
+    // failed its own guard on every call and a sentinel driven off the flag
+    // could never retire.
+    // 60 turns, so the 40-message window genuinely reports older MESSAGES —
+    // without that the message page never says `hasMore` and this asserts
+    // nothing about where the flag comes from.
+    const h = harness(60);
+    await h.session.loadConversation("conv-a", { limit: 40 });
+    expect(h.session.hasMoreTurns).toBe(false);
+    expect(h.session.oldestTurnCursor).toBe(null);
+
+    // And after a real restore the two agree.
+    await h.manager.switchTo("conv-a");
+    await flush();
+    expect(h.session.hasMoreTurns).toBe(true);
+    expect(h.session.oldestTurnCursor).not.toBe(null);
   });
 
   it("degrades to one complete page against a server without the cursor", async () => {

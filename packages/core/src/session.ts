@@ -1231,11 +1231,14 @@ export class ChatSession {
     for (const m of pending) {
       if (!stillPending.includes(m)) this.pendingUserMessages.delete(m.id);
     }
-    // Recorded only when the page actually came back paged. A `null` page means
-    // either no window was asked for or the paged read failed and the unbounded
-    // one served it — both of which mean "everything is here", so the sentinel
-    // must not offer to load more.
-    this.hasMoreTurns = page?.hasMore ?? false;
+    // `oldestMessageSeq` only. `hasMoreTurns` is NOT written here: this page
+    // answers "are there older MESSAGES", and the flag gates a pager that asks
+    // for older TURNS and needs a cursor this read cannot supply. Writing it
+    // from here left the two disagreeing on the one path where the job list is
+    // never fetched — flag true, cursor null — so the pager failed its own
+    // guard on every call and a sentinel driven off the flag could never
+    // retire. The job page is the only writer that can turn it on, because it
+    // is the only one that also supplies the cursor.
     this.oldestMessageSeq = page?.nextBeforeSeq ?? null;
     this.setMessages(
       stillPending.length ? [...messages, ...stillPending] : messages,

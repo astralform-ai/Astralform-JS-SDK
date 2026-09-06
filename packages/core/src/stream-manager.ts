@@ -111,6 +111,22 @@ export type StreamManagerEvent =
       position: "prepend";
       /** Whether anything older still remains after this page. */
       hasMore: boolean;
+      /**
+       * Did the whole page replay?
+       *
+       * `false` when a live turn took the view over mid-walk, or a turn
+       * started. The conversation has NOT moved in either case, so the turns
+       * already emitted are sitting in the live transcript and the id on this
+       * event does not tell a consumer to drop them — while the cursor has
+       * deliberately not advanced, so the very next page request replays the
+       * same turns from the start.
+       *
+       * **A consumer must discard everything it buffered since
+       * `historyPageStart` when this is `false`.** That is cheap by
+       * construction: a page is replayed into an isolated view and merged only
+       * at this event, precisely because block paths collide across turns.
+       */
+      complete: boolean;
     }
   | { type: "conversationChanged"; conversationId: string | null }
   | {
@@ -963,9 +979,16 @@ export class StreamManager {
     // other read that scaled with the whole transcript, and leaving it
     // unbounded would keep time-to-content tracking conversation length
     // however few turns are replayed.
-    const loadRequest = this.session.loadConversation(conversationId, {
-      limit: RESTORE_MESSAGE_PAGE_SIZE,
-    });
+    // Windowed ONLY when this restore will actually replay and page. Gated on
+    // the same flag as `jobsRequest`: when a send has already taken the view,
+    // the job list is never fetched, `replayHistory` never runs, and nothing
+    // writes a turn cursor — so a windowed load there would truncate the
+    // transcript to one page with no pager able to extend it, which is worse
+    // than the unbounded load this path did before.
+    const loadRequest = this.session.loadConversation(
+      conversationId,
+      announcedRestoring ? { limit: RESTORE_MESSAGE_PAGE_SIZE } : undefined,
+    );
     // Handed to `replayHistory` rather than joined here, so that a stalled job
     // list cannot hold up the checks below, and so that its failure still
     // arrives inside the try that already treats a failed history load as
@@ -1299,6 +1322,7 @@ export class StreamManager {
         conversationId,
         position: "prepend",
         hasMore: completed ? page.hasMore : true,
+        complete: completed,
       });
       return emitted;
     } finally {
@@ -1336,8 +1360,6 @@ export class StreamManager {
       const jobs = page.jobs;
       // Recorded before the first `stopReplay` below, so a superseded restore
       // leaves no cursor pointing into a conversation the session has left.
-      this.session.hasMoreTurns = page.hasMore;
-      this.session.oldestTurnCursor = page.nextBefore;
       if (stopReplay()) return false;
       // Every job EXCEPT the one we are about to reconnect to. The probe and
       // this list now LEAVE together, but they are still answered
@@ -1423,12 +1445,19 @@ export class StreamManager {
         })),
       });
 
-      // Seeds the span bound `loadEarlierTurns` plans against: the oldest
-      // prompt this restore actually DREW. Taken from the plan rather than
-      // from `jobs[].message_id`, which is NOT NULL on the wire and can name a
-      // row absent from the message list (a goal continuation's seed is hidden
-      // from it) — a boundary that does not resolve is what re-opens the
-      // duplicate-steer hole the bound exists to close.
+      // Cursor and span bound, written TOGETHER and on this side of every
+      // abort check above. Split across one, an aborted replay left the cursor
+      // set with the bound still null — and a null bound takes the one branch
+      // in `loadEarlierTurns` that is deliberately unbounded (the newest page's
+      // span IS the whole window), which is the duplicate-steer state the
+      // bound exists to prevent.
+      //
+      // The bound is the oldest prompt this restore actually DREW, taken from
+      // the plan rather than from `jobs[].message_id` — the latter is NOT NULL
+      // on the wire and can name a row absent from the message list, and a
+      // bound that does not resolve re-opens the same hole.
+      this.session.hasMoreTurns = page.hasMore;
+      this.session.oldestTurnCursor = page.nextBefore;
       this.oldestDrawnMessageId = plan[0]?.messageId ?? null;
 
       // Fetch every turn's events up front, in PARALLEL. The backend strips
