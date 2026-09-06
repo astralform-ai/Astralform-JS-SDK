@@ -1,5 +1,23 @@
 # Changelog
 
+## 7.6.0
+
+### Added
+
+- **`StreamManager.loadEarlierTurns(conversationId)`** — fetch and replay the next OLDER page of turns, for a scroll-to-top sentinel. Resolves to the number of turns emitted; `0` when nothing older remains, a page is already in flight, or the view was taken over mid-fetch. The page is replayed at FULL fidelity — the same per-job events wave the newest page uses, just later — so a turn paged in is byte-identical to the same turn rendered live. Rebuilding older turns from the message list instead would have been cheaper and wrong: the message store persists no thinking blocks and no custom events, so scrolled-up history would visibly differ from itself.
+- **`historyPageStart` / `historyPageEnd` manager events**, bracketing a paged-in page and carrying `position: "prepend"`. The SDK says which turns and in what order; where they go is the consumer's business. That split is not fastidiousness: block paths are allocated per job and COLLIDE across turns, so a consumer that indexes blocks by wire path cannot merge an older page into that index and must replay it in isolation. `historyPageEnd` carries `hasMore` so a sentinel can retire itself.
+- **`session.hasMoreTurns` / `isLoadingEarlierTurns`**, the transcript's analogue of `hasMoreConversations` / `isLoadingConversations`.
+- **`client.getConversationJobsPage()` and `client.getMessagesPage()`**, the paged reads behind the above, plus the `JobsPage` / `MessagesPage` / `ConversationJob` types.
+
+### Changed
+
+- **A restore renders the newest page of turns and pages the rest on demand.** It used to fetch every message, every job, and every job's full event log before painting anything, so time-to-content scaled with the size of the transcript — 6 turns and 141k events measured at ~16 s (astralform-ai/Astralform#1014). 7.5.1 fixed round-trip DEPTH by opening the three initial requests together; this fixes COUNT and BYTES. `restore` now asks for the newest `RESTORE_TURN_PAGE_SIZE` turns and `RESTORE_MESSAGE_PAGE_SIZE` messages, so the requests before first render are `1 + 1 + 1 + N` where N is the page size — **independent of conversation length**, which is the whole of astralform-ai/Astralform#1052. The job list is still fired unawaited beside the probe: the first page needs no cursor, so paging costs nothing in round-trip depth.
+- **`session.loadConversation(id, { limit })`** takes an optional window. Without it the behaviour is unchanged — the whole active branch, exactly as before. With it, `session.messages` becomes the newest page and `loadEarlierTurns` prepends older ones. Parameterised rather than split into a second method deliberately: the ABA-safe load token and the pending-send reconciliation around it are subtle enough that two copies would drift, and the copy that went stale would be the paged one a new client actually uses. A failed paged read falls back to local storage rather than re-fetching the whole branch over the network.
+
+### Compatibility
+
+- **Degrades against an Astralform without the cursor.** The backend gained `limit`/`before` on the job list in 0.69.50; an older server ignores the unknown query parameter and returns the whole list with no paging headers, which reads here as a single complete page with nothing older. So a 7.6.0 client against an older backend behaves exactly as 7.5.1 did. No wire field was removed or changed shape.
+
 ## 7.5.1
 
 ### Fixed

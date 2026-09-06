@@ -1,4 +1,5 @@
 import { AstralformClient } from "./client.js";
+import type { MessagesPage } from "./client.js";
 import { InMemoryStorage, type ChatStorage } from "./storage.js";
 import { ToolRegistry } from "./tools.js";
 import { ProtocolRegistry } from "./protocol-registry.js";
@@ -131,6 +132,23 @@ export class ChatSession {
    * cheaper than adding a count query to every list call.
    */
   hasMoreConversations = false;
+
+  /** True when the loaded window has OLDER turns behind it — the transcript's
+   *  analogue of `hasMoreConversations`, and what a scroll-to-top sentinel
+   *  gates on. False until a windowed load says otherwise, so a consumer that
+   *  never asks for a window never offers to page. */
+  hasMoreTurns = false;
+
+  /** Cursor for the next older MESSAGE page (`before_seq`), or null. */
+  oldestMessageSeq: number | null = null;
+
+  /** Cursor for the next older TURN page (`before`), or null. Set by the
+   *  restore that loaded the newest page; consumed by `loadEarlierTurns`. */
+  oldestTurnCursor: string | null = null;
+
+  /** Guards against a sentinel that re-fires while a page is still in flight
+   *  and stacks duplicate turns — the same guard `loadMoreConversations` uses. */
+  isLoadingEarlierTurns = false;
   /** True while ``loadMoreConversations`` is in flight. */
   isLoadingConversations = false;
   messages: Message[] = [];
@@ -1116,7 +1134,10 @@ export class ChatSession {
    * Load conversation context (messages) without replaying events.
    * Used before reconnectToJob — SSE replay handles event replay.
    */
-  async loadConversation(id: string): Promise<void> {
+  async loadConversation(
+    id: string,
+    options?: { limit?: number },
+  ): Promise<void> {
     // Claimed BEFORE the await, so the check below is "am I still the newest
     // load?" rather than "does the session still point where I left it?".
     const load = ++this.loadGeneration;
@@ -1132,9 +1153,34 @@ export class ChatSession {
     // Read BEFORE the fetch goes out: the server evaluates it later still, so
     // any row already proven committed at this point has to be in the reply.
     const rowsKnownAtIssue = this.serverRowsKnown;
-    const messages = await this.client
-      .getMessages(id)
-      .catch(() => this.storage.fetchMessages(id));
+    // Windowed when a limit is given: `messages` becomes the newest PAGE and
+    // `loadEarlierTurns` prepends older ones, rather than the whole branch
+    // arriving up front. Parameterised rather than split into a second method
+    // on purpose — everything below this line (the ABA-safe load token, the
+    // pending-send reconciliation) is subtle enough that two copies would
+    // drift, and the copy that went stale would be the paged one a new client
+    // actually uses.
+    //
+    // The local-storage fallback is unwindowed either way: it is a cache of
+    // what this browser last saw, has no cursor, and a restore that has fallen
+    // back to it has already lost the server.
+    let page: MessagesPage | null = null;
+    let messages: Message[];
+    if (options?.limit == null) {
+      messages = await this.client
+        .getMessages(id)
+        .catch(() => this.storage.fetchMessages(id));
+    } else {
+      page = await this.client
+        .getMessagesPage(id, { limit: options.limit })
+        .catch(() => null);
+      // Straight to storage on failure, NOT to the unbounded endpoint. Falling
+      // through to a second network call would double the cost against exactly
+      // the server that just failed, and would quietly undo the windowing on
+      // the path where it matters most. Same shape as the branch above: one
+      // network attempt, then the local cache.
+      messages = page ? page.messages : await this.storage.fetchMessages(id);
+    }
     // Nothing serializes callers, and this fetch is not instant. Install these
     // unconditionally and the session holds ONE conversation's id beside
     // ANOTHER's messages — the pair `send` (which posts to `conversationId`)
@@ -1174,6 +1220,12 @@ export class ChatSession {
     for (const m of pending) {
       if (!stillPending.includes(m)) this.pendingUserMessages.delete(m.id);
     }
+    // Recorded only when the page actually came back paged. A `null` page means
+    // either no window was asked for or the paged read failed and the unbounded
+    // one served it — both of which mean "everything is here", so the sentinel
+    // must not offer to load more.
+    this.hasMoreTurns = page?.hasMore ?? false;
+    this.oldestMessageSeq = page?.nextBeforeSeq ?? null;
     this.setMessages(
       stillPending.length ? [...messages, ...stillPending] : messages,
     );
@@ -1457,6 +1509,26 @@ export class ChatSession {
    * tracking ids client-side cannot discover a row that moved into a region
    * already scanned.
    */
+  /**
+   * Put an older page of messages in FRONT of the loaded window.
+   *
+   * Pending optimistic sends stay at the tail. They are the newest thing in
+   * the session by construction — a message this browser has posted and the
+   * server has not confirmed — so sorting them in with a page of history
+   * would move an unsent bubble into the middle of the transcript.
+   *
+   * Ids already present are dropped rather than duplicated: pages are cut on a
+   * row sequence, but a turn landing mid-walk can still put one message in two
+   * pages, and a doubled prompt is more visible than a missing one.
+   */
+  prependMessages(older: Message[]): void {
+    if (!older.length) return;
+    const known = new Set(this.messages.map((m) => m.id));
+    const fresh = older.filter((m) => !known.has(m.id));
+    if (!fresh.length) return;
+    this.setMessages([...fresh, ...this.messages]);
+  }
+
   async loadMoreConversations(): Promise<Conversation[]> {
     // Scroll handlers fire far faster than the request completes; without this
     // guard every frame would refetch the same offset.

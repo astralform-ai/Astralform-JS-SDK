@@ -75,6 +75,62 @@ type AuthMode =
       endUserId: string | null;
     };
 
+/** The message row as the REST API sends it. */
+interface RawMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  parent_id?: string;
+  created_at: string;
+}
+
+/** ONE mapping, shared by the paged and unbounded message reads.
+ *
+ *  Two copies would drift the moment a field is added to one of them, and the
+ *  paged path is the one a new client uses — so the copy that went stale would
+ *  be the one nobody was reading while writing the bug. */
+function toMessage(m: RawMessage): Message {
+  return {
+    id: m.id,
+    conversationId: m.conversation_id,
+    role: m.role,
+    content: m.content,
+    parentId: m.parent_id,
+    status: "complete" as const,
+    createdAt: m.created_at,
+  };
+}
+
+/**
+ * One turn as the conversation's job list describes it.
+ *
+ * Deliberately WIDER than `restore-plan.ts`'s `RestoreJob`, which is the
+ * narrow structural input `planRestore` needs. This is the wire shape, and
+ * typing the page with the narrow one would drop `status` and `metrics` on
+ * the floor — silently, since a narrower type is assignable.
+ */
+export interface ConversationJob {
+  job_id: string;
+  status: string;
+  message_id?: string | null;
+  metrics?: Record<string, unknown>;
+}
+
+/** One page of turns, plus where the next older page starts. */
+export interface JobsPage {
+  jobs: ConversationJob[];
+  hasMore: boolean;
+  nextBefore: string | null;
+}
+
+/** One page of messages, plus where the next older page starts. */
+export interface MessagesPage {
+  messages: Message[];
+  hasMore: boolean;
+  nextBeforeSeq: number | null;
+}
+
 export class AstralformClient {
   private readonly baseURL: string;
   private readonly fetchFn: typeof globalThis.fetch;
@@ -306,6 +362,28 @@ export class AstralformClient {
   // is the original bug (headers arrive, body stalls, caller hangs forever).
   // `request()` survives for `del()`, which never reads the body.
 
+  /**
+   * A GET whose response HEADERS the caller needs, not only its body.
+   *
+   * Paging metadata rides on headers (`X-Has-More`, `X-Next-Before`) because
+   * the bodies are bare lists that installed clients already parse as such.
+   * Reading them needs the `Response`, which `get<T>` discards.
+   *
+   * Note the shape: the body is parsed INSIDE the raced callback, exactly as
+   * `get`/`post`/`patch` do. See the comment above them — doing the parse
+   * outside the deadline is the original hang, and this method is not an
+   * exception to it.
+   */
+  private async getWithHeaders<T>(
+    path: string,
+  ): Promise<{ data: T; headers: Headers }> {
+    return this.withDeadline(async (signal) => {
+      const response = await this.send("GET", path, undefined, signal);
+      const data = (await response.json()) as T;
+      return { data, headers: response.headers };
+    });
+  }
+
   async get<T>(path: string): Promise<T> {
     return this.withDeadline(async (signal) => {
       const response = await this.send("GET", path, undefined, signal);
@@ -433,26 +511,74 @@ export class AstralformClient {
     return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));
   }
 
+  /**
+   * One page of a conversation's turns, newest-first window returned oldest-first.
+   *
+   * `hasMore` asks "are there OLDER turns beyond this page" — the only
+   * direction a restore pages in, since it starts at the tail.
+   *
+   * **Degrades on an old backend.** A server without the cursor ignores the
+   * unknown `limit` query param and returns the whole list, and its response
+   * carries neither header — which reads here as one page with nothing older,
+   * i.e. exactly today's behaviour. That is why absent headers must mean
+   * `hasMore: false` rather than an error: the fallback has to be "everything
+   * arrived", not "paging is broken".
+   */
+  async getConversationJobsPage(
+    conversationId: string,
+    options?: { limit?: number; before?: string },
+  ): Promise<JobsPage> {
+    const params = new URLSearchParams();
+    if (options?.limit != null) params.set("limit", String(options.limit));
+    if (options?.before) params.set("before", options.before);
+    const query = params.toString();
+    const { data, headers } = await this.getWithHeaders<ConversationJob[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/jobs${
+        query ? `?${query}` : ""
+      }`,
+    );
+    return {
+      jobs: data,
+      hasMore: headers.get("X-Has-More") === "true",
+      nextBefore: headers.get("X-Next-Before"),
+    };
+  }
+
+  /**
+   * One page of a conversation's messages, oldest-first within the page.
+   *
+   * Deliberately NOT folded into `getMessages`: that method is public surface
+   * whose `Message[]` return type callers depend on, and the server keeps its
+   * unbounded branch for exactly the same reason.
+   *
+   * Degrades like `getConversationJobsPage` — an old server ignores `limit`
+   * and returns the whole branch with no headers, which reads as a single
+   * complete page.
+   */
+  async getMessagesPage(
+    conversationId: string,
+    options: { limit: number; beforeSeq?: number },
+  ): Promise<MessagesPage> {
+    const params = new URLSearchParams({ limit: String(options.limit) });
+    if (options.beforeSeq != null) {
+      params.set("before_seq", String(options.beforeSeq));
+    }
+    const { data, headers } = await this.getWithHeaders<RawMessage[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/messages?${params}`,
+    );
+    const next = headers.get("X-Next-Before-Seq");
+    return {
+      messages: data.map(toMessage),
+      hasMore: headers.get("X-Has-More") === "true",
+      nextBeforeSeq: next == null ? null : Number(next),
+    };
+  }
+
   async getMessages(conversationId: string): Promise<Message[]> {
-    const raw = await this.get<
-      {
-        id: string;
-        conversation_id: string;
-        role: "user" | "assistant" | "system";
-        content: string;
-        parent_id?: string;
-        created_at: string;
-      }[]
-    >(`/v1/conversations/${encodeURIComponent(conversationId)}/messages`);
-    return raw.map((m) => ({
-      id: m.id,
-      conversationId: m.conversation_id,
-      role: m.role,
-      content: m.content,
-      parentId: m.parent_id,
-      status: "complete" as const,
-      createdAt: m.created_at,
-    }));
+    const raw = await this.get<RawMessage[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+    );
+    return raw.map(toMessage);
   }
 
   /**
