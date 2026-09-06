@@ -741,6 +741,42 @@ export interface SkillInfo {
   isEnabled: boolean;
 }
 
+/**
+ * A slash command the active agent offers — the system commands (`/new`,
+ * `/goal`, `/plan`, …) followed by its enabled skills, from
+ * `GET /v1/skills/commands`.
+ *
+ * The backend builds this list once and every surface reads it, so the web
+ * composer's "/" menu and the Telegram bot's command menu cannot drift.
+ */
+export interface SlashCommand {
+  /** What the user types after the slash, and what the backend parses. */
+  name: string;
+  /** Human-readable label for the menu row. May be empty. */
+  displayName: string;
+  /** One line describing what the command does. May be empty. */
+  description: string;
+  /**
+   * The argument shape a row shows after the name, e.g. `"[goal]"`. Empty
+   * when the command takes none — never undefined, so a renderer can
+   * concatenate it without a guard.
+   */
+  argsHint: string;
+  /**
+   * Which surfaces can run this command (`"web"`, `"telegram"`). Only
+   * populated when the caller asked for `"all"`; a surface-scoped list has
+   * already filtered on it. Empty rather than undefined for the same reason
+   * as `argsHint`.
+   */
+  surfaces: string[];
+}
+
+/**
+ * Who will execute the commands {@link AstralformClient.listSkillCommands}
+ * returns. `"web"` is the server's default: what `POST /v1/jobs` runs itself.
+ */
+export type SlashCommandSurface = "web" | "telegram" | "all";
+
 // TodoItem is imported from custom-events.ts and re-exported above.
 
 // =============================================================================

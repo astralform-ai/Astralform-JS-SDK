@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.4.0
+
+### Added
+
+- **`client.listSkillCommands(surface?)`** — the active agent's slash commands (`GET /v1/skills/commands`), returning a typed `SlashCommand[]`. The endpoint has been reachable through the raw path since it shipped, and both clients that read it — astralform-chat's `useSlashCommands` and the iOS app's `SessionStore` — declared their own copy of the wire type. This gives that type one home, the same move `getSkills` / `getAgents` / `getModels` already made for their reads.
+- **The `SlashCommand` and `SlashCommandSurface` types.** `SlashCommand` is camelCase like every other domain model here (`displayName`, `argsHint`), not the snake_case the endpoint sends — a snake_case type next to three camelCase ones would reintroduce the inconsistency this method exists to remove. `argsHint` and `surfaces` are non-optional and normalize to `""` / `[]`: a menu concatenates the hint into a label and iterates the surfaces, so absence has to arrive as the empty value the server means rather than as `undefined`.
+
+### Compatibility
+
+- Purely additive; no existing call changes. Omitting `surface` sends no query parameter at all — the server already defaults to `web`, so the request is byte-identical to the raw path clients call today. Only `"telegram"` and `"all"` spend a parameter.
+
 ## 8.3.0
 
 ### Added

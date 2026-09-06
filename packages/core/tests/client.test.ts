@@ -424,6 +424,62 @@ describe("AstralformClient", () => {
     expect(models[1]!.contextWindow).toBeNull();
   });
 
+  it("listSkillCommands camelizes the row and only names a non-default surface", async () => {
+    const urls: string[] = [];
+    const mockFetch: typeof globalThis.fetch = async (input) => {
+      urls.push(typeof input === "string" ? input : (input as Request).url);
+      return new Response(
+        JSON.stringify([
+          {
+            name: "goal",
+            display_name: "Goal",
+            description: "Set a goal for this conversation",
+            args_hint: "[goal]",
+            surfaces: ["web", "telegram"],
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+
+    const web = await client.listSkillCommands();
+    expect(web).toHaveLength(1);
+    expect(web[0]!.name).toBe("goal");
+    expect(web[0]!.displayName).toBe("Goal");
+    expect(web[0]!.argsHint).toBe("[goal]");
+    expect(web[0]!.surfaces).toEqual(["web", "telegram"]);
+
+    await client.listSkillCommands("telegram");
+
+    // The default surface is the server's default, so the request stays
+    // byte-identical to what installed clients already send; only a caller
+    // asking for something else spends a query parameter.
+    expect(urls[0]).toBe("http://localhost:8000/v1/skills/commands");
+    expect(urls[1]).toBe(
+      "http://localhost:8000/v1/skills/commands?surface=telegram",
+    );
+  });
+
+  it("listSkillCommands defaults the fields the server may omit", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/skills/commands": {
+        status: 200,
+        body: [{ name: "tasks", display_name: "Tasks", description: "" }],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const commands = await client.listSkillCommands();
+
+    // `args_hint` and `surfaces` have server-side defaults and an older
+    // backend omits them entirely. A consumer renders `argsHint` straight
+    // into a row and iterates `surfaces`, so neither may arrive undefined.
+    expect(commands[0]!.argsHint).toBe("");
+    expect(commands[0]!.surfaces).toEqual([]);
+  });
+
   it("submitToolResult posts to /v1/tool-result", async () => {
     let capturedBody: string | undefined;
     const mockFetch: typeof globalThis.fetch = async (_input, init) => {
