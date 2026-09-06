@@ -76,6 +76,7 @@ export type {
   MemoryRecord,
   MemoryRecallPayload,
   MemoryUpdatePayload,
+  MemoryProviderErrorPayload,
   DesktopStreamPayload,
   AttachmentStagedPayload,
   WorkspaceReadyPayload,
@@ -84,6 +85,8 @@ export type {
   ToolApprovalGrantedPayload,
   ToolPermissionDeniedPayload,
   ToolHarnessWarningPayload,
+  ToolProgressPayload,
+  NestedLlmUsagePayload,
   UserUnavailablePayload,
   PromptSuggestionPayload,
 } from "./custom-events.js";

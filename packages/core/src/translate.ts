@@ -242,7 +242,7 @@ export function translateCustomEvent(
         callId: (data.call_id as string) ?? "",
         stream: (data.stream as string) ?? "progress",
         chunk: (data.chunk as string) ?? "",
-        tool: (data.tool as string | null) ?? null,
+        toolName: (data.tool as string | null) ?? null,
         item: (data.item as Record<string, unknown> | null) ?? null,
         index: (data.index as number | null) ?? null,
         total: (data.total as number | null) ?? null,

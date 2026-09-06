@@ -183,7 +183,7 @@ describe("translateCustomEvent", () => {
       callId: "call-7",
       stream: "progress",
       chunk: "Step 2/5: fetching sources",
-      tool: null,
+      toolName: null,
       item: null,
       index: null,
       total: null,
@@ -214,7 +214,7 @@ describe("translateCustomEvent", () => {
     expect(ev).toMatchObject({
       type: "tool_progress",
       callId: "call-7",
-      tool: "web_search",
+      toolName: "web_search",
       index: 0,
       total: 5,
       item: { url: "https://astralform.ai" },

@@ -169,8 +169,9 @@ export interface ToolProgressPayload {
   stream: string;
   /** Live progress text to append; the backend newline-terminates chunks. */
   chunk: string;
-  /** Emitting tool, e.g. "web_search" | "deep_research" | "generate_video". */
-  tool?: string | null;
+  /** Emitting tool, e.g. "web_search" | "deep_research" | "generate_video".
+   *  Wire key is `tool`; camelCase here, like the rest of this catalog. */
+  toolName?: string | null;
   /** Structured metadata riding alongside `chunk` for a richer UI — a search
    *  result ({title,url,snippet}) or a research phase record. */
   item?: Record<string, unknown> | null;

@@ -561,8 +561,10 @@ export type ChatEvent =
       /** Live progress text to append; the backend newline-terminates chunks. */
       chunk: string;
       /** Emitting tool, e.g. "web_search" | "deep_research" | "generate_video".
-       *  Every producer sends it; null only if a future one does not. */
-      tool?: string | null;
+       *  Every producer sends it; null only if a future one does not. The wire
+       *  key is `tool`, but this layer chooses consumer-facing names rather than
+       *  inheriting them, and every sibling tool event calls it `toolName`. */
+      toolName?: string | null;
       /** Structured metadata riding alongside `chunk` for a richer UI — a search
        *  result ({title,url,snippet}) or a research phase record. Null when the
        *  producer sends none. */
