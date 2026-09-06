@@ -1141,6 +1141,17 @@ export class ChatSession {
     // Claimed BEFORE the await, so the check below is "am I still the newest
     // load?" rather than "does the session still point where I left it?".
     const load = ++this.loadGeneration;
+    // The turn-paging window belongs to the conversation being left. Cleared
+    // HERE, not only at the manager's pointer move: `loadConversation` is a
+    // public entry point and the documented windowed one, so a consumer that
+    // calls it directly bypasses the manager entirely. Left standing, the next
+    // `loadEarlierTurns` passes its guard holding the PREVIOUS conversation's
+    // cursor and prepends whatever that returns into this one.
+    //
+    // `hasMoreTurns` is rewritten at the end of this function from the page
+    // actually loaded; the cursor has no value until a restore fetches turns.
+    this.oldestTurnCursor = null;
+    this.oldestMessageSeq = null;
     this.conversationId = id;
     // NOT while a turn is live. `resetStreamingState` nulls `currentTextPath`,
     // and the live turn's `block_start` has already gone by — so every later

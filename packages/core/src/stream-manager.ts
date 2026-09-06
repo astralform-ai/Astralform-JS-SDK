@@ -1138,6 +1138,15 @@ export class StreamManager {
    * Resolves to the number of turns emitted; 0 when there is nothing older,
    * a page is already in flight, or the view was taken over mid-fetch.
    */
+  /** User prompts from a slice of the message window, in plan input shape. */
+  private static userMessagesOf(
+    messages: { id: string; role: string; content: string }[],
+  ): { id: string; content: string }[] {
+    return messages
+      .filter((m) => m.role === "user")
+      .map((m) => ({ id: m.id, content: m.content }));
+  }
+
   async loadEarlierTurns(conversationId: string): Promise<number> {
     const session = this.session;
     // Same guard as `loadMoreConversations`: a scroll sentinel fires far faster
@@ -1217,11 +1226,16 @@ export class StreamManager {
         claimedMessageIds: page.jobs.map((j) => j.message_id),
         userMessages: (() => {
           const all = session.messages;
-          const cut = boundary ? all.findIndex((m) => m.id === boundary) : -1;
-          return all
-            .slice(0, cut < 0 ? all.length : cut)
-            .filter((m) => m.role === "user")
-            .map((m) => ({ id: m.id, content: m.content }));
+          if (!boundary) return StreamManager.userMessagesOf(all);
+          const cut = all.findIndex((m) => m.id === boundary);
+          // An unresolved boundary falls back to an EMPTY span, not the whole
+          // window. The window is the unbounded case this bound exists to
+          // prevent — every message of an already-drawn turn comes back
+          // unclaimed and is re-emitted as a steer — so defaulting to it turns
+          // a lookup miss into the exact bug. Failing the other way costs a
+          // prompt bubble on this page; failing that way duplicates every
+          // prompt above it.
+          return cut < 0 ? [] : StreamManager.userMessagesOf(all.slice(0, cut));
         })(),
       });
 
@@ -1234,12 +1248,16 @@ export class StreamManager {
       const byJob = new Map(
         page.jobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
       );
+      let completed = true;
       for (const step of plan) {
         // Per STEP, not just before the loop. `replayTurn` emits synchronously
         // into every handler, and nothing in the `on()` contract stops a
         // handler driving the manager straight back — the same re-entrancy
         // door the newest-page walk guards.
-        if (stop()) break;
+        if (stop()) {
+          completed = false;
+          break;
+        }
         if (step.kind === "steer") {
           session.replayTurn(conversationId, [], step.content, step.messageId, true);
         } else {
@@ -1253,20 +1271,34 @@ export class StreamManager {
         emitted++;
       }
 
-      // Advanced only after the page is actually emitted, so a run that stops
-      // partway leaves the cursor where it was and the page can be retried
-      // rather than skipped.
-      session.hasMoreTurns = page.hasMore;
-      session.oldestTurnCursor = page.nextBefore;
-      if (messages) session.oldestMessageSeq = messages.nextBeforeSeq;
-      this.oldestDrawnMessageId =
-        page.jobs.find((j) => j.message_id)?.message_id ?? boundary;
+      // ONLY on a complete walk. `break` falls through, so advancing here
+      // unconditionally moved the cursor past turns the loop never emitted —
+      // a permanent hole in the scrolled-up transcript, and `historyPageEnd`
+      // reporting success over it. A partial walk means the view was taken
+      // over or the conversation moved, so the page is being discarded either
+      // way; leaving the cursor put makes it re-fetchable rather than lost.
+      if (completed) {
+        session.hasMoreTurns = page.hasMore;
+        session.oldestTurnCursor = page.nextBefore;
+        if (messages) session.oldestMessageSeq = messages.nextBeforeSeq;
+        // The oldest prompt this page actually DREW, not the oldest
+        // `message_id` the wire carried. `jobs.message_id` is NOT NULL and a
+        // goal-continuation's seed is hidden from the message list entirely,
+        // so the wire field can name a row that is not in the window — and a
+        // boundary that does not resolve is what re-opens the duplicate-steer
+        // hole below. The plan is ordered oldest-first, so its first step is
+        // the oldest thing drawn.
+        this.oldestDrawnMessageId = plan[0]?.messageId ?? boundary;
+      }
 
+      // Emitted on BOTH paths, so a consumer buffering between the brackets is
+      // never left holding an open page. It carries `conversationId`, so one
+      // that has since switched discards this along with the turns.
       this.emit({
         type: "historyPageEnd",
         conversationId,
         position: "prepend",
-        hasMore: page.hasMore,
+        hasMore: completed ? page.hasMore : true,
       });
       return emitted;
     } finally {
@@ -1306,9 +1338,6 @@ export class StreamManager {
       // leaves no cursor pointing into a conversation the session has left.
       this.session.hasMoreTurns = page.hasMore;
       this.session.oldestTurnCursor = page.nextBefore;
-      // Seeds the span bound `loadEarlierTurns` plans against — the oldest
-      // prompt this restore drew.
-      this.oldestDrawnMessageId = jobs.find((j) => j.message_id)?.message_id ?? null;
       if (stopReplay()) return false;
       // Every job EXCEPT the one we are about to reconnect to. The probe and
       // this list now LEAVE together, but they are still answered
@@ -1393,6 +1422,14 @@ export class StreamManager {
           content: m.content,
         })),
       });
+
+      // Seeds the span bound `loadEarlierTurns` plans against: the oldest
+      // prompt this restore actually DREW. Taken from the plan rather than
+      // from `jobs[].message_id`, which is NOT NULL on the wire and can name a
+      // row absent from the message list (a goal continuation's seed is hidden
+      // from it) — a boundary that does not resolve is what re-opens the
+      // duplicate-steer hole the bound exists to close.
+      this.oldestDrawnMessageId = plan[0]?.messageId ?? null;
 
       // Fetch every turn's events up front, in PARALLEL. The backend strips
       // live-only deltas from this path, so each response is small; parallel
@@ -1510,6 +1547,16 @@ export class StreamManager {
     // creating a conversation and deleting the active one relocate the user
     // just as much, and an in-flight restore has to yield to those too.
     const claimed = ++this.generation;
+    // The paging window belongs to the conversation being left. `hasMoreTurns`
+    // is rewritten by the next windowed load, but `oldestTurnCursor` and this
+    // boundary are only ever written by a restore that reaches its page — so
+    // without this they survive the move, and a `loadEarlierTurns` on the NEW
+    // conversation passes its guard holding the OLD one's cursor and prepends
+    // whatever that returns.
+    this.session.hasMoreTurns = false;
+    this.session.oldestTurnCursor = null;
+    this.session.oldestMessageSeq = null;
+    this.oldestDrawnMessageId = null;
     // Returned so callers capture the generation THIS move claimed, before the
     // emit below. A handler reacting to `conversationChanged` by calling back
     // into the manager — routing on the conversation pointer is the obvious

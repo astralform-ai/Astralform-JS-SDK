@@ -85,10 +85,17 @@ function events(n: number) {
  * `paged: false` models an OLD server: it ignores the unknown `limit` param,
  * returns everything, and sets no headers.
  */
-function backend(total: number, opts: { paged?: boolean } = {}) {
+function backend(
+  total: number,
+  opts: { paged?: boolean; hiddenPromptAt?: number } = {},
+) {
   const paged = opts.paged ?? true;
   const jobs = Array.from({ length: total }, (_, i) => job(i));
-  const messages = Array.from({ length: total }, (_, i) => msg(i));
+  // A turn whose `message_id` names a row the message list does not contain —
+  // what a goal continuation looks like on the wire.
+  const messages = Array.from({ length: total }, (_, i) => msg(i)).filter(
+    (m) => m.seq !== opts.hiddenPromptAt,
+  );
   const urls: string[] = [];
 
   const fetch: typeof globalThis.fetch = async (input) => {
@@ -97,6 +104,12 @@ function backend(total: number, opts: { paged?: boolean } = {}) {
     const q = new URL(url, "http://x").searchParams;
 
     if (url.includes("/active-job")) return json({ job_id: null, status: "none" });
+
+    // Only conv-a holds the fixture. Any other conversation is EMPTY, which is
+    // what lets a switch-away test tell a leak from an ordinary restore of the
+    // conversation switched to — with one fixture answering every id, conv-b
+    // draws conv-a's turns legitimately and the assertion proves nothing.
+    if (!url.includes("/conv-a/")) return json([]);
 
     if (url.includes("/events")) {
       const id = q.get("job_id") ?? "";
@@ -138,7 +151,10 @@ function backend(total: number, opts: { paged?: boolean } = {}) {
   return { fetch, urls };
 }
 
-function harness(total: number, opts: { paged?: boolean } = {}) {
+function harness(
+  total: number,
+  opts: { paged?: boolean; hiddenPromptAt?: number } = {},
+) {
   const be = backend(total, opts);
   const session = new ChatSession({ ...baseConfig, fetch: be.fetch } as never);
   const manager = new StreamManager(session);
@@ -263,6 +279,82 @@ describe("tail-first restore", () => {
     expect(drawn(h.chat).length).toBe(before + RESTORE_TURN_PAGE_SIZE);
   });
 
+  it("does not advance the cursor when a walk stops partway", async () => {
+    // `break` falls THROUGH to the cursor writes, so advancing there moved the
+    // cursor past turns the loop never emitted — a permanent hole in the
+    // scrolled-up transcript, with `historyPageEnd` reporting success over it.
+    const h = harness(25);
+    await h.manager.switchTo("conv-a");
+    await flush();
+    const cursorBefore = h.session.oldestTurnCursor;
+    const drawnBefore = drawn(h.chat).length;
+
+    // A live turn taking the view over mid-replay is one of the three stop
+    // conditions, and the only one that does not also clear the cursor — which
+    // is exactly what makes it the one that can prove this.
+    let tripped = false;
+    h.session.on((e) => {
+      if (!tripped && e.type === "user_message") {
+        tripped = true;
+        h.session.isStreaming = true;
+      }
+    });
+
+    const emitted = await h.manager.loadEarlierTurns("conv-a");
+    await flush();
+
+    // It stopped: fewer than a full page drawn.
+    expect(emitted).toBeLessThan(RESTORE_TURN_PAGE_SIZE);
+    expect(drawn(h.chat).length).toBeLessThan(drawnBefore + RESTORE_TURN_PAGE_SIZE);
+    // And the cursor did NOT skip the turns it failed to draw.
+    expect(h.session.oldestTurnCursor).toBe(cursorBefore);
+    expect(h.session.hasMoreTurns).toBe(true);
+    // The bracket still closed, so a consumer buffering between them is not
+    // left holding an open page.
+    expect(h.mgr.some((e) => e.type === "historyPageEnd")).toBe(true);
+  });
+
+  it("does not re-draw earlier prompts when the span bound cannot resolve", async () => {
+    // The bound is the oldest prompt already drawn. Seeded from the WIRE
+    // field it could name a row absent from the message list — `message_id` is
+    // NOT NULL and a goal continuation's seed is hidden from that list — and
+    // an unresolved bound used to fall back to the whole window, which is the
+    // unbounded case that re-emits every earlier prompt as a steer bubble.
+    const h = harness(25, { hiddenPromptAt: 15 });
+    await h.manager.switchTo("conv-a");
+    await flush();
+    const first = drawn(h.chat);
+
+    await h.manager.loadEarlierTurns("conv-a");
+    await flush();
+    const all = drawn(h.chat);
+
+    // Nothing drawn by the newest page is drawn again by the older one.
+    const repeated = all.slice(first.length).filter((c) => first.includes(c));
+    expect(repeated).toEqual([]);
+  });
+
+  it("clears the turn cursor when loadConversation moves the pointer", async () => {
+    // The manager is not the only door. `loadConversation(id, { limit })` is
+    // public and is the documented windowed entry point, so a consumer can
+    // move the pointer without ever going through `switchTo`. Left standing,
+    // the next `loadEarlierTurns` passes its guard holding the PREVIOUS
+    // conversation's cursor and prepends whatever that returns into this one.
+    const h = harness(25);
+    await h.manager.switchTo("conv-a");
+    await flush();
+    const aCursor = h.session.oldestTurnCursor;
+    expect(aCursor).not.toBe(null);
+
+    await h.session.loadConversation("conv-b", { limit: 40 });
+    expect(h.session.oldestTurnCursor).toBe(null);
+
+    // And the guard therefore refuses to page conv-b on conv-a's cursor.
+    h.urls.length = 0;
+    expect(await h.manager.loadEarlierTurns("conv-b")).toBe(0);
+    expect(h.urls.some((u) => u.includes(`before=${aCursor}`))).toBe(false);
+  });
+
   it("degrades to one complete page against a server without the cursor", async () => {
     // FastAPI ignores an unknown query param, so an old backend returns the
     // whole list with no headers. That must read as "everything arrived",
@@ -287,8 +379,14 @@ describe("tail-first restore", () => {
     await paging;
     await flush();
 
-    // Whatever conv-b drew, none of conv-a's older turns joined it.
-    expect(drawn(h.chat).slice(0, before)).toEqual(drawn(h.chat).slice(0, before));
+    // Snapshot, not a self-comparison. The previous form compared
+    // `drawn(...).slice(0, before)` to itself and held for any implementation
+    // — including one that poured conv-a's whole history into conv-b.
+    const shown = drawn(h.chat);
+    expect(shown).toHaveLength(before);
+    expect(
+      shown.every((c) => Number(c.replace("prompt ", "")) >= 15),
+    ).toBe(true);
     expect(h.session.conversationId).toBe("conv-b");
   });
 });
