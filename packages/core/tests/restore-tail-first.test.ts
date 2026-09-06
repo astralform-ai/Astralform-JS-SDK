@@ -359,11 +359,41 @@ describe("tail-first restore", () => {
 
     await h.session.loadConversation("conv-b", { limit: 40 });
     expect(h.session.oldestTurnCursor).toBe(null);
+    // And the flag with it: nothing below that point in `loadConversation`
+    // writes it, so left true beside a null cursor a sentinel driven off it
+    // never retires.
+    expect(h.session.hasMoreTurns).toBe(false);
 
     // And the guard therefore refuses to page conv-b on conv-a's cursor.
     h.urls.length = 0;
     expect(await h.manager.loadEarlierTurns("conv-b")).toBe(0);
     expect(h.urls.some((u) => u.includes(`before=${aCursor}`))).toBe(false);
+  });
+
+  it("reloads the whole branch when a send interrupts a windowed restore", async () => {
+    // The window is decided synchronously at restore entry, but whether this
+    // restore will page is only settled once `replayHistory` clears its first
+    // abort check. A send landing in between — nothing gates one during a
+    // restore — stops the replay with the window already installed and no
+    // cursor written: a transcript truncated to one page that no pager can
+    // extend. That path has to fall back to the whole branch, as it did
+    // before windowing.
+    const h = harness(60);
+    // Lands the moment the restore announces itself: after the window was
+    // decided, before any request has answered.
+    h.manager.on((e) => {
+      if (e.type === "stateChange" && e.state === "restoring") {
+        h.session.isStreaming = true;
+      }
+    });
+    await h.manager.switchTo("conv-a");
+    await flush();
+
+    expect(h.session.hasMoreTurns).toBe(false);
+    expect(h.session.oldestTurnCursor).toBe(null);
+    // The whole branch, not the window the restore opened with.
+    expect(h.session.messages.length).toBe(60);
+    expect(h.session.oldestMessageSeq).toBe(null);
   });
 
   it("does not truncate a restore that will never replay or page", async () => {

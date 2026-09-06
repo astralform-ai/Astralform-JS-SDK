@@ -1052,7 +1052,10 @@ export class StreamManager {
     // reading is unambiguous (we set `restoring` ourselves, so anything else is
     // a send or regenerate) and the never-cleared path still falls through to
     // the reconnect exactly as before.
-    if (announcedRestoring && this.viewTakenOverByLiveTurn()) return;
+    if (announcedRestoring && this.viewTakenOverByLiveTurn()) {
+      this.reloadUnwindowed(conversationId);
+      return;
+    }
     // Tested on `jobsRequest` rather than `announcedRestoring`: the two are the
     // same condition by construction above, and this spelling is the one that
     // narrows the request away from null.
@@ -1065,8 +1068,12 @@ export class StreamManager {
         turn,
         jobsRequest,
       ))
-    )
+    ) {
+      // A stop that did not move the conversation is a live turn's — the one
+      // abort the window's gate above cannot see.
+      if (!superseded()) this.reloadUnwindowed(conversationId);
       return;
+    }
 
     if (activeJobId) {
       this.setState("streaming");
@@ -1125,6 +1132,26 @@ export class StreamManager {
    */
   private turnStarted(since: number): boolean {
     return this.turnCounter !== since;
+  }
+
+  /**
+   * Re-issue the message load UNWINDOWED after a restore stopped before it
+   * could write a turn cursor.
+   *
+   * The window is decided synchronously at restore entry, but "this restore
+   * will page" is only settled once `replayHistory` clears its first abort
+   * check. A send landing in between — nothing gates one during a restore —
+   * stops the replay with the window already installed and the cursor never
+   * written: a transcript truncated to one page that no pager can extend,
+   * which is worse than the unbounded load this path did before windowing.
+   * Reloading whole is that behaviour restored. Fire-and-forget: the load
+   * token still makes a later switch win, and the pending-send reconciliation
+   * inside `loadConversation` is what keeps the interrupting send's prompt.
+   * Only called when the conversation has NOT moved — a superseding switch
+   * announces and loads its own.
+   */
+  private reloadUnwindowed(conversationId: string): void {
+    void this.session.loadConversation(conversationId);
   }
 
   /**

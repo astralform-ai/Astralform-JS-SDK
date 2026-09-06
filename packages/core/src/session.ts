@@ -1148,8 +1148,11 @@ export class ChatSession {
     // `loadEarlierTurns` passes its guard holding the PREVIOUS conversation's
     // cursor and prepends whatever that returns into this one.
     //
-    // `hasMoreTurns` is rewritten at the end of this function from the page
-    // actually loaded; the cursor has no value until a restore fetches turns.
+    // `hasMoreTurns` goes with them. The job page is its only writer (see the
+    // end of this function), so nothing below rewrites it — left true here
+    // beside a null cursor, `loadEarlierTurns` fails its own guard on every
+    // call and a sentinel driven off the flag never retires.
+    this.hasMoreTurns = false;
     this.oldestTurnCursor = null;
     this.oldestMessageSeq = null;
     this.conversationId = id;
