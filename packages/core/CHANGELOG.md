@@ -1,5 +1,20 @@
 # Changelog
 
+## 8.0.0
+
+### Removed — BREAKING
+
+**`AgentInfo.mode` is removed.** There is no agent-level `chat | code` mode: a repository is a property of the TASK, so one agent answers general questions and works in repositories from the same list. Read **`AgentInfo.codeProjectsEnabled`** (7.5.0) to decide whether to show Projects and Tasks — the server derives it from the GitHub connector, so unlike the toggle it replaced it cannot go stale.
+
+The field survived one release as the STORED value of the retired column, so clients built before the change kept behaving exactly as they did. That window is closed: Astralform 0.69.50 shipped `code_projects_enabled`, and the release after it stops sending `mode` at all.
+
+**Migrating.** `agent.mode === "code"` → `agent.codeProjectsEnabled === true`, with two differences worth knowing rather than mechanically translating:
+
+- They answer different questions, and on a real population they disagree. An agent that never had the toggle set reports `mode: "chat"` while its tasks bind perfectly well — which is exactly why `mode` was never an alias for `codeProjectsEnabled` and why the migration is not a rename.
+- `codeProjectsEnabled` gates a SURFACE, not an ability. Naming a repository is optional on every task, and a task that names none is an ordinary chat, so nothing should refuse a send on it. If your client blocks a first send until a project is picked, that gate goes away with this upgrade.
+
+Requires Astralform >= 0.69.50. Against an older backend `codeProjectsEnabled` is simply absent, and since this release no longer carries `mode` there is nothing left to fall back to — such a client sees no Projects surface at all, which is the cost of the window having closed.
+
 ## 7.5.1
 
 ### Fixed

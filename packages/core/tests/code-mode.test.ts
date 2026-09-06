@@ -254,17 +254,19 @@ describe("whether an agent's tasks can bind a repository", () => {
     const [coder, legacy] = await client.getAgents();
 
     expect(coder.codeProjectsEnabled).toBe(true);
-    // Absent before Astralform 0.71.0 — fall back to `mode` there.
+    // Absent before Astralform 0.69.50, where it reads as false.
     expect(legacy.codeProjectsEnabled).toBeUndefined();
-    expect(legacy.mode).toBeUndefined();
   });
 
-  it("does not treat the deprecated mode as an alias for it", async () => {
-    // The server reports `mode` as the STORED value of the retired column for one
-    // release, so an agent that never had the toggle set still says "chat" while
-    // its tasks bind perfectly well. A client that reads `mode` to decide whether
-    // to show Projects gets the OLD answer on purpose — that is what keeps clients
-    // built before the change behaving as they did.
+  it("does not derive codeProjectsEnabled from a mode the backend still sends", async () => {
+    // `mode` reported the STORED value of the retired toggle, so an agent that
+    // never had it set says "chat" while its tasks bind perfectly well. That is
+    // why it was never an alias for `codeProjectsEnabled`, and why a client must
+    // not reach for it: on this exact row the two disagree, and `mode` is the
+    // wrong one. The pin is that the mapper reports the right one — it does NOT
+    // ignore `mode`, which still arrives structurally through `camelizeKeys`
+    // from a 0.69.50 backend; it is simply no longer part of the declared
+    // surface, so nothing may read it.
     const mockFetch = createMockFetch({
       "/v1/agents": {
         status: 200,
@@ -286,7 +288,9 @@ describe("whether an agent's tasks can bind a repository", () => {
     const [agent] = await client.getAgents();
 
     expect(agent.codeProjectsEnabled).toBe(true);
-    expect(agent.mode).toBe("chat");
+    // Still present at runtime — `camelizeKeys` is structural, so this documents
+    // that the field's removal is from the TYPE, not from the payload.
+    expect("mode" in agent).toBe(true);
   });
 });
 

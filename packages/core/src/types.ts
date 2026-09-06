@@ -642,8 +642,9 @@ export interface AgentInfo {
    * Derived by the server from the connector, so it cannot go stale the way the
    * retired `mode` toggle could. It gates a SURFACE, not an ability: naming a
    * repository is optional on every task, and a task that names none is an
-   * ordinary chat. Absent on Astralform older than 0.69.50 — fall back to `mode`
-   * there.
+   * ordinary chat. Absent on Astralform older than 0.69.50, where it should be
+   * read as false: those backends had an agent-level mode instead, and this
+   * SDK no longer carries the field that expressed it.
    *
    * It is a property of the WORKSPACE, not of a persona: `GET /v1/agents` selects
    * the workspace row itself and returns exactly one entry, so read
@@ -651,17 +652,6 @@ export interface AgentInfo {
    * carry it, so a client learns this after opening an agent.
    */
   codeProjectsEnabled?: boolean;
-  /**
-   * @deprecated Removed in the next Astralform release. There is no agent mode —
-   * a repository belongs to the TASK, so one agent answers general questions and
-   * works in repositories from the same list. Read {@link codeProjectsEnabled}.
-   *
-   * Still reported for one release, as the STORED value of the retired column, so
-   * clients built before the change keep behaving exactly as they did. Do not
-   * treat it as an alias for `codeProjectsEnabled`: an agent that never had the
-   * toggle set still reports `"chat"` while its tasks can bind perfectly well.
-   */
-  mode?: "chat" | "code";
 }
 
 // --- Team / Agent discovery (OIDC user-token surface) ---
