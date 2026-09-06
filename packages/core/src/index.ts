@@ -130,6 +130,8 @@ export type {
   UIComponentsConfig,
   AgentInfo,
   SkillInfo,
+  SlashCommand,
+  SlashCommandSurface,
   ModelOption,
   ModelChoiceOptions,
   TeamSummary,
