@@ -100,6 +100,16 @@ export interface MemoryUpdatePayload {
   namespace?: string | null;
 }
 
+export interface MemoryProviderErrorPayload {
+  /** The external memory provider that failed (registry slug, e.g. "mem0"). */
+  provider: string;
+  /** Which provider operation failed — "save" | "update" | "delete" | "get"
+   *  | "recall" | "ingest" | "list_visible" | … Typed as string for forward compat. */
+  op: string;
+  /** One-line "<ExceptionType>: <message>" detail, length-capped by the backend. */
+  error: string;
+}
+
 export interface DesktopStreamPayload {
   url: string;
   sandboxId?: string | null;
@@ -150,6 +160,39 @@ export interface ToolHarnessWarningPayload {
   callId: string;
   message?: string | null;
   details?: Record<string, unknown> | null;
+}
+
+export interface ToolProgressPayload {
+  callId: string;
+  /** Known values: "stdout" | "stderr" | "progress" | "command". Typed as string
+   *  for forward compat; the backend defaults to "progress". */
+  stream: string;
+  /** Live progress text to append; the backend newline-terminates chunks. */
+  chunk: string;
+  /** Emitting tool, e.g. "web_search" | "deep_research" | "generate_video". */
+  tool?: string | null;
+  /** Structured metadata riding alongside `chunk` for a richer UI — a search
+   *  result ({title,url,snippet}) or a research phase record. */
+  item?: Record<string, unknown> | null;
+  /** Position within `total`, when the producer emits one item per step. */
+  index?: number | null;
+  total?: number | null;
+  /** Producers splat arbitrary extra keys (`generate_video` sends `status`,
+   *  `preset`), so this payload is open-ended by design. */
+  [key: string]: unknown;
+}
+
+export interface NestedLlmUsagePayload {
+  /** Which tool made the nested calls, e.g. "deep_research". */
+  source: string;
+  /** The parent tool call these nested calls belong to. */
+  callId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheCreationTokens: number;
+  /** Number of nested LLM calls this event aggregates. */
+  llmCalls: number;
 }
 
 export interface UserUnavailablePayload {

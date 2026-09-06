@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.3.0
+
+### Added
+
+- **Typed `ChatEvent` variants for `memory_provider_error`, `tool_progress` and `nested_llm_usage`.** All three already reached the wire — `stream/controller.py` forwards them verbatim in `_PASSTHROUGH_CUSTOM_NAMES` — but `translateCustomEvent` had no case for them, so a consumer received `{type:"custom", name, data}` and cast `data` by hand to read a progress line or a provider failure. Each now translates its snake_case payload to a named variant, and `custom-events.ts` carries the matching `MemoryProviderErrorPayload` / `ToolProgressPayload` / `NestedLlmUsagePayload` interfaces.
+- **`tool_progress` carries `tool`, `item`, `index`, `total` and the raw `data`** alongside `callId` / `stream` / `chunk`. Naming an event moves it off the generic passthrough, so anything the variant does not name becomes unreachable — and the producers send more than three fields (`web_search` sends `tool`, `index`, `total` and a structured `item`; `generate_video` splats arbitrary `**extra` such as `status` and `preset`). Keeping `data` verbatim is what makes this an addition rather than a narrowing for anyone already reading the dict.
+
+### Compatibility
+
+- Additive. A consumer that switches on `type` sees three names it did not before; one that reads `event.data` on these events keeps working, because `tool_progress` still carries the whole payload. `nested_llm_usage` totals are a per-tool breakdown that `message_stop.usage` **already includes** — adding them double-counts.
+
 ## 8.2.0
 
 ### Added
