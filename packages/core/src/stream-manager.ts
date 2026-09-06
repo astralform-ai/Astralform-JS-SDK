@@ -1068,16 +1068,8 @@ export class StreamManager {
         turn,
         jobsRequest,
       ))
-    ) {
-      // A stop that did not move the conversation is a live turn's — the one
-      // abort the window's gate above cannot see. Only when the replay stopped
-      // before it wrote a cursor: past that point the window IS pageable, and
-      // reloading would clear the cursor `loadConversation` now resets.
-      if (!superseded() && !this.session.oldestTurnCursor) {
-        this.reloadUnwindowed(conversationId);
-      }
+    )
       return;
-    }
 
     if (activeJobId) {
       this.setState("streaming");
@@ -1381,6 +1373,7 @@ export class StreamManager {
       gen !== this.generation ||
       this.viewTakenOverByLiveTurn() ||
       this.turnStarted(turn);
+    let complete = false;
     try {
       const page = await jobsRequest;
       // The NEWEST page of turns. `claimedMessageIds` and the replay walk below
@@ -1476,21 +1469,6 @@ export class StreamManager {
         })),
       });
 
-      // Cursor and span bound, written TOGETHER and on this side of every
-      // abort check above. Split across one, an aborted replay left the cursor
-      // set with the bound still null — and a null bound takes the one branch
-      // in `loadEarlierTurns` that is deliberately unbounded (the newest page's
-      // span IS the whole window), which is the duplicate-steer state the
-      // bound exists to prevent.
-      //
-      // The bound is the oldest prompt this restore actually DREW, taken from
-      // the plan rather than from `jobs[].message_id` — the latter is NOT NULL
-      // on the wire and can name a row absent from the message list, and a
-      // bound that does not resolve re-opens the same hole.
-      this.session.hasMoreTurns = page.hasMore;
-      this.session.oldestTurnCursor = page.nextBefore;
-      this.oldestDrawnMessageId = plan[0]?.messageId ?? null;
-
       // Fetch every turn's events up front, in PARALLEL. The backend strips
       // live-only deltas from this path, so each response is small; parallel
       // fetch collapses N serial round-trips into one wave. We still fetch
@@ -1556,6 +1534,29 @@ export class StreamManager {
         );
       }
 
+      // Only once every step of the newest page is drawn. Written earlier —
+      // above the events wave and the walk — a stop in either left a live
+      // cursor past a page that was never or half drawn, and the first
+      // scroll-up prepended older turns above a permanent hole. A page that
+      // did not finish leaves no cursor, and the reload in `finally` restores
+      // the whole transcript instead.
+      //
+      // Cursor and span bound, written TOGETHER and on this side of every
+      // abort check above. Split across one, an aborted replay left the cursor
+      // set with the bound still null — and a null bound takes the one branch
+      // in `loadEarlierTurns` that is deliberately unbounded (the newest page's
+      // span IS the whole window), which is the duplicate-steer state the
+      // bound exists to prevent.
+      //
+      // The bound is the oldest prompt this restore actually DREW, taken from
+      // the plan rather than from `jobs[].message_id` — the latter is NOT NULL
+      // on the wire and can name a row absent from the message list, and a
+      // bound that does not resolve re-opens the same hole.
+      this.session.hasMoreTurns = page.hasMore;
+      this.session.oldestTurnCursor = page.nextBefore;
+      this.oldestDrawnMessageId = plan[0]?.messageId ?? null;
+      complete = true;
+
       // Before the announcements, not only before `setState` below. The
       // loop's check runs at the TOP of each turn, so a handler that
       // navigates away while the LAST turn replays — or the only turn, for a
@@ -1589,6 +1590,15 @@ export class StreamManager {
       // History load failed — non-blocking. A live turn still reconnects, and
       // a settled one still announces idle; the transcript is what is lost,
       // exactly as before this was hoisted out of the completed-only branch.
+    } finally {
+      // The window was decided at restore entry, before anything here ran. A
+      // replay that did not draw the whole newest page wrote no cursor, so
+      // that window is one page nothing can extend — whether it stopped for
+      // a live turn or lost the history read. Reload it whole, unless a newer
+      // switch owns the view and will load its own.
+      if (!complete && gen === this.generation) {
+        this.reloadUnwindowed(conversationId);
+      }
     }
     return !stopReplay();
   }

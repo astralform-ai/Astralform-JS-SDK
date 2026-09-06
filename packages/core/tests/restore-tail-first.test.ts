@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ChatSession } from "../src/session.js";
 import {
   StreamManager,
@@ -417,6 +417,31 @@ describe("tail-first restore", () => {
     expect(h.session.oldestTurnCursor).not.toBe(null);
     // The window stands: it is pageable, so nothing reloads over it.
     expect(h.session.messages.length).toBe(40);
+  });
+
+  it("leaves no cursor and reloads whole when a send lands during the events wave", async () => {
+    // The cursor used to be written above the events wave and the replay
+    // walk, so a stop in either left a live cursor past a page that was never
+    // drawn — and the first scroll-up prepended older turns straight above the
+    // live send's bubble, with the newest page missing from the middle for
+    // good. A page that did not finish drawing must leave no cursor, and the
+    // window it was decided for must be reloaded whole instead.
+    const h = harness(60);
+    const client = h.session.client;
+    const real = client.getConversationEvents.bind(client);
+    vi.spyOn(client, "getConversationEvents").mockImplementation((...args) => {
+      // The send lands while the wave is in flight — "the ordinary case", per
+      // the abort check that follows it.
+      h.session.isStreaming = true;
+      return real(...args);
+    });
+    await h.manager.switchTo("conv-a");
+    await flush();
+
+    expect(drawn(h.chat)).toHaveLength(0);
+    expect(h.session.hasMoreTurns).toBe(false);
+    expect(h.session.oldestTurnCursor).toBe(null);
+    expect(h.session.messages.length).toBe(60);
   });
 
   it("does not truncate a restore that will never replay or page", async () => {
