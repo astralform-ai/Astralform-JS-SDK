@@ -621,7 +621,6 @@ export class AstralformClient {
         is_enabled: boolean;
         avatar_url?: string;
         code_projects_enabled?: boolean;
-        mode?: "chat" | "code";
       }[]
     >("/v1/agents");
     return raw.map((a) => camelizeKeys<AgentInfo>(a as unknown as Record<string, unknown>));
