@@ -396,6 +396,29 @@ describe("tail-first restore", () => {
     expect(h.session.oldestMessageSeq).toBe(null);
   });
 
+  it("keeps the cursor when a send lands after the replay wrote it", async () => {
+    // The unwindowed reload exists for a restore that stopped BEFORE writing a
+    // cursor. Three of `replayHistory`'s four stops sit after the write — the
+    // sharpest being a restore that fully succeeded and then saw a send land
+    // before its last statement. Reloading there would clear the cursor
+    // `loadConversation` now resets, leaving every older turn unreachable
+    // after a restore that had nothing wrong with it.
+    const h = harness(60);
+    h.manager.on((e) => {
+      // Emitted after the whole newest page is drawn and the cursor written,
+      // and before `replayHistory` returns.
+      if (e.type === "restoreSettled") h.session.isStreaming = true;
+    });
+    await h.manager.switchTo("conv-a");
+    await flush();
+
+    expect(drawn(h.chat)).toHaveLength(RESTORE_TURN_PAGE_SIZE);
+    expect(h.session.hasMoreTurns).toBe(true);
+    expect(h.session.oldestTurnCursor).not.toBe(null);
+    // The window stands: it is pageable, so nothing reloads over it.
+    expect(h.session.messages.length).toBe(40);
+  });
+
   it("does not truncate a restore that will never replay or page", async () => {
     // When a send has already taken the view, the job list is not fetched and
     // `replayHistory` never runs, so nothing writes a turn cursor. Windowing

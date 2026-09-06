@@ -1070,8 +1070,12 @@ export class StreamManager {
       ))
     ) {
       // A stop that did not move the conversation is a live turn's — the one
-      // abort the window's gate above cannot see.
-      if (!superseded()) this.reloadUnwindowed(conversationId);
+      // abort the window's gate above cannot see. Only when the replay stopped
+      // before it wrote a cursor: past that point the window IS pageable, and
+      // reloading would clear the cursor `loadConversation` now resets.
+      if (!superseded() && !this.session.oldestTurnCursor) {
+        this.reloadUnwindowed(conversationId);
+      }
       return;
     }
 
