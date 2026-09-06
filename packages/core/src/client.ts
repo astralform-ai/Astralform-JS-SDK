@@ -25,6 +25,8 @@ import type {
   ModelOption,
   MyToolGrantsPage,
   SkillInfo,
+  SlashCommand,
+  SlashCommandSurface,
   TeamAgentSummary,
   TeamSummary,
   ToolApprovalRequest,
@@ -731,6 +733,42 @@ export class AstralformClient {
       }[]
     >("/v1/skills");
     return raw.map((s) => camelizeKeys<SkillInfo>(s as unknown as Record<string, unknown>));
+  }
+
+  /**
+   * List the slash commands the active agent offers — the system commands
+   * followed by its enabled skills. Backs the composer's "/" menu.
+   *
+   * @param surface Who will execute them. Omit for the server's default,
+   *   `"web"`: what `POST /v1/jobs` runs itself. `"telegram"` returns the
+   *   bot's commands under Telegram-valid names; `"all"` returns every
+   *   command, including those the other surfaces filter out — `surfaces` is
+   *   set on every row either way, and is what tells them apart here.
+   *
+   * The default surface is not sent as a query parameter. The server already
+   * defaults to `web`, so omitting it keeps the request byte-identical to
+   * what clients that call the raw path send today — same reasoning as
+   * {@link getConversationEvents}'s `toolOutputs`.
+   */
+  async listSkillCommands(surface?: SlashCommandSurface): Promise<SlashCommand[]> {
+    const query = surface && surface !== "web" ? `?surface=${surface}` : "";
+    const raw = await this.get<Record<string, unknown>[]>(
+      `/v1/skills/commands${query}`,
+    );
+    // `args_hint` and `surfaces` carry server-side defaults, so an older
+    // backend omits them from the row entirely. A menu concatenates argsHint
+    // into a label and iterates surfaces; neither may reach a consumer as
+    // undefined, so absence normalizes to the empty value the server means.
+    return raw.map((c) => {
+      const command = camelizeKeys<SlashCommand>(c);
+      return {
+        ...command,
+        displayName: command.displayName ?? "",
+        description: command.description ?? "",
+        argsHint: command.argsHint ?? "",
+        surfaces: command.surfaces ?? [],
+      };
+    });
   }
 
   async getConversationEvents(

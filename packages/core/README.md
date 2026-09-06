@@ -320,6 +320,7 @@ const conversations = await client.getConversations();
 const messages = await client.getMessages("conversation-id");
 const agents = await client.getAgents();
 const skills = await client.getSkills();
+const commands = await client.listSkillCommands();
 
 // Job-based streaming
 const job = await client.createJob({ message: "Hello" });

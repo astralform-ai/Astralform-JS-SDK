@@ -1,6 +1,6 @@
 # Changelog
 
-## 8.4.0
+## 8.5.0
 
 ### Added
 
@@ -14,6 +14,17 @@
 - Additive. Every new field is optional and reads `undefined` against a server that does not send it, which is the shape installed clients already render. `sources`/`durationMs`/`isError`/`deniedBy` need Astralform >= 0.69.x (#1032); `denialKind` needs the release carrying #1103.
 - **An exhaustive `switch` on `Message["role"]` needs a new arm.** Widening a union in OUTPUT position is the source-breaking direction — a consumer whose `default:` feeds `assertNever(msg.role)` stops compiling, because `"tool"` is no longer assignable to `never`. Shipped as a minor anyway: the alternative is a major for a bug fix, and any consumer this reaches was already being handed those rows mistyped.
 - `Message["role"]` **gains** `"tool"` and retains `"system"`. `"system"` is dead — `MessageResponse.role` is `Literal["user", "assistant", "tool"]` and the server skips system rows before responding — but narrowing the union is source-breaking for anyone matching on it, so it is grouped with the other breaking cleanups for one deliberate major rather than dribbling a major out of an additive change.
+
+## 8.4.0
+
+### Added
+
+- **`client.listSkillCommands(surface?)`** — the active agent's slash commands (`GET /v1/skills/commands`), returning a typed `SlashCommand[]`. The endpoint has been reachable through the raw path since it shipped, and both clients that read it — astralform-chat's `useSlashCommands` and the iOS app's `SessionStore` — declared their own copy of the wire type. This gives that type one home, the same move `getSkills` / `getAgents` / `getModels` already made for their reads.
+- **The `SlashCommand` and `SlashCommandSurface` types.** `SlashCommand` is camelCase like every other domain model here (`displayName`, `argsHint`), not the snake_case the endpoint sends — a snake_case type next to three camelCase ones would reintroduce the inconsistency this method exists to remove. `argsHint` and `surfaces` are non-optional and normalize to `""` / `[]`: a menu concatenates the hint into a label and iterates the surfaces, so absence has to arrive as the empty value the server means rather than as `undefined`.
+
+### Compatibility
+
+- Purely additive; no existing call changes. Omitting `surface` sends no query parameter at all — the server already defaults to `web`, so the request is byte-identical to the raw path clients call today. Only `"telegram"` and `"all"` spend a parameter.
 
 ## 8.3.0
 
