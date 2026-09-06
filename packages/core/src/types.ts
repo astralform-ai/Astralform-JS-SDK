@@ -674,21 +674,21 @@ export interface Message {
    * row's plain content.
    */
   sources?: ToolSource[];
-  durationMs?: number | null;
-  isError?: boolean | null;
+  durationMs?: number;
+  isError?: boolean;
   /**
    * Human-readable prose — a fixed phrase, or a policy rule's own free-text
    * reason. PRESENCE, not value, is the denial signal: a denied tool reports
    * `isError: false` and nothing else on the row distinguishes it.
    */
-  deniedBy?: string | null;
+  deniedBy?: string;
   /**
    * The same denial's machine-readable half: `"policy_rule"` | `"headless"` |
    * `"user"` | `"hook"`. Absent both when the row is not a denial and when the
    * denial predates the field, so branch on it only after `deniedBy` has
    * established there WAS one.
    */
-  denialKind?: string | null;
+  denialKind?: string;
 }
 
 export interface UIComponentsConfig {

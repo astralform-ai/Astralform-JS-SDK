@@ -147,6 +147,8 @@ describe("public export surface", () => {
       fileURLToPath(new URL("../src/index.ts", import.meta.url)),
       "utf8",
     );
-    expect(index).toContain("ToolSource");
+    // Anchored like `public-exports.test.ts`'s guard: a bare substring match
+    // would pass on a mention in a comment, or on `ToolSourceRef`.
+    expect(index).toMatch(/^\s*ToolSource,\s*$/m);
   });
 });

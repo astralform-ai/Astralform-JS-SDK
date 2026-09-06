@@ -12,6 +12,7 @@
 ### Compatibility
 
 - Additive. Every new field is optional and reads `undefined` against a server that does not send it, which is the shape installed clients already render. `sources`/`durationMs`/`isError`/`deniedBy` need Astralform >= 0.69.x (#1032); `denialKind` needs the release carrying #1103.
+- **An exhaustive `switch` on `Message["role"]` needs a new arm.** Widening a union in OUTPUT position is the source-breaking direction — a consumer whose `default:` feeds `assertNever(msg.role)` stops compiling, because `"tool"` is no longer assignable to `never`. Shipped as a minor anyway: the alternative is a major for a bug fix, and any consumer this reaches was already being handed those rows mistyped.
 - `Message["role"]` **gains** `"tool"` and retains `"system"`. `"system"` is dead — `MessageResponse.role` is `Literal["user", "assistant", "tool"]` and the server skips system rows before responding — but narrowing the union is source-breaking for anyone matching on it, so it is grouped with the other breaking cleanups for one deliberate major rather than dribbling a major out of an additive change.
 
 ## 8.3.0
