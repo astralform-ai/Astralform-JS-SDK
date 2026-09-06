@@ -28,6 +28,7 @@ import type { ChatSession } from "./session.js";
 // =============================================================================
 
 import type { JobsPage } from "./client.js";
+import type { ToolOutputMode } from "./types.js";
 
 export type StreamState = "idle" | "streaming" | "restoring" | "detached";
 
@@ -161,6 +162,29 @@ export class StreamManager {
   private session: ChatSession;
   /** The oldest prompt drawn so far — where a prepended page's span ends. */
   private oldestDrawnMessageId: string | null = null;
+
+  /**
+   * Whether restore asks for tool outputs inline or as fetch handles.
+   *
+   * ONE setting, applied to both event waves — the newest page and every
+   * `loadEarlierTurns` page. A consumer that got stubs only on scroll-up would
+   * be worse off than one that got them nowhere: the pill would resolve itself
+   * in the visible tail and need a fetch above the fold, for no stated reason.
+   *
+   * Defaults to inline, so this is inert until a consumer opts in.
+   */
+  private toolOutputs: ToolOutputMode = "inline";
+
+  /**
+   * Ask restore for stubbed tool outputs, resolved on demand.
+   *
+   * Only worth turning on by a consumer that can actually resolve a stub —
+   * see `isToolOutputStub` and `client.getToolOutput`. One that cannot will
+   * render nothing where large tool results belong.
+   */
+  setToolOutputMode(mode: ToolOutputMode): void {
+    this.toolOutputs = mode;
+  }
   private _state: StreamState = "idle";
   private _activeConversationId: string | null = null;
   private _backgroundJobs = new Map<string, string>();
@@ -1251,7 +1275,9 @@ export class StreamManager {
       const eventLists = await Promise.all(
         page.jobs.map((job) =>
           session.client
-            .getConversationEvents(conversationId, job.job_id)
+            .getConversationEvents(conversationId, job.job_id, {
+              toolOutputs: this.toolOutputs,
+            })
             .catch(() => []),
         ),
       );
@@ -1485,7 +1511,9 @@ export class StreamManager {
       const eventLists = await Promise.all(
         replayableJobs.map((job: { job_id: string }) =>
           this.session.client
-            .getConversationEvents(conversationId, job.job_id)
+            .getConversationEvents(conversationId, job.job_id, {
+              toolOutputs: this.toolOutputs,
+            })
             .catch(() => []),
         ),
       );

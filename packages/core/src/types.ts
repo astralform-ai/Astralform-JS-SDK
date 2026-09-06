@@ -1080,6 +1080,49 @@ export interface ChatStreamEvent {
   data: string;
 }
 
+/**
+ * A tool output the server declined to inline, with a handle to fetch it.
+ *
+ * Restore can ask for these with `toolOutputs: "stub"`. Only the `output` of a
+ * `tool_use` final is ever replaced — name, arguments, status, duration and the
+ * hoisted image previews all survive — so a stubbed tool call renders like a
+ * resolved one until the reader opens it.
+ */
+export interface ToolOutputStub {
+  __stub: "tool_output";
+  call_id: string;
+  size_bytes: number;
+  /**
+   * The job this call belongs to. **Hand it back to `getToolOutput`.**
+   *
+   * `/events?job_id=X` deliberately returns jobs that regeneration has
+   * replaced — reading a superseded version is the whole purpose of that
+   * parameter — while the fetch route excludes them unless scoped to a job. A
+   * fetch that drops this therefore 404s on exactly the pills a
+   * version-switched read is displaying. Absent only when the event carried no
+   * job id, in which case the unscoped fetch is the correct one.
+   */
+  job_id?: string;
+}
+
+/**
+ * Is this tool output a stub to fetch rather than the output itself?
+ *
+ * One obvious way to ask. Left to sniff `__stub` themselves, consumers get it
+ * wrong in the direction that renders the stub object into the transcript
+ * where the result belongs.
+ */
+export function isToolOutputStub(value: unknown): value is ToolOutputStub {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __stub?: unknown }).__stub === "tool_output"
+  );
+}
+
+/** How a restore asks for tool outputs. */
+export type ToolOutputMode = "inline" | "stub";
+
 export interface ConversationEvent {
   seq: number;
   event: string;

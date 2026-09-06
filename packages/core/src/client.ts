@@ -6,15 +6,16 @@ import { camelizeKeys, sanitizeErrorText } from "./utils.js";
 import type {
   ActiveJob,
   AgentInfo,
-  AvailableRepositories,
-  CodeProject,
+  AgentStatus,
   AstralformApiKeyConfig,
   AstralformConfig,
+  AvailableRepositories,
   ChatStreamEvent,
   ChatStreamRequest,
+  CodeProject,
+  Conversation,
   ConversationAsset,
   ConversationEvent,
-  Conversation,
   FeedbackRequest,
   FeedbackResponse,
   JobCreateResponse,
@@ -23,11 +24,11 @@ import type {
   Message,
   ModelOption,
   MyToolGrantsPage,
-  AgentStatus,
-  TeamAgentSummary,
   SkillInfo,
+  TeamAgentSummary,
   TeamSummary,
   ToolApprovalRequest,
+  ToolOutputMode,
   ToolResultRequest,
   VoiceConfig,
   VoicePolishEvent,
@@ -677,10 +678,42 @@ export class AstralformClient {
   async getConversationEvents(
     conversationId: string,
     jobId?: string,
+    options?: { toolOutputs?: ToolOutputMode },
   ): Promise<ConversationEvent[]> {
-    let url = `/v1/conversations/${encodeURIComponent(conversationId)}/events`;
-    if (jobId) url += `?job_id=${encodeURIComponent(jobId)}`;
-    return this.get(url);
+    const params = new URLSearchParams();
+    if (jobId) params.set("job_id", jobId);
+    // Only ever SET for "stub". Omitting it entirely when inline keeps the
+    // request byte-identical to what every installed client already sends,
+    // which is what makes this opt-in rather than a wire change.
+    if (options?.toolOutputs === "stub") params.set("tool_outputs", "stub");
+    const query = params.toString();
+    return this.get(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/events${
+        query ? `?${query}` : ""
+      }`,
+    );
+  }
+
+  /**
+   * The full output behind a {@link ToolOutputStub}.
+   *
+   * Pass the stub's `job_id`. `/events?job_id=X` returns jobs that
+   * regeneration has replaced, while this route excludes them unless scoped —
+   * so an unscoped fetch 404s on exactly the pills a version-switched read is
+   * displaying, where an inline restore would have carried the body. Restore
+   * fetches events per job and always passes `job_id`, so that is the normal
+   * path, not an edge case.
+   */
+  async getToolOutput(
+    conversationId: string,
+    callId: string,
+    jobId?: string,
+  ): Promise<unknown> {
+    const query = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
+    const res = await this.get<{ call_id: string; output: unknown }>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(callId)}${query}`,
+    );
+    return res.output;
   }
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {
