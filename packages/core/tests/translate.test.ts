@@ -154,6 +154,112 @@ describe("translateCustomEvent", () => {
     });
   });
 
+  // Backend custom events that reach the wire as {type:"custom", name, data} but were
+  // missing from translateCustomEvent's typed cases, so consumers received them under
+  // the generic passthrough and had to cast `data` to read them (composite memory
+  // provider errors, live tool progress, nested-LLM usage telemetry).
+  it("maps memory_provider_error", () => {
+    const ev = translateCustomEvent("memory_provider_error", {
+      provider: "mem0",
+      op: "recall",
+      error: "TimeoutError: vendor recall timed out",
+    });
+    expect(ev).toEqual({
+      type: "memory_provider_error",
+      provider: "mem0",
+      op: "recall",
+      error: "TimeoutError: vendor recall timed out",
+    });
+  });
+
+  it("maps tool_progress", () => {
+    const ev = translateCustomEvent("tool_progress", {
+      call_id: "call-7",
+      stream: "progress",
+      chunk: "Step 2/5: fetching sources",
+    });
+    expect(ev).toEqual({
+      type: "tool_progress",
+      callId: "call-7",
+      stream: "progress",
+      chunk: "Step 2/5: fetching sources",
+      toolName: null,
+      item: null,
+      index: null,
+      total: null,
+      data: {
+        call_id: "call-7",
+        stream: "progress",
+        chunk: "Step 2/5: fetching sources",
+      },
+    });
+  });
+
+  // Typing a name that used to fall through to `{type:"custom", name, data}` is a
+  // NARROWING unless the payload survives it: before the typed case existed a
+  // consumer read the whole dict, so anything the variant does not name becomes
+  // unreachable. The payload below is what `web_search` actually emits
+  // (backend `src/agent/search_tool.py`) — `tool`, `index`, `total` and the
+  // structured `item` are all real keys a consumer could be reading today.
+  it("keeps every producer field on tool_progress reachable", () => {
+    const ev = translateCustomEvent("tool_progress", {
+      tool: "web_search",
+      call_id: "call-7",
+      stream: "progress",
+      index: 0,
+      total: 5,
+      chunk: "Astralform docs",
+      item: { title: "Astralform docs", url: "https://astralform.ai", snippet: "…" },
+    });
+    expect(ev).toMatchObject({
+      type: "tool_progress",
+      callId: "call-7",
+      toolName: "web_search",
+      index: 0,
+      total: 5,
+      item: { url: "https://astralform.ai" },
+    });
+  });
+
+  // `generate_video._emit_progress` splats `**extra`, so no fixed field list can
+  // be complete — `status` and `preset` are only reachable through `data`.
+  it("keeps unnamed tool_progress keys reachable through data", () => {
+    const ev = translateCustomEvent("tool_progress", {
+      tool: "generate_video",
+      call_id: "call-9",
+      stream: "progress",
+      chunk: "Still generating… 120s elapsed",
+      status: "running",
+      preset: "720p",
+    });
+    expect(ev).toMatchObject({
+      type: "tool_progress",
+      data: { status: "running", preset: "720p" },
+    });
+  });
+
+  it("maps nested_llm_usage, translating snake_case usage totals to camelCase", () => {
+    const ev = translateCustomEvent("nested_llm_usage", {
+      source: "deep_research",
+      call_id: "call_1",
+      input_tokens: 300,
+      output_tokens: 30,
+      cache_creation_tokens: 7,
+      cached_tokens: 11,
+      llm_calls: 3,
+    });
+    expect(ev).toEqual({
+      type: "nested_llm_usage",
+      source: "deep_research",
+      callId: "call_1",
+      inputTokens: 300,
+      outputTokens: 30,
+      cacheCreationTokens: 7,
+      cachedTokens: 11,
+      llmCalls: 3,
+    });
+  });
+
   it("unknown names fall through to generic custom", () => {
     const ev = translateCustomEvent("brand_new_event", { payload: 42 });
     expect(ev).toEqual({
@@ -214,4 +320,72 @@ describe("translateWireEvent", () => {
       },
     });
   });
+
+  it("keeps memory_provider_error / tool_progress / nested_llm_usage typed through the custom envelope", () => {
+    // translateWireEvent forwards backend custom events via translateCustomEvent. These
+    // three were falling through to the generic `custom` passthrough, so a consumer had
+    // to cast `data`; each must come out as its own typed ChatEvent variant instead.
+    const envelopes = [
+      {
+        type: "custom",
+        seq: 1,
+        ts: 0,
+        job_id: "job-1",
+        turn_id: "t1",
+        name: "memory_provider_error",
+        data: { provider: "supermemory", op: "save", error: "HTTPError: 500" },
+      },
+      {
+        type: "custom",
+        seq: 2,
+        ts: 0,
+        job_id: "job-1",
+        turn_id: "t1",
+        name: "tool_progress",
+        data: { call_id: "call-7", chunk: "compiling" },
+      },
+      {
+        type: "custom",
+        seq: 3,
+        ts: 0,
+        job_id: "job-1",
+        turn_id: "t1",
+        name: "nested_llm_usage",
+        data: {
+          source: "deep_research",
+          call_id: "call_1",
+          input_tokens: 300,
+          output_tokens: 30,
+          cache_creation_tokens: 7,
+          cached_tokens: 11,
+          llm_calls: 3,
+        },
+      },
+    ] as unknown as WireEvent[];
+
+    const [memoryEv, progressEv, usageEv] = envelopes.map(translateWireEvent);
+    expect(memoryEv).toMatchObject({
+      type: "memory_provider_error",
+      provider: "supermemory",
+      op: "save",
+      error: "HTTPError: 500",
+    });
+    expect(progressEv).toMatchObject({
+      type: "tool_progress",
+      callId: "call-7",
+      stream: "progress",
+      chunk: "compiling",
+    });
+    expect(usageEv).toMatchObject({
+      type: "nested_llm_usage",
+      source: "deep_research",
+      callId: "call_1",
+      inputTokens: 300,
+      outputTokens: 30,
+      cacheCreationTokens: 7,
+      cachedTokens: 11,
+      llmCalls: 3,
+    });
+  });
+
 });

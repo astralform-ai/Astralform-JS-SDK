@@ -133,6 +133,7 @@ export const ChatEventType = {
   ContextWarning: "context_warning",
   MemoryRecall: "memory_recall",
   MemoryUpdate: "memory_update",
+  MemoryProviderError: "memory_provider_error",
   DesktopStream: "desktop_stream",
   AttachmentStaged: "attachment_staged",
   WorkspaceReady: "workspace_ready",
@@ -141,6 +142,8 @@ export const ChatEventType = {
   ToolApprovalGranted: "tool_approval_granted",
   ToolPermissionDenied: "tool_permission_denied",
   ToolHarnessWarning: "tool_harness_warning",
+  ToolProgress: "tool_progress",
+  NestedLlmUsage: "nested_llm_usage",
   UserUnavailable: "user_unavailable",
   PromptSuggestion: "prompt_suggestion",
   StateChanged: "state_changed",
@@ -491,6 +494,16 @@ export type ChatEvent =
       key?: string | null;
       namespace?: string | null;
     }
+  | {
+      type: "memory_provider_error";
+      /** The external memory provider that failed (registry slug, e.g. "mem0"). */
+      provider: string;
+      /** Which provider operation failed — "save" | "update" | "delete" | "get"
+       *  | "recall" | "ingest" | "list_visible" | … */
+      op: string;
+      /** One-line "<ExceptionType>: <message>" detail, length-capped by the backend. */
+      error: string;
+    }
   | { type: "desktop_stream"; url: string; sandboxId?: string | null }
   | {
       type: "attachment_staged";
@@ -538,6 +551,45 @@ export type ChatEvent =
       callId: string;
       message?: string | null;
       details?: Record<string, unknown> | null;
+    }
+  | {
+      type: "tool_progress";
+      callId: string;
+      /** Known values: "stdout" | "stderr" | "progress" | "command". Typed as
+       *  string for forward compat; the backend defaults to "progress". */
+      stream: string;
+      /** Live progress text to append; the backend newline-terminates chunks. */
+      chunk: string;
+      /** Emitting tool, e.g. "web_search" | "deep_research" | "generate_video".
+       *  Every producer sends it; null only if a future one does not. The wire
+       *  key is `tool`, but this layer chooses consumer-facing names rather than
+       *  inheriting them, and every sibling tool event calls it `toolName`. */
+      toolName?: string | null;
+      /** Structured metadata riding alongside `chunk` for a richer UI — a search
+       *  result ({title,url,snippet}) or a research phase record. Null when the
+       *  producer sends none. */
+      item?: Record<string, unknown> | null;
+      /** Position within `total`, when the producer emits one item per step. */
+      index?: number | null;
+      total?: number | null;
+      /** The raw payload, verbatim. Producers send keys beyond the named ones —
+       *  `generate_video` splats arbitrary `**extra` (`status`, `preset`) — so
+       *  the named fields are a convenience, not the whole event. Read here for
+       *  anything they do not cover. */
+      data: Record<string, unknown>;
+    }
+  | {
+      type: "nested_llm_usage";
+      /** Which tool made the nested calls, e.g. "deep_research". */
+      source: string;
+      /** The parent tool call these nested calls belong to. */
+      callId: string;
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+      cacheCreationTokens: number;
+      /** Number of nested LLM calls this event aggregates. */
+      llmCalls: number;
     }
   | {
       type: "user_unavailable";
