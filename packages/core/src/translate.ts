@@ -242,6 +242,17 @@ export function translateCustomEvent(
         callId: (data.call_id as string) ?? "",
         stream: (data.stream as string) ?? "progress",
         chunk: (data.chunk as string) ?? "",
+        tool: (data.tool as string | null) ?? null,
+        item: (data.item as Record<string, unknown> | null) ?? null,
+        index: (data.index as number | null) ?? null,
+        total: (data.total as number | null) ?? null,
+        // Every producer sends keys beyond the named ones, and one of them
+        // (`video_tool._emit_progress`) splats `**extra`, so no fixed list can
+        // be complete. Before this case existed the event fell through to
+        // `{type:"custom", name, data}` and consumers read the whole dict;
+        // keeping `data` verbatim is what makes the typed variant an addition
+        // rather than a narrowing.
+        data,
       };
     case "nested_llm_usage":
       return {

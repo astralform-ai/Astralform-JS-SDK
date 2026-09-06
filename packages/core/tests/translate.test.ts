@@ -183,6 +183,58 @@ describe("translateCustomEvent", () => {
       callId: "call-7",
       stream: "progress",
       chunk: "Step 2/5: fetching sources",
+      tool: null,
+      item: null,
+      index: null,
+      total: null,
+      data: {
+        call_id: "call-7",
+        stream: "progress",
+        chunk: "Step 2/5: fetching sources",
+      },
+    });
+  });
+
+  // Typing a name that used to fall through to `{type:"custom", name, data}` is a
+  // NARROWING unless the payload survives it: before the typed case existed a
+  // consumer read the whole dict, so anything the variant does not name becomes
+  // unreachable. The payload below is what `web_search` actually emits
+  // (backend `src/agent/search_tool.py`) — `tool`, `index`, `total` and the
+  // structured `item` are all real keys a consumer could be reading today.
+  it("keeps every producer field on tool_progress reachable", () => {
+    const ev = translateCustomEvent("tool_progress", {
+      tool: "web_search",
+      call_id: "call-7",
+      stream: "progress",
+      index: 0,
+      total: 5,
+      chunk: "Astralform docs",
+      item: { title: "Astralform docs", url: "https://astralform.ai", snippet: "…" },
+    });
+    expect(ev).toMatchObject({
+      type: "tool_progress",
+      callId: "call-7",
+      tool: "web_search",
+      index: 0,
+      total: 5,
+      item: { url: "https://astralform.ai" },
+    });
+  });
+
+  // `generate_video._emit_progress` splats `**extra`, so no fixed field list can
+  // be complete — `status` and `preset` are only reachable through `data`.
+  it("keeps unnamed tool_progress keys reachable through data", () => {
+    const ev = translateCustomEvent("tool_progress", {
+      tool: "generate_video",
+      call_id: "call-9",
+      stream: "progress",
+      chunk: "Still generating… 120s elapsed",
+      status: "running",
+      preset: "720p",
+    });
+    expect(ev).toMatchObject({
+      type: "tool_progress",
+      data: { status: "running", preset: "720p" },
     });
   });
 

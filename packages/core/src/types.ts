@@ -560,6 +560,21 @@ export type ChatEvent =
       stream: string;
       /** Live progress text to append; the backend newline-terminates chunks. */
       chunk: string;
+      /** Emitting tool, e.g. "web_search" | "deep_research" | "generate_video".
+       *  Every producer sends it; null only if a future one does not. */
+      tool?: string | null;
+      /** Structured metadata riding alongside `chunk` for a richer UI — a search
+       *  result ({title,url,snippet}) or a research phase record. Null when the
+       *  producer sends none. */
+      item?: Record<string, unknown> | null;
+      /** Position within `total`, when the producer emits one item per step. */
+      index?: number | null;
+      total?: number | null;
+      /** The raw payload, verbatim. Producers send keys beyond the named ones —
+       *  `generate_video` splats arbitrary `**extra` (`status`, `preset`) — so
+       *  the named fields are a convenience, not the whole event. Read here for
+       *  anything they do not cover. */
+      data: Record<string, unknown>;
     }
   | {
       type: "nested_llm_usage";
