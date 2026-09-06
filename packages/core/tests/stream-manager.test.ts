@@ -109,7 +109,7 @@ describe("StreamManager", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.endsWith("/c1/jobs")) {
+      if (url.includes("/c1/jobs")) {
         jobsCalls++;
         return new Response(JSON.stringify([]), {
           status: 200,
@@ -160,7 +160,7 @@ describe("StreamManager", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.endsWith("/c1/jobs")) calls.jobs++;
+      if (url.includes("/c1/jobs")) calls.jobs++;
       else if (url.includes("/conversations/c1/events")) calls.events++;
       else if (url.includes("/conversations/c1/messages")) calls.messages++;
       return new Response(JSON.stringify([]), {
@@ -271,7 +271,7 @@ describe("StreamManager", () => {
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (url.endsWith("/c1/jobs")) {
+      if (url.includes("/c1/jobs")) {
         calls.jobs++;
         return json([{ job_id: "job-done", status: "completed" }]);
       }
