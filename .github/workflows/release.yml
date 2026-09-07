@@ -57,10 +57,6 @@ jobs:
       id-token: write # OIDC identity for npm trusted publishing
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Tags only, for the "already tagged" check below. `fetch-depth: 0`
-          # would buy the same thing by cloning every commit on every run.
-          fetch-tags: true
 
       - uses: pnpm/action-setup@v4
 
@@ -156,9 +152,22 @@ jobs:
         env:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
-          if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
-            echo "Tag $VERSION already exists — leaving it."
+          # Ask the REMOTE, not the local clone. `git rev-parse` answers from
+          # whatever refs this checkout happens to hold, and on the runner's
+          # shallow clone that is not the set of tags that exist — so it reported
+          # "no tag" for a tag that was already pushed, and the create-then-push
+          # below failed with `! [rejected] (already exists)`. It passed every
+          # local test because a developer's clone has the tags. `ls-remote` is
+          # authoritative and needs nothing fetched.
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists on the remote — leaving it."
             exit 0
           fi
           git tag "$VERSION"
-          git push origin "$VERSION"
+          # A rejected push is only acceptable if the tag now exists — i.e. it
+          # appeared between the check and the push. Anything else is a real
+          # failure and must stay red.
+          git push origin "$VERSION" || {
+            echo "Push rejected — re-checking whether the tag now exists."
+            git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null
+          }
