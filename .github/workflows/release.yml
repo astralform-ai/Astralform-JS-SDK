@@ -172,9 +172,6 @@ jobs:
             exit 1
           fi
           git tag "$VERSION"
-          # A rejected push is only acceptable if the tag now exists — i.e. it
-          # appeared between the check and the push. Anything else is a real
-          # failure and must stay red.
           # A rejected push is acceptable only if the tag that beat us names THIS
           # commit. A tag of the same name on a different commit is a worse
           # outcome than no tag: the run would go green having accepted a record
