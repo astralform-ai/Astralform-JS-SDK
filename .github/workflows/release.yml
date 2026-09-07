@@ -1,19 +1,66 @@
 name: Release
 
+# Two triggers, one publish path.
+#
+# `push: tags` was the ONLY trigger, and publishing therefore depended on a human
+# remembering a step the PR itself gave no sign of needing. It was missed three
+# times: #60 and #62 merged as "release 8.1.0" / "release 8.2.0" with the
+# package.json bump included, and neither version has ever existed on npm — their
+# code reached consumers only when 8.3.0 was cut over the top. #58
+# (`docs(core): the version floors name releases that exist`) is the downstream
+# symptom of exactly that, and #63's 8.5.0 was the third occurrence.
+#
+# So a version bump landing on `main` now publishes itself. The tag trigger stays:
+# it is how a backfill or a deliberate re-run is done, and removing it would break
+# the one path people know.
 on:
   push:
+    branches: [main]
+    # Deliberately NO `paths` filter. Scoping the main trigger to
+    # packages/core/package.json would spare a runner on most pushes, but a
+    # `paths` filter applies to the whole `push` event — tag pushes included —
+    # where the diff it filters on is not the one anybody means. Silently losing
+    # the tag path is the exact failure mode this workflow is being changed to
+    # remove, and the guard below already makes a no-bump push a fast exit.
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
       - "[0-9]+.[0-9]+.[0-9]+-*"
+
+# The `npm view` guard below is check-then-act, and the gap between the two is a
+# whole install + test run. Without serialisation, a second push landing inside
+# that window resolves the SAME version from the SAME unchanged package.json,
+# sees the registry 404 because the first run has not uploaded yet, and races it
+# to `npm publish` -- one of them dying on E403, which is precisely the red run
+# the guard exists to prevent. Removing the `paths` filter made that every push,
+# not a rare one.
+#
+# The group MUST be a constant. Keying it on `github.sha` or `github.ref` -- the
+# usual shape, and what ci.yml correctly does for a per-PR gate -- puts every
+# push in its own group and serialises nothing at all.
+#
+# `cancel-in-progress: false` because the queued run is not superseded work: it
+# has to actually execute so its own guard can observe the now-published version
+# and exit. Cancelling it would leave the version unpublished if IT was the one
+# carrying the bump.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # `write`, not `read`: the main-push path creates the version tag itself, so
+      # the tag still exists as the record of what shipped even though it is no
+      # longer the thing that triggers the publish.
+      contents: write
       id-token: write # OIDC identity for npm trusted publishing
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags only, for the "already tagged" check below. `fetch-depth: 0`
+          # would buy the same thing by cloning every commit on every run.
+          fetch-tags: true
 
       - uses: pnpm/action-setup@v4
 
@@ -28,23 +75,90 @@ jobs:
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@11.18.0
 
-      - name: Verify tag matches package version
+      # The version to release is package.json on a main push, and the tag name on
+      # a tag push — where the two must agree, because a tag naming a version the
+      # package does not declare would publish something other than what it says.
+      - name: Resolve the version being released
+        id: v
         run: |
           PKG_VERSION=$(node -p "require('./packages/core/package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag $TAG_VERSION does not match package.json version $PKG_VERSION"
-            exit 1
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version $PKG_VERSION"
+              exit 1
+            fi
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $PKG_VERSION"
+
+      # The idempotence guard, and the reason both triggers can coexist safely.
+      # npm refuses to republish a version, which would fail the run rather than
+      # no-op it — so a main push whose version is already out (every commit that
+      # does NOT bump the version, plus the tag path having got there first) has
+      # to be recognised and skipped, not attempted.
+      - name: Skip if this version is already published
+        id: published
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if npm view "@astralform/js@$VERSION" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "$VERSION is already on npm — nothing to do."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - if: steps.published.outputs.already == 'false'
+        run: pnpm install --frozen-lockfile
+
+      - if: steps.published.outputs.already == 'false'
+        run: pnpm test
 
       # Authenticates via the GitHub OIDC token against the trusted publisher
       # configured on npmjs.com (astralform-ai/Astralform-JS-SDK -> release.yml).
       # No NODE_AUTH_TOKEN; provenance is generated automatically. The package's
       # `prepublishOnly` builds dist just before upload (no separate build step
       # needed — avoids a redundant double build).
+      # A prerelease must NOT become `latest`. `npm publish` reads no meaning from
+      # the version string, so without `--tag` an `8.6.0-rc.1` lands as `latest`
+      # and every plain `npm i @astralform/js` starts serving the RC. Before this
+      # PR a human gated that by choosing to push the tag; the main trigger
+      # removes the deliberation, so the workflow has to make the distinction.
       - name: Publish @astralform/js
-        run: npm publish --access public
+        if: steps.published.outputs.already == 'false'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          case "$VERSION" in
+            *-*) npm publish --access public --tag next ;;
+            *)   npm publish --access public ;;
+          esac
         working-directory: packages/core
+
+      # Records what shipped. Deliberately AFTER the publish: a tag pointing at a
+      # version that failed to upload is worse than no tag, because the next run's
+      # "already tagged" reasoning would trust it. Pushed with GITHUB_TOKEN, which
+      # by design does NOT retrigger this workflow — that is what stops the tag
+      # this job creates from starting a second run of it.
+      #
+      # NOT gated on `already == false`, and that is the point. If the publish
+      # succeeds and this push fails (tag protection, a transient error), the run
+      # is red — and a "Re-run failed jobs" would then find the version on npm,
+      # skip publish, and skip the tag too, going GREEN with the tag still
+      # missing. That is the npm-list ≠ tag-list divergence this whole workflow
+      # exists to close, reintroduced in the recovery path. Idempotence lives in
+      # the `git rev-parse` below instead, which is where it can serve both runs.
+      # A re-run replays the SAME commit, so the tag still lands on the release
+      # commit; only a LATER unrelated push to a published-but-untagged version
+      # would tag the wrong commit, and having the tag beats not having it there.
+      - name: Tag the released commit
+        if: github.ref_type == 'branch'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — leaving it."
+            exit 0
+          fi
+          git tag "$VERSION"
+          git push origin "$VERSION"
