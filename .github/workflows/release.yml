@@ -26,6 +26,26 @@ on:
       - "[0-9]+.[0-9]+.[0-9]+"
       - "[0-9]+.[0-9]+.[0-9]+-*"
 
+# The `npm view` guard below is check-then-act, and the gap between the two is a
+# whole install + test run. Without serialisation, a second push landing inside
+# that window resolves the SAME version from the SAME unchanged package.json,
+# sees the registry 404 because the first run has not uploaded yet, and races it
+# to `npm publish` -- one of them dying on E403, which is precisely the red run
+# the guard exists to prevent. Removing the `paths` filter made that every push,
+# not a rare one.
+#
+# The group MUST be a constant. Keying it on `github.sha` or `github.ref` -- the
+# usual shape, and what ci.yml correctly does for a per-PR gate -- puts every
+# push in its own group and serialises nothing at all.
+#
+# `cancel-in-progress: false` because the queued run is not superseded work: it
+# has to actually execute so its own guard can observe the now-published version
+# and exit. Cancelling it would leave the version unpublished if IT was the one
+# carrying the bump.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -38,7 +58,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # tags, so the "already tagged" check can see them
+          # Tags only, for the "already tagged" check below. `fetch-depth: 0`
+          # would buy the same thing by cloning every commit on every run.
+          fetch-tags: true
 
       - uses: pnpm/action-setup@v4
 
@@ -76,10 +98,12 @@ jobs:
       # to be recognised and skipped, not attempted.
       - name: Skip if this version is already published
         id: published
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
         run: |
-          if npm view "@astralform/js@${{ steps.v.outputs.version }}" version >/dev/null 2>&1; then
+          if npm view "@astralform/js@$VERSION" version >/dev/null 2>&1; then
             echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.v.outputs.version }} is already on npm — nothing to do."
+            echo "$VERSION is already on npm — nothing to do."
           else
             echo "already=false" >> "$GITHUB_OUTPUT"
           fi
@@ -95,9 +119,20 @@ jobs:
       # No NODE_AUTH_TOKEN; provenance is generated automatically. The package's
       # `prepublishOnly` builds dist just before upload (no separate build step
       # needed — avoids a redundant double build).
+      # A prerelease must NOT become `latest`. `npm publish` reads no meaning from
+      # the version string, so without `--tag` an `8.6.0-rc.1` lands as `latest`
+      # and every plain `npm i @astralform/js` starts serving the RC. Before this
+      # PR a human gated that by choosing to push the tag; the main trigger
+      # removes the deliberation, so the workflow has to make the distinction.
       - name: Publish @astralform/js
         if: steps.published.outputs.already == 'false'
-        run: npm publish --access public
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          case "$VERSION" in
+            *-*) npm publish --access public --tag next ;;
+            *)   npm publish --access public ;;
+          esac
         working-directory: packages/core
 
       # Records what shipped. Deliberately AFTER the publish: a tag pointing at a
@@ -105,8 +140,19 @@ jobs:
       # "already tagged" reasoning would trust it. Pushed with GITHUB_TOKEN, which
       # by design does NOT retrigger this workflow — that is what stops the tag
       # this job creates from starting a second run of it.
+      #
+      # NOT gated on `already == false`, and that is the point. If the publish
+      # succeeds and this push fails (tag protection, a transient error), the run
+      # is red — and a "Re-run failed jobs" would then find the version on npm,
+      # skip publish, and skip the tag too, going GREEN with the tag still
+      # missing. That is the npm-list ≠ tag-list divergence this whole workflow
+      # exists to close, reintroduced in the recovery path. Idempotence lives in
+      # the `git rev-parse` below instead, which is where it can serve both runs.
+      # A re-run replays the SAME commit, so the tag still lands on the release
+      # commit; only a LATER unrelated push to a published-but-untagged version
+      # would tag the wrong commit, and having the tag beats not having it there.
       - name: Tag the released commit
-        if: steps.published.outputs.already == 'false' && github.ref_type == 'branch'
+        if: github.ref_type == 'branch'
         env:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
