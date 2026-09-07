@@ -38,7 +38,19 @@ describe("translateCustomEvent", () => {
     });
   });
 
-  it("maps tool_permission_denied with reason and denied_by", () => {
+  it("does NOT type tool_permission_denied — the event cannot reach a client", () => {
+    // The translator was removed in 9.0.0. The backend routes this name
+    // through `_BLOCK_MUTATING_CUSTOM_NAMES`, whose handler sets
+    // `block.denied_by` / `block.denial_kind` and closes the block via
+    // `block_stop`; the branch that would forward a custom event to the wire
+    // is the `elif` below it, and unlike its two siblings in that set this
+    // one emits no `WireCustomEvent`. So the case could never fire, and a
+    // client waiting for it showed a denial with no reason.
+    //
+    // The denial is read off `block_stop.final` — `denied_by` for the prose,
+    // `denial_kind` for the token. Pinned here as the raw passthrough rather
+    // than deleted outright: if the backend ever did forward this name, the
+    // data must still reach the consumer untyped rather than vanish.
     const ev = translateCustomEvent("tool_permission_denied", {
       tool_name: "rm",
       call_id: "call-9",
@@ -46,11 +58,14 @@ describe("translateCustomEvent", () => {
       denied_by: "rule",
     });
     expect(ev).toEqual({
-      type: "tool_permission_denied",
-      toolName: "rm",
-      callId: "call-9",
-      reason: "Matched dangerous pattern",
-      deniedBy: "rule",
+      type: "custom",
+      name: "tool_permission_denied",
+      data: {
+        tool_name: "rm",
+        call_id: "call-9",
+        reason: "Matched dangerous pattern",
+        denied_by: "rule",
+      },
     });
   });
 

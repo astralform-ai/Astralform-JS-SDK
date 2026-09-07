@@ -220,14 +220,6 @@ export function translateCustomEvent(
         toolName: (data.tool_name as string) ?? "",
         callId: (data.call_id as string) ?? "",
       };
-    case "tool_permission_denied":
-      return {
-        type: "tool_permission_denied",
-        toolName: (data.tool_name as string) ?? "",
-        callId: (data.call_id as string) ?? "",
-        reason: (data.reason as string | null) ?? null,
-        deniedBy: (data.denied_by as string | null) ?? null,
-      };
     case "tool_harness_warning":
       return {
         type: "tool_harness_warning",
