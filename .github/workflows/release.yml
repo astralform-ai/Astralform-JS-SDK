@@ -159,15 +159,34 @@ jobs:
           # below failed with `! [rejected] (already exists)`. It passed every
           # local test because a developer's clone has the tags. `ls-remote` is
           # authoritative and needs nothing fetched.
-          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+          # `--exit-code` returns 2 for "no such ref" and 128 for "could not read
+          # from remote". Collapsing them with `2>&1` would send a DNS blip or an
+          # expired credential down the same path as a genuinely absent tag, and
+          # say nothing about which in the log — in a step whose previous bug was
+          # exactly that its reasoning could not be read back from the log.
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
             echo "Tag $VERSION already exists on the remote — leaving it."
             exit 0
+          elif [ $? -ne 2 ]; then
+            echo "::error::Could not query the remote for refs/tags/$VERSION"
+            exit 1
           fi
           git tag "$VERSION"
           # A rejected push is only acceptable if the tag now exists — i.e. it
           # appeared between the check and the push. Anything else is a real
           # failure and must stay red.
+          # A rejected push is acceptable only if the tag that beat us names THIS
+          # commit. A tag of the same name on a different commit is a worse
+          # outcome than no tag: the run would go green having accepted a record
+          # that points at a different tree than the one just published, which is
+          # the class of silent divergence this workflow exists to close. These
+          # are lightweight tags, so ls-remote gives the commit with no peeling.
           git push origin "$VERSION" || {
             echo "Push rejected — re-checking whether the tag now exists."
-            git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null
+            remote_sha=$(git ls-remote --tags origin "refs/tags/$VERSION" | cut -f1)
+            if [ "$remote_sha" != "$GITHUB_SHA" ]; then
+              echo "::error::refs/tags/$VERSION points at ${remote_sha:-nothing}, not $GITHUB_SHA"
+              exit 1
+            fi
+            echo "A concurrent writer tagged $GITHUB_SHA first — that is the wanted outcome."
           }
