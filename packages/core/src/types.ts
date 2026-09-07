@@ -140,7 +140,6 @@ export const ChatEventType = {
   AssetCreated: "asset_created",
   ToolApprovalRequested: "tool_approval_requested",
   ToolApprovalGranted: "tool_approval_granted",
-  ToolPermissionDenied: "tool_permission_denied",
   ToolHarnessWarning: "tool_harness_warning",
   ToolProgress: "tool_progress",
   NestedLlmUsage: "nested_llm_usage",
@@ -538,14 +537,6 @@ export type ChatEvent =
       callId: string;
     }
   | {
-      type: "tool_permission_denied";
-      toolName: string;
-      callId: string;
-      reason?: string | null;
-      /** Known values: "hook" | "rule" | "user" | "timeout" | "circuit_breaker". */
-      deniedBy?: string | null;
-    }
-  | {
       type: "tool_harness_warning";
       toolName: string;
       callId: string;
@@ -646,17 +637,15 @@ export interface Message {
   id: string;
   conversationId: string;
   /**
-   * `"tool"` is the role every tool-result row carries, and it was missing
-   * here — which is why those rows could not be typed at all.
+   * `"tool"` is the role every tool-result row carries.
    *
-   * `"system"` is retained but DEAD: `MessageResponse.role` is
-   * `Literal["user", "assistant", "tool"]`, and the server skips system rows
-   * before responding, so it cannot occur. Narrowing the union would be a
-   * source-breaking change for anyone matching on it, so it is grouped with
-   * the other breaking cleanups for one deliberate major rather than
-   * dribbling a major out of an otherwise additive change.
+   * `"system"` was here and could not occur: `MessageResponse.role` is
+   * `Literal["user", "assistant", "tool"]` and the server skips system rows
+   * before responding. Narrowing the union is source-breaking for anyone
+   * matching on it, which is why it waited for this major rather than
+   * dribbling one out of an otherwise additive change.
    */
-  role: "user" | "assistant" | "tool" | "system";
+  role: "user" | "assistant" | "tool";
   content: string;
   parentId?: string;
   status: "sending" | "streaming" | "complete" | "error";

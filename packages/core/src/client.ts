@@ -105,7 +105,7 @@ interface RawToolSource {
 interface RawMessage {
   id: string;
   conversation_id: string;
-  role: "user" | "assistant" | "tool" | "system";
+  role: "user" | "assistant" | "tool";
   content: string;
   parent_id?: string;
   created_at: string;

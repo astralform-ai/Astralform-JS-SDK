@@ -147,14 +147,6 @@ export interface ToolApprovalGrantedPayload {
   callId: string;
 }
 
-export interface ToolPermissionDeniedPayload {
-  toolName: string;
-  callId: string;
-  reason?: string | null;
-  /** Known values: "hook" | "rule" | "user" | "timeout" | "circuit_breaker". */
-  deniedBy?: string | null;
-}
-
 export interface ToolHarnessWarningPayload {
   toolName: string;
   callId: string;

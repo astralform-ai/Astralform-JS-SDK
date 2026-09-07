@@ -83,7 +83,6 @@ export type {
   AssetCreatedPayload,
   ToolApprovalRequestedPayload,
   ToolApprovalGrantedPayload,
-  ToolPermissionDeniedPayload,
   ToolHarnessWarningPayload,
   ToolProgressPayload,
   NestedLlmUsagePayload,

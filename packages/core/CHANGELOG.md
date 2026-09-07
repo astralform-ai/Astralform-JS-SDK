@@ -1,5 +1,22 @@
 # Changelog
 
+## 9.0.0
+
+### Removed (breaking)
+
+- **The `tool_permission_denied` translator, its `ChatEvent` variant, its `ToolPermissionDeniedPayload`, and the `ChatEventType.ToolPermissionDenied` member.** The event cannot reach a client. The backend routes this name through `_BLOCK_MUTATING_CUSTOM_NAMES`, whose handler sets `block.denied_by` / `block.denial_kind` and closes the block via `block_stop`; the branch that forwards a custom event to the wire as a `WireCustomEvent` is the `elif` below it, and unlike the two siblings in that set this one emits nothing. So the case was a reader with no producer — it looked like working code and silently never ran, which is why a denied tool rendered with no reason for as long as it did.
+- **`"system"` from `Message["role"]`.** It could not occur: `MessageResponse.role` is `Literal["user", "assistant", "tool"]` and the server skips system rows before responding. 8.5.0 retained it only because narrowing a union is source-breaking; this is the deliberate major it was being held for.
+
+### Migration
+
+- **Reading a denial:** take it off `block_stop.final`, which is where it actually arrives — `denied_by` is the prose to SHOW (a fixed phrase, or a policy rule's own free-text `reason`), and `denial_kind` is the token to BRANCH on (`"policy_rule"` | `"headless"` | `"user"` | `"hook"` | `"pre_tool_hook"`). `final` is passed through verbatim as `Record<string, unknown>`, so both are reachable without any SDK support. Treat an absent or unrecognised `denial_kind` as "unknown kind" and keep rendering — the set grows, and enumerating it as closed is how a value added later becomes a blank denial. `astralform-chat#192` is the reference implementation.
+- **The event name still parses.** `translateCustomEvent("tool_permission_denied", data)` now falls through to `{ type: "custom", name, data }` rather than throwing, so a consumer that somehow receives it still gets the raw payload untyped.
+- **`Message["role"]`:** a `switch` with a `"system"` arm now has an unreachable case; delete it. Nothing else changes — no runtime behaviour depends on this.
+
+### Compatibility
+
+- Requires no server change. Every removal here is of something the server never sent.
+
 ## 8.5.0
 
 ### Added
