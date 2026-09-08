@@ -54,6 +54,20 @@ export const RESTORE_TURN_PAGE_SIZE = 10;
 export const RESTORE_MESSAGE_PAGE_SIZE = 40;
 
 export interface SendOptions extends ModelChoiceOptions {
+  /**
+   * Client tools to enable for THIS turn, overriding `session.enabledClientTools`
+   * for it alone. Omit to use that Set, which is the persistent default.
+   *
+   * Present here while `conversationId` — the session's other extra field — is
+   * deliberately absent, and the difference is worth stating so neither gets
+   * "tidied" to match the other. `send` overwrites `conversationId` on its
+   * forward below, because the manager owns the pointer, so accepting one would
+   * silently discard the caller's value. Nothing overwrites this: the spread
+   * carries it and `ChatSession.send` reads it as the override. It was missing
+   * only because it was never added — #55 fixed the same loss for `repository`
+   * in the forward direction and recorded that this one had gone the other way.
+   */
+  enabledClientTools?: string[];
   agentName?: string;
   uploadIds?: string[];
   planMode?: boolean;
