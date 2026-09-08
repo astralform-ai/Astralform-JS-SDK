@@ -30,6 +30,18 @@ export type {
   StreamManagerEvent,
 } from "./stream-manager.js";
 
+// `ChatSession.send` takes a DIFFERENT options type from `StreamManager.send`,
+// and the difference is deliberate rather than drift: the manager owns the
+// conversation pointer, overwriting `conversationId` on every forward
+// (`stream-manager.ts` — `{ ...options, conversationId: target ?? undefined }`),
+// so accepting one from its caller would silently discard it. `SendOptions`
+// above is therefore the manager's narrower shape, and the session's — the one
+// carrying `conversationId` and `enabledClientTools` — needs its own name to be
+// nameable at all. It had none until now, so a consumer typing the options
+// object for `session.send` reached for `SendOptions` and got the shape that
+// rejects the field they were trying to pass.
+export type { SendOptions as SessionSendOptions } from "./types.js";
+
 // Delta translator (shared between session and replay)
 export { translateDelta } from "./translate.js";
 
