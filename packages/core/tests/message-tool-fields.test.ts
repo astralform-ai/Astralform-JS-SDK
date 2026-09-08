@@ -135,20 +135,3 @@ describe("REST history tool rows", () => {
     expect(page.messages[0]?.deniedBy).toBe("Requires approval (headless run)");
   });
 });
-
-describe("public export surface", () => {
-  it("makes ToolSource nameable by a consumer", async () => {
-    // `index.ts` re-exports through an EXPLICIT named list -- no `export *` --
-    // so a type referenced by `Message.sources` still ships unnameable unless it
-    // is on that list. Nothing in-repo imports it, so typecheck cannot catch it.
-    const { readFileSync } = await import("node:fs");
-    const { fileURLToPath } = await import("node:url");
-    const index = readFileSync(
-      fileURLToPath(new URL("../src/index.ts", import.meta.url)),
-      "utf8",
-    );
-    // Anchored like `public-exports.test.ts`'s guard: a bare substring match
-    // would pass on a mention in a comment, or on `ToolSourceRef`.
-    expect(index).toMatch(/^\s*ToolSource,\s*$/m);
-  });
-});
