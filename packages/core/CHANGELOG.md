@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`SessionSendOptions`** is now exported. It is the options type `ChatSession.send` accepts — the one carrying `conversationId` and `enabledClientTools` — and it had no exported name at all, so a consumer typing that object reached for `SendOptions` and got a shape that rejects both fields. `index.ts` re-exports through an explicit named list, so a type referenced by a public method still ships unnameable unless it is on that list; the guard added in #65 now covers `types.ts`, which is what surfaced this.
+- **`SessionSendOptions`** is now exported. It is the options type `ChatSession.send` accepts — the one carrying `conversationId` and `enabledClientTools` — and it had no exported name at all, so a consumer typing that object reached for `SendOptions` and got a shape that rejects both fields. `index.ts` re-exports through an explicit named list, so a type referenced by a public method still ships unnameable unless it is on that list; the guard added in #61 was widened to cover `types.ts` in #69, which is what surfaced this.
 
 ### Compatibility
 
