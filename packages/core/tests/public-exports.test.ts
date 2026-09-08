@@ -94,30 +94,6 @@ const namesExportedBy = (index: string): Set<string> => {
 describe("public export surface", () => {
   const exported = namesExportedBy(read("index.ts"));
 
-  /**
-   * `types.ts` declares a `SendOptions` and so does `stream-manager.ts`, with
-   * different shapes — the `types.ts` one carries `conversationId` and
-   * `enabledClientTools`, and is what `ChatSession.send` accepts
-   * (`session.ts:16` imports it `from "./types.js"`). `index.ts` re-exports
-   * only the `stream-manager.ts` one, so a consumer writing `SendOptions`
-   * gets the shape `session.send` does not take:
-   *
-   *   import type { SendOptions } from "@astralform/js";
-   *   const opts: SendOptions = { conversationId: "conv_1" };
-   *   // TS2353: 'conversationId' does not exist in type 'SendOptions'
-   *
-   * This is the #63/#65 bug already shipped, not one this guard introduced.
-   * Closing it means renaming one of the two or exporting both under distinct
-   * names — a public API decision on a just-released major, out of scope for
-   * the guard. So it is pinned here rather than allowlisted away: the
-   * assertion below compares the missing set to this list EXACTLY, so a new
-   * gap fails the test, and so does fixing this one without deleting the entry.
-   */
-  const KNOWN_GAPS: Record<string, string[]> = {
-    "types.ts": ["SendOptions"],
-    "custom-events.ts": [],
-  };
-
   it.each([
     // #61 added this file's guard; #63 shipped `ToolSource` in `types.ts` and
     // nearly shipped it unnameable, which is why `types.ts` is here too.
@@ -131,7 +107,7 @@ describe("public export surface", () => {
     const module = file.replace(/\.ts$/, "");
     const missing = declared.filter((name) => !exported.has(`${module}:${name}`));
 
-    expect(missing).toEqual(KNOWN_GAPS[file]);
+    expect(missing).toEqual([]);
   });
 
   it("reads the export list without over-collecting", () => {
@@ -142,9 +118,13 @@ describe("public export surface", () => {
     // And the positive control for the shape the old `^\s*Name,\s*$` matcher
     // got wrong: a name sharing a single-line block with its neighbours.
     expect(exported.has("types:BlockDeltaPayload")).toBe(true);
-    // The collision, from the module that DOES re-export it.
+    // Two unrelated interfaces share the name `SendOptions` — the manager's
+    // narrower shape and the session's. Both are published now (#70), each
+    // keyed to the module that declares it, which is the whole reason this set
+    // is module-keyed: a flat one could not tell them apart and reported
+    // `types.ts` clean while the session's shape was unreachable.
     expect(exported.has("stream-manager:SendOptions")).toBe(true);
-    expect(exported.has("types:SendOptions")).toBe(false);
+    expect(exported.has("types:SendOptions")).toBe(true);
   });
 
   it("collects type aliases and honours the @internal opt-out", () => {
