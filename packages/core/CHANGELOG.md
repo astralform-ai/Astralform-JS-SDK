@@ -1,5 +1,17 @@
 # Changelog
 
+## 9.1.0
+
+### Added
+
+- **`SessionSendOptions`** is now exported. It is the options type `ChatSession.send` accepts — the one carrying `conversationId` and `enabledClientTools` — and it had no exported name at all, so a consumer typing that object reached for `SendOptions` and got a shape that rejects both fields. `index.ts` re-exports through an explicit named list, so a type referenced by a public method still ships unnameable unless it is on that list; the guard added in #65 now covers `types.ts`, which is what surfaced this.
+
+### Compatibility
+
+- Additive. `SendOptions` is unchanged and still resolves to `StreamManager`'s shape, so no existing import changes meaning.
+- **The two shapes stay separate on purpose, and are not merging later.** `StreamManager.send` forwards `{ ...options, conversationId: target ?? undefined }` — the manager owns the conversation pointer and overwrites the field on every call — so accepting a `conversationId` from its caller would silently discard one. `SendOptions` is therefore the narrower manager shape and `SessionSendOptions` the wider session one; reach for the latter only when you are calling `ChatSession.send` directly.
+- **This supersedes the note under 5.0.0** that reads *"the `SendOptions` exported from the package is `StreamManager`'s, which has no `conversationId`; the one that does is internal."* That was true when written and the entry is left as written, but the type is no longer internal: import `SessionSendOptions` and an inline object literal passed to `ChatSession.send` typechecks, which is the signal that entry said TypeScript could not give you.
+
 ## 9.0.0
 
 ### Removed (breaking)
