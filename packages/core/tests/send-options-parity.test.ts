@@ -21,12 +21,37 @@ import { fileURLToPath } from "node:url";
 const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), "utf8");
 
-/** The field names one `export interface SendOptions { … }` block declares. */
+/**
+ * The field names one `export interface SendOptions { … }` block declares.
+ *
+ * Tolerates a `readonly` prefix and a quoted key, and — more importantly —
+ * THROWS on a declaration line it cannot read. A regex that silently skipped an
+ * unfamiliar shape would make the parity assertions below pass while the field
+ * was missing from the manager, which is the exact failure this file exists to
+ * make loud. The `length` floors would not catch it: they catch a scan that
+ * matched nothing, not one that missed one.
+ */
 const sendOptionFields = (source: string): string[] => {
   const block = /^export interface SendOptions[^{]*\{([\s\S]*?)^\}/m.exec(source);
   if (!block) throw new Error("no `export interface SendOptions` block found");
-  // Two-space indent then a name: a JSDoc line is `   *`, so it cannot match.
-  return [...block[1]!.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]!);
+  const body = block[1]!;
+
+  const names = [...body.matchAll(/^ {2}(?:readonly )?["']?(\w+)["']?\??:/gm)].map(
+    (m) => m[1]!,
+  );
+
+  // Every line that declares something must have produced a name.
+  const declarations = body
+    .split("\n")
+    .filter((l) => /^ {2}\S/.test(l) && !/^\s*(\/[/*]|\*)/.test(l) && l.includes(":"));
+  if (declarations.length !== names.length) {
+    throw new Error(
+      `read ${names.length} field(s) from ${declarations.length} declaration line(s) — ` +
+        "a field is written in a shape this scan cannot read; widen the pattern.",
+    );
+  }
+
+  return names;
 };
 
 /**
@@ -48,8 +73,10 @@ describe("SendOptions parity between the session and the manager", () => {
     expect(session.length).toBeGreaterThan(5);
     expect(manager.length).toBeGreaterThan(5);
 
+    // `hasOwn`, not `in`: `in` walks the prototype chain, so a field named
+    // `constructor` or `toString` would be excused by an entry nobody wrote.
     const unreachable = session.filter(
-      (f) => !manager.includes(f) && !(f in DELIBERATELY_OMITTED),
+      (f) => !manager.includes(f) && !Object.hasOwn(DELIBERATELY_OMITTED, f),
     );
     expect(unreachable).toEqual([]);
   });
@@ -61,5 +88,15 @@ describe("SendOptions parity between the session and the manager", () => {
       manager.includes(f),
     );
     expect(stale).toEqual([]);
+  });
+
+  it("and carries no field the session would drop", () => {
+    // The other direction, which `stream-manager.ts` asserts in prose above its
+    // forward: "The manager's `SendOptions` carries no key the session does not
+    // accept, so the spread is equivalent today and cannot drift tomorrow."
+    // Nothing checked that. A manager-only field types fine, spreads into
+    // `session.send`, and is dropped on the floor — the same silent loss as
+    // `enabledClientTools`, pointing the other way.
+    expect(manager.filter((f) => !session.includes(f))).toEqual([]);
   });
 });
