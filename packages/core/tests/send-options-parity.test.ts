@@ -24,12 +24,14 @@ const read = (rel: string) =>
 /**
  * The field names one `export interface SendOptions { … }` block declares.
  *
- * Tolerates a `readonly` prefix and a quoted key, and — more importantly —
- * THROWS on a declaration line it cannot read. A regex that silently skipped an
- * unfamiliar shape would make the parity assertions below pass while the field
- * was missing from the manager, which is the exact failure this file exists to
- * make loud. The `length` floors would not catch it: they catch a scan that
- * matched nothing, not one that missed one.
+ * Reads a `readonly` prefix and a key quoted but otherwise word-chars, and —
+ * more importantly — THROWS when the names it read do not account for every
+ * member in the block. Anything else it cannot parse, `"content-type"?:`
+ * included, trips that throw rather than being handled: a scan that silently
+ * skipped an unfamiliar shape would make the parity assertions below pass while
+ * the field was missing from the manager, which is the exact failure this file
+ * exists to make loud. The `length` floors would not catch it — they catch a
+ * scan that matched nothing, not one that missed one.
  */
 const sendOptionFields = (source: string): string[] => {
   const block = /^export interface SendOptions[^{]*\{([\s\S]*?)^\}/m.exec(source);
@@ -40,14 +42,19 @@ const sendOptionFields = (source: string): string[] => {
     (m) => m[1]!,
   );
 
-  // Every line that declares something must have produced a name.
-  const declarations = body
-    .split("\n")
-    .filter((l) => /^ {2}\S/.test(l) && !/^\s*(\/[/*]|\*)/.test(l) && l.includes(":"));
-  if (declarations.length !== names.length) {
+  // Every MEMBER must have produced a name — members, not lines. Counting lines
+  // held only while a line declared at most one field: `a?: string; b?: number;`
+  // gives one line and, since the pattern is `^`-anchored, one name, so the
+  // counts agreed and `b` went unscanned. That is the silent miss this check
+  // exists to prevent, one level up. Comments carry both `:` and `;`, so they
+  // come out first.
+  const code = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const members = code.split(";").filter((m) => m.trim() !== "");
+  if (members.length !== names.length) {
     throw new Error(
-      `read ${names.length} field(s) from ${declarations.length} declaration line(s) — ` +
-        "a field is written in a shape this scan cannot read; widen the pattern.",
+      `read ${names.length} field(s) from ${members.length} member(s) — a field is ` +
+        "written in a shape this scan cannot read (two on one line? an unusual " +
+        "key?); split the line or widen the pattern.",
     );
   }
 
