@@ -64,8 +64,10 @@ const declaredPublicTypes = (source: string): string[] => {
  * Keying on the MODULE, not the bare name, is what makes the membership test
  * mean "the type declared in this file is re-nameable" rather than "this word
  * is re-exported from somewhere". `SendOptions` is why: two unrelated
- * interfaces share the name (see the known-gap assertion below), and a flat
- * name set reports the file clean while the consumer gets the wrong shape.
+ * interfaces share the name — the session's and `stream-manager.ts`'s — and a
+ * flat name set could not tell them apart, so it reported `types.ts` clean
+ * while the session's shape was unreachable (#70). Both are published now; the
+ * fixture in "keys the export list by module" is what pins the distinction.
  */
 const namesExportedBy = (index: string): Set<string> => {
   const keys = new Set<string>();
@@ -111,18 +113,22 @@ describe("public export surface", () => {
   });
 
   it("reads the export list without over-collecting", () => {
-    // The inverse failure to the one above: a parser that swept up every
-    // identifier in `index.ts` would make the guard vacuous. `types.ts`
-    // declares this one without `export`, so it must not appear.
+    // Positive controls, and only that. The negative control — the one that
+    // fails if the parser over-collects — is `has("a:Shared") === false` in
+    // "keys the export list by module" below, where the fixture asserts set
+    // equality and a stray name shows up.
+    //
+    // `types.ts` declares this one without `export`. Cheap to pin, though note
+    // the name appears nowhere in `index.ts`, so it holds for any parser.
     expect(exported.has("types:AstralformBaseConfig")).toBe(false);
-    // And the positive control for the shape the old `^\s*Name,\s*$` matcher
-    // got wrong: a name sharing a single-line block with its neighbours.
+    // The shape the old `^\s*Name,\s*$` matcher got wrong: a name sharing a
+    // single-line block with its neighbours.
     expect(exported.has("types:BlockDeltaPayload")).toBe(true);
-    // Two unrelated interfaces share the name `SendOptions` — the manager's
-    // narrower shape and the session's. Both are published now (#70), each
-    // keyed to the module that declares it, which is the whole reason this set
-    // is module-keyed: a flat one could not tell them apart and reported
-    // `types.ts` clean while the session's shape was unreachable.
+    // Both `SendOptions` interfaces reach consumers, each keyed to the module
+    // that declares it — the session's as `SessionSendOptions` (#71), the
+    // manager's under the plain name. With both present these two lines no
+    // longer discriminate between a module-keyed set and a flat one; they pin
+    // that neither shape has gone missing.
     expect(exported.has("stream-manager:SendOptions")).toBe(true);
     expect(exported.has("types:SendOptions")).toBe(true);
   });
