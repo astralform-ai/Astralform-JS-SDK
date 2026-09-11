@@ -48,13 +48,25 @@ const sendOptionFields = (source: string): string[] => {
   // counts agreed and `b` went unscanned. That is the silent miss this check
   // exists to prevent, one level up. Comments carry both `:` and `;`, so they
   // come out first.
+  //
+  // The counter is over `;`-separated members, and that bounds it twice. A `;`
+  // inside a member's own type over-counts — `(e: { pct: number }) => void`
+  // reads as two — which throws rather than misses, so it is friction, not a
+  // hole. The hole is the reverse: TS also accepts `,` between members, so
+  // `goal?: string, other?: string;` is one member and one name, counts agree,
+  // and `other` goes unscanned. Splitting on `/[;,]/` is not the fix — commas
+  // are everywhere in legitimate types (`Record<string, string>`), so that
+  // trades a rare silent miss for constant false throws. Written here because
+  // it is a real limit and a reader deserves to know it rather than trust the
+  // guard further than it goes.
   const code = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   const members = code.split(";").filter((m) => m.trim() !== "");
   if (members.length !== names.length) {
     throw new Error(
       `read ${names.length} field(s) from ${members.length} member(s) — a field is ` +
         "written in a shape this scan cannot read (two on one line? an unusual " +
-        "key?); split the line or widen the pattern.",
+        "key? a ';' inside a member's type?); split the line, hoist an inline " +
+        "object type to a named alias, or widen the pattern.",
     );
   }
 
