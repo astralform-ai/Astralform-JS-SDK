@@ -970,7 +970,11 @@ export class AstralformClient {
       defaultMode: isVoicePolishMode(raw.default_mode) ? raw.default_mode : "structured",
       silenceAutoStopSeconds:
         (raw.silence_auto_stop_seconds as number | undefined) ?? 2,
-      autoSend: (raw.auto_send as boolean | undefined) ?? true,
+      // Deliberately not read from the wire. Auto-send was removed from the
+      // platform (2026-09-14) and the server pins `auto_send` to false; an
+      // older server still sending `true` must not make a client auto-send, so
+      // an absent field and an explicit `true` both read as false.
+      autoSend: false,
       maxRecordingSeconds: (raw.max_recording_seconds as number | undefined) ?? 300,
       supportsStreaming: Boolean(raw.supports_streaming),
       hotwords: (raw.hotwords as string[] | undefined) ?? [],

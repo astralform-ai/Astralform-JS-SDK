@@ -46,7 +46,7 @@ describe("getVoiceConfig", () => {
       modes: ["raw", "light", "structured", "formal"],
       defaultMode: "light",
       silenceAutoStopSeconds: 2,
-      autoSend: true,
+      autoSend: false,
       maxRecordingSeconds: 300,
       supportsStreaming: false,
       hotwords: ["MCP"],
@@ -67,6 +67,29 @@ describe("getVoiceConfig", () => {
     expect(config.defaultMode).toBe("structured");
     // The picker still sees what the server offers.
     expect(config.modes).toEqual(["casual"]);
+  });
+
+  // Auto-send was removed from the platform (2026-09-14): a dictation only
+  // fills the composer and the user sends it. `autoSend` stays on the type so
+  // existing code compiles, and it always reads false.
+  async function voiceConfigFrom(payload: Record<string, unknown>) {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    return makeClient(fetchFn as unknown as typeof fetch).getVoiceConfig();
+  }
+
+  it("reads autoSend as false when the payload carries no auto_send", async () => {
+    const config = await voiceConfigFrom({ enabled: true });
+    expect(config.autoSend).toBe(false);
+  });
+
+  it("reads autoSend as false even when an older server still sends auto_send: true", async () => {
+    const config = await voiceConfigFrom({ enabled: true, auto_send: true });
+    expect(config.autoSend).toBe(false);
   });
 });
 
