@@ -1133,7 +1133,11 @@ export interface VoiceConfig {
   defaultMode: VoicePolishMode;
   /** In tap-to-talk mode, the pause that ends a recording. */
   silenceAutoStopSeconds: number;
-  /** Send the message as soon as the result is ready. */
+  /**
+   * @deprecated Always `false`. Auto-send was removed from the platform
+   * (2026-09-14); a dictation only fills the composer and the user sends it.
+   * Kept so existing code compiles; slated for removal in the next major.
+   */
   autoSend: boolean;
   maxRecordingSeconds: number;
   /**

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Deprecated
+
+- **`VoiceConfig.autoSend`** — always `false`, and slated for removal in the next major. Auto-send was removed from the platform (2026-09-14): a dictation only fills the composer, and the user sends it. The backend pins `GET /v1/voice/config`'s `auto_send` to `false` (the key stays on the wire), and AstralChat and the iOS app no longer read the field. It stays on the type so existing code compiles.
+
+### Changed
+
+- **`getVoiceConfig()` no longer reads `auto_send`.** A payload without the field used to parse to `autoSend: true`; it now parses to `false`. An explicit `auto_send: true` is ignored too, rather than passed through: no Astralform client auto-sends anymore, and a server that has not yet pinned the field must not make a third-party client that still honours it reintroduce the behaviour the platform removed.
+
+### Compatibility
+
+- Source-compatible. The field and its type are unchanged, so nothing stops compiling; `@deprecated` shows as a strikethrough in editors and does not fail `tsc`.
+- A client that honoured `autoSend` stops auto-sending a dictation. That is the intended outcome, and it holds against every backend version, including one that still sends `true`.
+
 ## 9.1.0
 
 ### Added
