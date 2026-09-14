@@ -168,6 +168,9 @@ describe("tool-image stubs", () => {
     await h.manager.switchTo("conv-a");
     await flush();
     const urls = eventUrls(h.urls);
+    // Non-empty first: `[].every(...)` is true, so without this the test would
+    // stay green if restore stopped fetching events at all.
+    expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => u.includes("tool_outputs=stub"))).toBe(true);
     expect(urls.every((u) => !u.includes("tool_images"))).toBe(true);
   });
@@ -178,6 +181,7 @@ describe("tool-image stubs", () => {
     await h.manager.switchTo("conv-a");
     await flush();
     const urls = eventUrls(h.urls);
+    expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => u.includes("tool_images=stub"))).toBe(true);
     expect(urls.every((u) => !u.includes("tool_outputs"))).toBe(true);
   });
@@ -188,8 +192,10 @@ describe("tool-image stubs", () => {
     h.manager.setToolImageMode("stub");
     await h.manager.switchTo("conv-a");
     await flush();
+    const urls = eventUrls(h.urls);
+    expect(urls.length).toBeGreaterThan(0);
     expect(
-      eventUrls(h.urls).every(
+      urls.every(
         (u) =>
           u.includes("job_id=") &&
           u.includes("tool_outputs=stub") &&

@@ -644,9 +644,7 @@ export class AstralformClient {
         repository?: string | null;
       }[]
     >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}${filter}`);
-    return raw.map((c) =>
-      camelizeKeys<Conversation>(c as unknown as Record<string, unknown>),
-    );
+    return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));
   }
 
   /**
@@ -761,9 +759,7 @@ export class AstralformClient {
         code_projects_enabled?: boolean;
       }[]
     >("/v1/agents");
-    return raw.map((a) =>
-      camelizeKeys<AgentInfo>(a as unknown as Record<string, unknown>),
-    );
+    return raw.map((a) => camelizeKeys<AgentInfo>(a as unknown as Record<string, unknown>));
   }
 
   /**
@@ -811,9 +807,7 @@ export class AstralformClient {
         is_enabled: boolean;
       }[]
     >("/v1/skills");
-    return raw.map((s) =>
-      camelizeKeys<SkillInfo>(s as unknown as Record<string, unknown>),
-    );
+    return raw.map((s) => camelizeKeys<SkillInfo>(s as unknown as Record<string, unknown>));
   }
 
   /**
@@ -831,9 +825,7 @@ export class AstralformClient {
    * what clients that call the raw path send today — same reasoning as
    * {@link getConversationEvents}'s `toolOutputs`.
    */
-  async listSkillCommands(
-    surface?: SlashCommandSurface,
-  ): Promise<SlashCommand[]> {
+  async listSkillCommands(surface?: SlashCommandSurface): Promise<SlashCommand[]> {
     const query = surface && surface !== "web" ? `?surface=${surface}` : "";
     const raw = await this.get<Record<string, unknown>[]>(
       `/v1/skills/commands${query}`,
@@ -913,7 +905,8 @@ export class AstralformClient {
     // makes forgetting it impossible rather than merely documented.
     const callId =
       typeof callIdOrStub === "string" ? callIdOrStub : callIdOrStub.call_id;
-    const job = typeof callIdOrStub === "string" ? jobId : callIdOrStub.job_id;
+    const job =
+      typeof callIdOrStub === "string" ? jobId : callIdOrStub.job_id;
     const query = job ? `?job_id=${encodeURIComponent(job)}` : "";
     const res = await this.get<{ call_id: string; output: unknown }>(
       `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(callId)}${query}`,
@@ -934,17 +927,10 @@ export class AstralformClient {
    * unmounts. The response is `private, immutable`, so a repeat fetch of the
    * same preview is served by the HTTP cache.
    */
-  async getToolImage(
-    conversationId: string,
-    stub: ToolImageStub,
-  ): Promise<Blob> {
-    const query = stub.job_id
-      ? `?job_id=${encodeURIComponent(stub.job_id)}`
-      : "";
+  async getToolImage(conversationId: string, stub: ToolImageStub): Promise<Blob> {
+    const query = stub.job_id ? `?job_id=${encodeURIComponent(stub.job_id)}` : "";
     return this.getBlob(
-      `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(
-        stub.call_id,
-      )}/images/${stub.index}${query}`,
+      `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(stub.call_id)}/images/${stub.index}${query}`,
     );
   }
 
@@ -1077,9 +1063,7 @@ export class AstralformClient {
       modes: (raw.modes as string[] | undefined) ?? [...VOICE_POLISH_MODES],
       // A mode this SDK does not know must not reach a `switch` typed as
       // `VoicePolishMode`; `structured` is the server's own default.
-      defaultMode: isVoicePolishMode(raw.default_mode)
-        ? raw.default_mode
-        : "structured",
+      defaultMode: isVoicePolishMode(raw.default_mode) ? raw.default_mode : "structured",
       silenceAutoStopSeconds:
         (raw.silence_auto_stop_seconds as number | undefined) ?? 2,
       // Deliberately not read from the wire. Auto-send was removed from the
@@ -1087,8 +1071,7 @@ export class AstralformClient {
       // older server still sending `true` must not make a client auto-send, so
       // an absent field and an explicit `true` both read as false.
       autoSend: false,
-      maxRecordingSeconds:
-        (raw.max_recording_seconds as number | undefined) ?? 300,
+      maxRecordingSeconds: (raw.max_recording_seconds as number | undefined) ?? 300,
       supportsStreaming: Boolean(raw.supports_streaming),
       hotwords: (raw.hotwords as string[] | undefined) ?? [],
     };
@@ -1120,15 +1103,12 @@ export class AstralformClient {
     if (options.language) {
       formData.append("language", options.language);
     }
-    const response = await this.fetchFn(
-      `${this.baseURL}/v1/voice/transcriptions`,
-      {
-        method: "POST",
-        headers: this.authHeaders,
-        body: formData,
-        signal: options.signal,
-      },
-    ).catch((err) => {
+    const response = await this.fetchFn(`${this.baseURL}/v1/voice/transcriptions`, {
+      method: "POST",
+      headers: this.authHeaders,
+      body: formData,
+      signal: options.signal,
+    }).catch((err) => {
       // Any abort is the caller's, not a failure — including `abort(reason)`,
       // which rejects with the caller's own error rather than an AbortError.
       if (options.signal?.aborted) {
@@ -1211,9 +1191,7 @@ export class AstralformClient {
         role: string;
       }>
     >("/v1/teams");
-    return raw.map((t) =>
-      camelizeKeys<TeamSummary>(t as unknown as Record<string, unknown>),
-    );
+    return raw.map((t) => camelizeKeys<TeamSummary>(t as unknown as Record<string, unknown>));
   }
 
   /**
@@ -1233,9 +1211,7 @@ export class AstralformClient {
         avatar_url?: string | null;
       }>
     >(`/v1/teams/${encodeURIComponent(teamId)}/agents`);
-    return raw.map((a) =>
-      camelizeKeys<TeamAgentSummary>(a as unknown as Record<string, unknown>),
-    );
+    return raw.map((a) => camelizeKeys<TeamAgentSummary>(a as unknown as Record<string, unknown>));
   }
 
   // --- Projects: the repositories this app user works with ---
@@ -1254,13 +1230,10 @@ export class AstralformClient {
     projects: {
       /** This user's projects on the active agent, oldest first. */
       list: async (): Promise<CodeProject[]> => {
-        const raw =
-          await this.get<{ repo_full_name: string; added_at: string }[]>(
-            "/v1/code/projects",
-          );
-        return raw.map((p) =>
-          camelizeKeys<CodeProject>(p as unknown as Record<string, unknown>),
+        const raw = await this.get<{ repo_full_name: string; added_at: string }[]>(
+          "/v1/code/projects",
         );
+        return raw.map((p) => camelizeKeys<CodeProject>(p as unknown as Record<string, unknown>));
       },
 
       /**
@@ -1296,13 +1269,11 @@ export class AstralformClient {
        * used to discover which organisations use Astralform.
        */
       add: async (repoFullName: string): Promise<CodeProject> => {
-        const raw = await this.post<{
-          repo_full_name: string;
-          added_at: string;
-        }>("/v1/code/projects", { repo_full_name: repoFullName });
-        return camelizeKeys<CodeProject>(
-          raw as unknown as Record<string, unknown>,
+        const raw = await this.post<{ repo_full_name: string; added_at: string }>(
+          "/v1/code/projects",
+          { repo_full_name: repoFullName },
         );
+        return camelizeKeys<CodeProject>(raw as unknown as Record<string, unknown>);
       },
 
       /**
@@ -1379,9 +1350,7 @@ export class AstralformClient {
       comment: string | null;
       created_at: string;
     }>(`/v1/jobs/${encodeURIComponent(jobId)}/feedback`, body);
-    return camelizeKeys<FeedbackResponse>(
-      raw as unknown as Record<string, unknown>,
-    );
+    return camelizeKeys<FeedbackResponse>(raw as unknown as Record<string, unknown>);
   }
 
   async getActiveJob(conversationId: string): Promise<ActiveJob> {
@@ -1431,8 +1400,7 @@ export function parseVoicePolishFrame(frame: {
     // `null`, `true`, `42` and `[]` all parse; only a plain object carries
     // the fields read below (an array would synthesize an `error` event), and
     // a throw here would end the whole polish generator.
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-      return null;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     payload = parsed as Record<string, unknown>;
   } catch {
     return null;
@@ -1455,9 +1423,7 @@ export function parseVoicePolishFrame(frame: {
         type: "error",
         reason: (payload.reason as string | undefined) ?? "unknown",
         partial: (payload.partial as string | undefined) ?? "",
-        ...(typeof payload.detail === "string"
-          ? { detail: payload.detail }
-          : {}),
+        ...(typeof payload.detail === "string" ? { detail: payload.detail } : {}),
       };
     default:
       return null;

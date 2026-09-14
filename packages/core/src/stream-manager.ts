@@ -305,10 +305,7 @@ export class StreamManager {
    * reaches both by construction: two literals at two call sites is how one
    * wave would silently keep asking for inline payloads.
    */
-  private get eventFetchOptions(): {
-    toolOutputs: ToolOutputMode;
-    toolImages: ToolImageMode;
-  } {
+  private get eventFetchOptions(): { toolOutputs: ToolOutputMode; toolImages: ToolImageMode } {
     return { toolOutputs: this.toolOutputs, toolImages: this.toolImages };
   }
 
@@ -974,7 +971,10 @@ export class StreamManager {
    * probe and the message list while ``replayHistory``, which consumes it,
    * keeps owning the shape it reads.
    */
-  private jobList(conversationId: string, before?: string): Promise<JobsPage> {
+  private jobList(
+    conversationId: string,
+    before?: string,
+  ): Promise<JobsPage> {
     return this.session.client.getConversationJobsPage(conversationId, {
       limit: RESTORE_TURN_PAGE_SIZE,
       ...(before ? { before } : {}),
@@ -1345,11 +1345,7 @@ export class StreamManager {
       const eventLists = await Promise.all(
         page.jobs.map((job) =>
           session.client
-            .getConversationEvents(
-              conversationId,
-              job.job_id,
-              this.eventFetchOptions,
-            )
+            .getConversationEvents(conversationId, job.job_id, this.eventFetchOptions)
             .catch(() => []),
         ),
       );
@@ -1406,13 +1402,7 @@ export class StreamManager {
           break;
         }
         if (step.kind === "steer") {
-          session.replayTurn(
-            conversationId,
-            [],
-            step.content,
-            step.messageId,
-            true,
-          );
+          session.replayTurn(conversationId, [], step.content, step.messageId, true);
         } else {
           session.replayTurn(
             conversationId,
@@ -1595,11 +1585,7 @@ export class StreamManager {
       const eventLists = await Promise.all(
         replayableJobs.map((job: { job_id: string }) =>
           this.session.client
-            .getConversationEvents(
-              conversationId,
-              job.job_id,
-              this.eventFetchOptions,
-            )
+            .getConversationEvents(conversationId, job.job_id, this.eventFetchOptions)
             .catch(() => []),
         ),
       );

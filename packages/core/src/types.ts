@@ -880,7 +880,13 @@ export interface FeedbackResponse {
  * which on some models still reasons.
  */
 export type EffortRung =
-  "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 /**
  * A reasoning effort a caller may request. Widened from `low | medium | high`
@@ -1088,12 +1094,7 @@ export interface StreamJobSSEOptions {
  * The styles a transcript can be shaped into, as the server names them.
  * `raw` never calls the model — the transcript is used as recognized.
  */
-export const VOICE_POLISH_MODES = [
-  "raw",
-  "light",
-  "structured",
-  "formal",
-] as const;
+export const VOICE_POLISH_MODES = ["raw", "light", "structured", "formal"] as const;
 
 export type VoicePolishMode = (typeof VOICE_POLISH_MODES)[number];
 
@@ -1103,8 +1104,7 @@ export type VoiceLLMMode = Exclude<VoicePolishMode, "raw">;
 /** Whether `value` is one of the four modes this SDK version knows. */
 export function isVoicePolishMode(value: unknown): value is VoicePolishMode {
   return (
-    typeof value === "string" &&
-    (VOICE_POLISH_MODES as readonly string[]).includes(value)
+    typeof value === "string" && (VOICE_POLISH_MODES as readonly string[]).includes(value)
   );
 }
 
