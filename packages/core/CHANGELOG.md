@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 9.3.0
 
 ### Added
 
@@ -13,7 +13,7 @@
 ### Compatibility
 
 - **Opt-in and independent of `toolOutputs`.** The default request is byte-identical, and `setToolOutputMode("stub")` does NOT ask for image stubs: every installed consumer sends `tool_outputs=stub` and draws `url` directly, so the two are separate settings on the wire (`tool_images=stub`) and here. One setting governs both event waves — the newest page and every `loadEarlierTurns` page.
-- **Needs a backend that serves `tool_images`.** An older backend ignores the unknown parameter and returns inline previews, so a consumer that handles both shapes — `isToolImageStub(entry)` or a `url` — works against either.
+- **Needs Astralform 0.69.66 or later to take effect.** That release serves `tool_images` ([#1204](https://github.com/astralform-ai/Astralform/pull/1204)). An older backend ignores the unknown parameter and returns inline previews, so a consumer that handles both shapes — `isToolImageStub(entry)` or a `url` — works against either.
 
 ## 9.2.0
 
