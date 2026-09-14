@@ -35,9 +35,21 @@ session.on((event) => {
 });
 
 await session.connect();
-await session.send("What is the capital of France?");
+
+// A new conversation must name its model: pick one the agent's team has
+// connected. Later messages in the same conversation may omit it and reuse the
+// conversation's model.
+const [model] = await session.client.getModels();
+await session.send("What is the capital of France?", {
+  provider: model.provider,
+  model: model.model,
+});
 session.disconnect();
 ```
+
+The shorter `session.send(...)` calls in the examples below continue a conversation
+that already has a model. On a conversation's first message, pass `provider` and
+`model` as above: the server rejects a new conversation that names none.
 
 ## Features
 

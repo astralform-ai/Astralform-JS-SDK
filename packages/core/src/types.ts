@@ -920,8 +920,9 @@ export interface ThinkingDescriptor {
 
 /**
  * The per-request model choice (client-side model selection). `provider` and
- * `model` are paired — send both or neither; when omitted, the server reuses the
- * conversation's last model or a connected-provider default.
+ * `model` are paired — send both or neither. They are REQUIRED on the first
+ * message of a new conversation; omitted later, the server reuses the
+ * conversation's last model. The server never picks a model on its own.
  */
 export interface ModelChoiceOptions {
   provider?: string;
@@ -962,7 +963,8 @@ export interface ChatStreamRequest {
   goal?: string;
   /**
    * Per-request model choice (client-side model selection), wire shape.
-   * `provider` and `model` are paired; omit to reuse the thread's last model.
+   * `provider` and `model` are paired and required on a new conversation; omit
+   * them mid-thread to reuse the thread's last model.
    */
   provider?: string;
   model?: string;
