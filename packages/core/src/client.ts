@@ -213,18 +213,34 @@ export interface ConversationJob {
    * are stored at attach time, before the turn starts, so a stopped or failed
    * turn still carried them and its bubble should still show them.
    */
-  attachments?:
-    | {
-        asset_id: string;
-        filename: string;
-        media_type?: string | null;
-        size_bytes?: number | null;
-        /** Signed and expiring — the restored thumbnail. */
-        url?: string | null;
-        /** Permanent address, for keeping or linking. */
-        content_url?: string | null;
-      }[]
-    | null;
+  attachments?: ConversationJobAttachment[] | null;
+}
+
+/**
+ * One file that rode along with a turn's user message.
+ *
+ * Named rather than inlined into `ConversationJob.attachments`: a consumer
+ * rebuilding attachment chips writes a function over ONE of these, and an
+ * inline literal is nameable only by indexing back out of the parent
+ * (`NonNullable<ConversationJob["attachments"]>[number]`). Handing the rows
+ * over is pointless if the row's element type cannot be spelled.
+ *
+ * `asset_id` and `filename` are required while the rest of `ConversationJob`
+ * is optional, and that is not an oversight: the others are optional because
+ * the BACKEND may not project them (a job older than the field, a server that
+ * does not send it yet), whereas this whole object is built in one place and
+ * both fields are unconditionally populated from the asset row whenever an
+ * entry exists at all.
+ */
+export interface ConversationJobAttachment {
+  asset_id: string;
+  filename: string;
+  media_type?: string | null;
+  size_bytes?: number | null;
+  /** Signed and expiring — the restored thumbnail. */
+  url?: string | null;
+  /** Permanent address, for keeping or linking. */
+  content_url?: string | null;
 }
 
 /** One page of turns, plus where the next older page starts. */

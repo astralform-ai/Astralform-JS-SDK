@@ -10,7 +10,7 @@
 
   `historyPageEnd.jobs` is `[]` when `complete` is `false`, matching the blocks a consumer must discard on that path: the cursor did not advance, so those turns replay again on the next request.
 
-- **`ConversationJob`, `JobsPage` and `MessagesPage` are now exported.** They were declared in `client.ts` and left off `index.ts`'s explicit re-export list, so `import type { ConversationJob } from "@astralform/js"` did not resolve and the payload of the two events above was nameable only as `Extract<StreamManagerEvent, { type: "restoreSettled" }>`. The `public-exports` guard now scans `client.ts` as well, which is what would have caught this.
+- **`ConversationJob`, `ConversationJobAttachment`, `JobsPage` and `MessagesPage` are now exported.** They were declared in `client.ts` and left off `index.ts`'s explicit re-export list, so `import type { ConversationJob } from "@astralform/js"` did not resolve and the payload of the two events above was nameable only as `Extract<StreamManagerEvent, { type: "restoreSettled" }>`. `ConversationJobAttachment` is also newly *named*: the attachment row was an inline literal, spellable only as `NonNullable<ConversationJob["attachments"]>[number]`. The `public-exports` guard now scans `client.ts`, `stream-manager.ts` and `replay.ts` as well, which is what would have caught this.
 
 ### Deprecated
 

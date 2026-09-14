@@ -99,11 +99,19 @@ describe("public export surface", () => {
     // nearly shipped it unnameable, which is why `types.ts` is here too.
     ["custom-events.ts", 20],
     ["types.ts", 60],
-    // #78 added this one: `ConversationJob` shipped as the payload of two
+    // #78 added the last three: `ConversationJob` shipped as the payload of two
     // StreamManager events while being unnameable from the package, which is
     // exactly the failure this guard exists to catch — it just was not looking
-    // at `client.ts`.
-    ["client.ts", 2],
+    // at `client.ts`. The others were clean already and are here so they cannot
+    // stop being clean silently.
+    //
+    // The floor only has to catch a scan that matched NOTHING. Setting it just
+    // under the current count instead turns the documented `@internal` opt-out
+    // into a spurious failure: marking one type internal drops the count and
+    // fails a guard that is working correctly.
+    ["client.ts", 1],
+    ["stream-manager.ts", 1],
+    ["replay.ts", 0],
   ])("re-exports every public type declared in %s", (file, floor) => {
     const declared = declaredPublicTypes(read(file));
     // A scan that silently matched nothing would pass every assertion below.
