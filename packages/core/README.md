@@ -35,9 +35,23 @@ session.on((event) => {
 });
 
 await session.connect();
-await session.send("What is the capital of France?");
+
+// A conversation's first message names its model — one the agent's team has
+// connected. Later messages in the same conversation may omit it and reuse the
+// conversation's model.
+const models = await session.client.getModels(); // the list backs a model picker
+const model = models[0];
+if (!model) throw new Error("Connect a model provider for this agent first.");
+await session.send("What is the capital of France?", {
+  provider: model.provider,
+  model: model.model,
+});
 session.disconnect();
 ```
+
+The examples below omit `provider` and `model` for brevity. On a conversation's first
+message, pass them as above: newer Astralform servers reject a new conversation that
+names no model, and every server accepts one that does.
 
 ## Features
 
@@ -323,7 +337,11 @@ const skills = await client.getSkills();
 const commands = await client.listSkillCommands();
 
 // Job-based streaming
-const job = await client.createJob({ message: "Hello" });
+const job = await client.createJob({
+  message: "Hello",
+  provider: "anthropic", // a new conversation names its model
+  model: "claude-sonnet-5",
+});
 for await (const event of client.streamJobEvents(job.job_id)) {
   const data = JSON.parse(event.data);
   if (data.type === "block_delta" && data.delta.channel === "text") {
