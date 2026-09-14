@@ -105,10 +105,19 @@ describe("public export surface", () => {
     // at `client.ts`. The others were clean already and are here so they cannot
     // stop being clean silently.
     //
-    // The floor only has to catch a scan that matched NOTHING. Setting it just
-    // under the current count instead turns the documented `@internal` opt-out
-    // into a spurious failure: marking one type internal drops the count and
-    // fails a guard that is working correctly.
+    // The floor only has to catch a scan that matched NOTHING — the parser
+    // itself is proven against a fixture in the last test in this file, so
+    // these are belt-and-braces. Setting a floor just under the current count
+    // instead turns the documented `@internal` opt-out into a spurious
+    // failure: marking one type internal drops the count and fails a guard
+    // that is working correctly. Hence floors well under each file's count,
+    // not one below it.
+    //
+    // `replay.ts` is the honest exception and is called out rather than
+    // papered over: it declares ONE type, so there is no floor that both
+    // catches an empty scan and survives that type going `@internal`. 0 takes
+    // the first; if `RawSseEvent` is ever made internal, this row has to go
+    // with it.
     ["client.ts", 1],
     ["stream-manager.ts", 1],
     ["replay.ts", 0],
