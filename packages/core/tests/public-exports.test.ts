@@ -106,8 +106,9 @@ describe("public export surface", () => {
     // stop being clean silently.
     //
     // The floor only has to catch a scan that matched NOTHING — the parser
-    // itself is proven against a fixture in the last test in this file, so
-    // these are belt-and-braces. Setting a floor just under the current count
+    // itself is proven against a fixture by "collects type aliases and honours
+    // the @internal opt-out" below, so these are belt-and-braces. (Named, not
+    // positioned: "the last test in this file" was already wrong by one.) Setting a floor just under the current count
     // instead turns the documented `@internal` opt-out into a spurious
     // failure: marking one type internal drops the count and fails a guard
     // that is working correctly. Hence floors well under each file's count,
