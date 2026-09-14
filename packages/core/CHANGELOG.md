@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`restoreSettled` and `historyPageEnd` now carry `jobs`** — the turn rows that page was replayed from, handed to the consumer instead of kept. `ConversationJob` is widened to type the per-turn state that was always in the response but never surfaced: `attachments`, `created_at`/`completed_at`, `goal_id`/`goal_objective`, `plan_mode`/`image_mode`/`video_mode`, and `llm_provider`/`llm_model`.
+
+  A consumer rehydrating a restored transcript (attachment chips, composer modes, goal runs, the turn's model) previously had no way to reach this data, because the SDK fetched it and dropped it. AstralChat therefore issued its own **unbounded** `GET /v1/conversations/{id}/jobs` on `restoreSettled` — a second request whose payload grows with the transcript and which lands before first paint (measured 409-959 ms on the [#1052](https://github.com/astralform-ai/Astralform/issues/1052) reference conversation). Handing the rows over lets that request be **deleted** rather than bounded, which keeps one page size and one cursor in the SDK instead of a second copy of both in every consumer.
+
+  `historyPageEnd.jobs` is `[]` when `complete` is `false`, matching the blocks a consumer must discard on that path: the cursor did not advance, so those turns replay again on the next request.
+
+
 ### Deprecated
 
 - **`VoiceConfig.autoSend`** — always `false`, and slated for removal in the next major. Auto-send was removed from the platform (2026-09-14): a dictation only fills the composer, and the user sends it. The backend pins `GET /v1/voice/config`'s `auto_send` to `false` (the key stays on the wire), and AstralChat and the iOS app no longer read the field. It stays on the type so existing code compiles.

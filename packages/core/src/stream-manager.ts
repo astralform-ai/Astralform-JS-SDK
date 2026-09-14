@@ -27,7 +27,7 @@ import type { ChatSession } from "./session.js";
 // Types
 // =============================================================================
 
-import type { JobsPage } from "./client.js";
+import type { ConversationJob, JobsPage } from "./client.js";
 import type { ToolOutputMode } from "./types.js";
 
 export type StreamState = "idle" | "streaming" | "restoring" | "detached";
@@ -127,6 +127,20 @@ export type StreamManagerEvent =
       /** Whether anything older still remains after this page. */
       hasMore: boolean;
       /**
+       * This page's turns, as the job list describes them — the rows this
+       * page was replayed FROM, handed over rather than re-fetched.
+       *
+       * A consumer rehydrating per-turn state (attachment chips, composer
+       * modes, goal runs, the turn's model) needs these for a prepended page
+       * exactly as it does for the first render, and has no cursor of its own
+       * to ask for them with. Empty when the page replayed nothing.
+       *
+       * Read this only when `complete` is `true`, for the same reason the
+       * buffered blocks are discarded otherwise: an incomplete page's cursor
+       * did not advance and the same turns replay again next request.
+       */
+      jobs: ConversationJob[];
+      /**
        * Did the whole page replay?
        *
        * `false` when a live turn took the view over mid-walk, or a turn
@@ -164,6 +178,15 @@ export type StreamManagerEvent =
        */
       type: "restoreSettled";
       conversationId: string;
+      /**
+       * The newest page's turns, as the job list describes them.
+       *
+       * The restore ALREADY fetched these (`jobList`, bounded by
+       * `RESTORE_TURN_PAGE_SIZE`); handing them over is what lets a consumer
+       * rehydrate without issuing its own unbounded `GET /jobs`, which is a
+       * payload that grows with the transcript and lands before first paint.
+       */
+      jobs: ConversationJob[];
     };
 
 type EventHandler = (event: StreamManagerEvent) => void;
@@ -1391,6 +1414,12 @@ export class StreamManager {
         position: "prepend",
         hasMore: completed ? page.hasMore : true,
         complete: completed,
+        // Empty on the incomplete path, matching the blocks a consumer is
+        // required to discard there: that page's cursor did not advance, so
+        // these same turns replay from the start on the next request and
+        // rehydrating from them now would key state to turns about to be
+        // re-emitted.
+        jobs: completed ? page.jobs : [],
       });
       return emitted;
     } finally {
@@ -1616,7 +1645,7 @@ export class StreamManager {
       // every replay that ran to the end: it is the rehydration signal
       // (attachment chips, composer modes, goal runs), and a conversation
       // whose only turns were stopped or failed still needs that pass.
-      this.emit({ type: "restoreSettled", conversationId });
+      this.emit({ type: "restoreSettled", conversationId, jobs });
 
       // COMPLETED only, deliberately narrower than the replay set. This drives
       // version navigation, and a version is an answer the user can switch to —

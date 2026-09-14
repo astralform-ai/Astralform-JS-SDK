@@ -53,7 +53,19 @@ function msg(n: number) {
 }
 
 function job(n: number) {
-  return { job_id: `job-${n}`, status: "completed", message_id: `m-${n}` };
+  // Carries the per-turn state a consumer rehydrates from, because the real
+  // endpoint does. A fixture holding only the structural fields cannot tell a
+  // pass-through from a drop — every assertion would pass against an event
+  // that forwarded nothing but `job_id`.
+  return {
+    job_id: `job-${n}`,
+    status: "completed",
+    message_id: `m-${n}`,
+    plan_mode: n % 2 === 0,
+    llm_provider: "anthropic",
+    llm_model: `model-${n}`,
+    attachments: [{ asset_id: `a-${n}`, filename: `f-${n}.png` }],
+  };
 }
 
 function events(n: number) {
@@ -538,5 +550,111 @@ describe("tail-first restore", () => {
       shown.every((c) => Number(c.replace("prompt ", "")) >= 15),
     ).toBe(true);
     expect(h.session.conversationId).toBe("conv-b");
+  });
+
+  describe("the rehydration rows ride on the events", () => {
+    // A consumer needs each drawn turn's attachments, composer modes, goal
+    // linkage and model to rebuild a restored transcript. Before these, the
+    // SDK fetched exactly that data and kept it, so the one consumer that
+    // needed it issued its own UNBOUNDED `GET /jobs` — a second request whose
+    // payload grew with the transcript and landed before first paint. These
+    // tests pin the rows onto the events so that request can be deleted.
+
+    it("restoreSettled carries the newest page's rows, fields intact", async () => {
+      const h = harness(3);
+      await h.manager.switchTo("conv-a");
+      await flush();
+
+      const settled = h.mgr.find((e) => e.type === "restoreSettled") as
+        | { jobs: { job_id: string }[] }
+        | undefined;
+      expect(settled).toBeDefined();
+      expect(settled!.jobs.map((j) => j.job_id)).toEqual([
+        "job-0",
+        "job-1",
+        "job-2",
+      ]);
+
+      // Not just the ids: the payload is worthless to a consumer if the
+      // per-turn fields were narrowed off on the way through.
+      const first = settled!.jobs[0] as Record<string, unknown>;
+      expect(first.plan_mode).toBe(true);
+      expect(first.llm_provider).toBe("anthropic");
+      expect(first.llm_model).toBe("model-0");
+      expect(first.attachments).toEqual([
+        { asset_id: "a-0", filename: "f-0.png" },
+      ]);
+    });
+
+    it("restoreSettled carries a PAGE, not the whole conversation", async () => {
+      // The point of handing the rows over is that they are the bounded set
+      // the restore already paid for. A consumer reading them must not be
+      // reading a whole-transcript payload wearing a different name.
+      const h = harness(60);
+      await h.manager.switchTo("conv-a");
+      await flush();
+
+      const settled = h.mgr.find((e) => e.type === "restoreSettled") as
+        | { jobs: { job_id: string }[] }
+        | undefined;
+      expect(settled!.jobs).toHaveLength(RESTORE_TURN_PAGE_SIZE);
+      // The NEWEST page — the turns actually drawn, not the oldest ten.
+      expect(settled!.jobs.at(-1)!.job_id).toBe("job-59");
+    });
+
+    it("historyPageEnd carries the prepended page's rows", async () => {
+      const h = harness(60);
+      await h.manager.switchTo("conv-a");
+      await flush();
+      h.mgr.length = 0;
+
+      await h.manager.loadEarlierTurns("conv-a");
+      await flush();
+
+      const end = h.mgr.find((e) => e.type === "historyPageEnd") as
+        | { complete: boolean; jobs: { job_id: string }[] }
+        | undefined;
+      expect(end).toBeDefined();
+      expect(end!.complete).toBe(true);
+      // The page BEFORE the newest ten, in the same oldest-first order the
+      // turns were replayed in.
+      expect(end!.jobs).toHaveLength(RESTORE_TURN_PAGE_SIZE);
+      expect(end!.jobs.at(-1)!.job_id).toBe("job-49");
+      expect(end!.jobs[0]!.job_id).toBe("job-40");
+    });
+
+    it("an incomplete page carries no rows to rehydrate from", async () => {
+      // `complete: false` means the cursor did not advance and these turns
+      // replay again next request. Handing rows over anyway would key consumer
+      // state to turns that are about to be re-emitted — the same reason the
+      // buffered blocks must be discarded on that path.
+      const h = harness(25);
+      await h.manager.switchTo("conv-a");
+      await flush();
+      h.mgr.length = 0;
+
+      // The one stop condition that does not also clear the cursor, tripped
+      // once — the mechanism "does not advance the cursor when a walk stops
+      // partway" above is built on.
+      let tripped = false;
+      h.session.on((e) => {
+        if (!tripped && e.type === "user_message") {
+          tripped = true;
+          h.session.isStreaming = true;
+        }
+      });
+
+      await h.manager.loadEarlierTurns("conv-a");
+      await flush();
+
+      const end = h.mgr.find((e) => e.type === "historyPageEnd") as
+        | { complete: boolean; jobs: unknown[] }
+        | undefined;
+      expect(end).toBeDefined();
+      // Asserted, not assumed: behind an `if (!complete)` this test would pass
+      // against a build that never stops short, proving nothing.
+      expect(end!.complete).toBe(false);
+      expect(end!.jobs).toEqual([]);
+    });
   });
 });

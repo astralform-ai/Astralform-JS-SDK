@@ -176,6 +176,55 @@ export interface ConversationJob {
   status: string;
   message_id?: string | null;
   metrics?: Record<string, unknown>;
+
+  /**
+   * The per-turn state a consumer rehydrates a restored transcript from —
+   * attachment chips, composer modes, goal linkage, the model the turn ran on.
+   *
+   * Every field below was ALREADY in this response and already fetched by the
+   * restore's own paged read. They were simply not TYPED, and a field the SDK
+   * does not surface is one a consumer cannot reach without re-requesting the
+   * endpoint itself — which is exactly what happened: the chat issued a second,
+   * UNBOUNDED `GET /jobs` on `restoreSettled`, a payload that grows with the
+   * transcript, landing before first paint (measured 409-959 ms on the #1052
+   * reference conversation). Widening the type is what lets that request be
+   * deleted rather than merely bounded, which keeps ONE page size and ONE
+   * cursor in the SDK instead of a second copy of both in every consumer.
+   *
+   * Optional throughout, because "the backend cannot say" is a real answer for
+   * most of them: a job older than the field, or a server that does not project
+   * it yet. `plan_mode`/`image_mode`/`video_mode` are three-valued for that
+   * reason — absent/null is NOT false. `llm_provider`/`llm_model` come as a
+   * pair or not at all.
+   */
+  created_at?: string | null;
+  completed_at?: string | null;
+  goal_id?: string | null;
+  goal_objective?: string | null;
+  plan_mode?: boolean | null;
+  image_mode?: boolean | null;
+  video_mode?: boolean | null;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  /**
+   * Files that rode along with this turn's user message, as display metadata.
+   *
+   * Present for every job that carried uploads WHATEVER its status — the files
+   * are stored at attach time, before the turn starts, so a stopped or failed
+   * turn still carried them and its bubble should still show them.
+   */
+  attachments?:
+    | {
+        asset_id: string;
+        filename: string;
+        media_type?: string | null;
+        size_bytes?: number | null;
+        /** Signed and expiring — the restored thumbnail. */
+        url?: string | null;
+        /** Permanent address, for keeping or linking. */
+        content_url?: string | null;
+      }[]
+    | null;
 }
 
 /** One page of turns, plus where the next older page starts. */
