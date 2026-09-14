@@ -31,6 +31,8 @@ import type {
   TeamSummary,
   ToolApprovalRequest,
   ToolCallRequest,
+  ToolImageMode,
+  ToolImageStub,
   ToolOutputMode,
   ToolOutputStub,
   ToolResultRequest,
@@ -517,6 +519,14 @@ export class AstralformClient {
     });
   }
 
+  /** A GET whose body is binary. Read inside the race, for the reason above. */
+  private async getBlob(path: string): Promise<Blob> {
+    return this.withDeadline(async (signal) => {
+      const response = await this.send("GET", path, undefined, signal);
+      return response.blob();
+    });
+  }
+
   async post<T>(path: string, body: unknown): Promise<T> {
     return this.withDeadline(async (signal) => {
       const response = await this.send("POST", path, body, signal);
@@ -839,14 +849,15 @@ export class AstralformClient {
   async getConversationEvents(
     conversationId: string,
     jobId?: string,
-    options?: { toolOutputs?: ToolOutputMode },
+    options?: { toolOutputs?: ToolOutputMode; toolImages?: ToolImageMode },
   ): Promise<ConversationEvent[]> {
     const params = new URLSearchParams();
     if (jobId) params.set("job_id", jobId);
-    // Only ever SET for "stub". Omitting it entirely when inline keeps the
+    // Only ever SET for "stub". Omitting them entirely when inline keeps the
     // request byte-identical to what every installed client already sends,
-    // which is what makes this opt-in rather than a wire change.
+    // which is what makes each of these opt-in rather than a wire change.
     if (options?.toolOutputs === "stub") params.set("tool_outputs", "stub");
+    if (options?.toolImages === "stub") params.set("tool_images", "stub");
     const query = params.toString();
     return this.get(
       `/v1/conversations/${encodeURIComponent(conversationId)}/events${
@@ -901,6 +912,26 @@ export class AstralformClient {
       `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(callId)}${query}`,
     );
     return res.output;
+  }
+
+  /**
+   * The image behind a {@link ToolImageStub}, as a `Blob` of the preview's bytes.
+   *
+   * Takes the stub itself and nothing else — the `job_id` scoping that
+   * `getToolOutput`'s id form warns about cannot be dropped from a value that
+   * carries it. There is deliberately no by-ids form.
+   *
+   * A `Blob` rather than a URL because the route is authenticated: an `<img
+   * src>` cannot send the bearer token, so a browser consumer turns this into
+   * an object URL (`URL.createObjectURL`) and revokes it when the image
+   * unmounts. The response is `private, immutable`, so a repeat fetch of the
+   * same preview is served by the HTTP cache.
+   */
+  async getToolImage(conversationId: string, stub: ToolImageStub): Promise<Blob> {
+    const query = stub.job_id ? `?job_id=${encodeURIComponent(stub.job_id)}` : "";
+    return this.getBlob(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/tool-output/${encodeURIComponent(stub.call_id)}/images/${stub.index}${query}`,
+    );
   }
 
   async submitToolResult(request: ToolResultRequest): Promise<void> {
