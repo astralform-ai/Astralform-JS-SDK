@@ -880,13 +880,7 @@ export interface FeedbackResponse {
  * which on some models still reasons.
  */
 export type EffortRung =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+  "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * A reasoning effort a caller may request. Widened from `low | medium | high`
@@ -1094,7 +1088,12 @@ export interface StreamJobSSEOptions {
  * The styles a transcript can be shaped into, as the server names them.
  * `raw` never calls the model — the transcript is used as recognized.
  */
-export const VOICE_POLISH_MODES = ["raw", "light", "structured", "formal"] as const;
+export const VOICE_POLISH_MODES = [
+  "raw",
+  "light",
+  "structured",
+  "formal",
+] as const;
 
 export type VoicePolishMode = (typeof VOICE_POLISH_MODES)[number];
 
@@ -1104,7 +1103,8 @@ export type VoiceLLMMode = Exclude<VoicePolishMode, "raw">;
 /** Whether `value` is one of the four modes this SDK version knows. */
 export function isVoicePolishMode(value: unknown): value is VoicePolishMode {
   return (
-    typeof value === "string" && (VOICE_POLISH_MODES as readonly string[]).includes(value)
+    typeof value === "string" &&
+    (VOICE_POLISH_MODES as readonly string[]).includes(value)
   );
 }
 
@@ -1274,6 +1274,64 @@ export function isToolOutputStub(value: unknown): value is ToolOutputStub {
 
 /** How a restore asks for tool outputs. */
 export type ToolOutputMode = "inline" | "stub";
+
+/**
+ * A tool's image preview the server declined to inline, with a handle to fetch it.
+ *
+ * Restore can ask for these with `toolImages: "stub"`. It replaces an entry of a
+ * `tool_use` final's `images` — and only that entry's `url`: `mime_type`,
+ * `width`, `height` and `bytes` survive, so a consumer can reserve the image's
+ * box before the bytes arrive and the transcript does not jump when they do.
+ * Resolve it with `client.getToolImage`.
+ *
+ * Previews are exempt from `toolOutputs: "stub"`, which is why this is its own
+ * opt-in: they are hoisted out of `output` precisely so a stubbed pill keeps its
+ * thumbnail, and on a picture-heavy conversation they were three quarters of
+ * the bytes a restore shipped before first render.
+ */
+export interface ToolImageStub {
+  __stub: "tool_image";
+  call_id: string;
+  /** The entry's position in its call's `images` — what the fetch reads. */
+  index: number;
+  /**
+   * The job this call belongs to. The same rule as `ToolOutputStub.job_id`:
+   * a version-switched read returns superseded jobs the unscoped fetch cannot
+   * see. `getToolImage` takes the whole stub so it cannot be dropped.
+   */
+  job_id?: string;
+  mime_type?: string;
+  /** Pixel size of the preview, for reserving its box. */
+  width?: number;
+  height?: number;
+  /** Encoded size of the preview. */
+  bytes?: number;
+}
+
+/**
+ * Is this `images` entry a stub to fetch rather than a preview with a `url`?
+ *
+ * Checks every field the fetch is built from — `call_id` AND `index` — for the
+ * reason `isToolOutputStub` gives: narrowing on the marker alone hands a caller
+ * fields the type promises but the value lacks, and the next line puts them in
+ * a URL. The display fields are hints and are not required, so a stub missing
+ * its dimensions still resolves; it just cannot reserve its box.
+ */
+export function isToolImageStub(value: unknown): value is ToolImageStub {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<ToolImageStub>;
+  return (
+    v.__stub === "tool_image" &&
+    typeof v.call_id === "string" &&
+    v.call_id.length > 0 &&
+    typeof v.index === "number" &&
+    Number.isInteger(v.index) &&
+    v.index >= 0
+  );
+}
+
+/** How a restore asks for tool image previews. */
+export type ToolImageMode = "inline" | "stub";
 
 export interface ConversationEvent {
   seq: number;

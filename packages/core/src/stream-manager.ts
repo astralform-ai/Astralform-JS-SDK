@@ -28,7 +28,7 @@ import type { ChatSession } from "./session.js";
 // =============================================================================
 
 import type { ConversationJob, JobsPage } from "./client.js";
-import type { ToolOutputMode } from "./types.js";
+import type { ToolImageMode, ToolOutputMode } from "./types.js";
 
 export type StreamState = "idle" | "streaming" | "restoring" | "detached";
 
@@ -215,6 +215,13 @@ export class StreamManager {
    */
   private toolOutputs: ToolOutputMode = "inline";
 
+  /**
+   * Whether restore asks for tool image previews inline or as fetch handles.
+   * Separate from `toolOutputs` because the server keeps them separate — see
+   * `ToolImageStub` — and on the same one-setting-both-waves rule.
+   */
+  private toolImages: ToolImageMode = "inline";
+
   private _state: StreamState = "idle";
   private _activeConversationId: string | null = null;
   private _backgroundJobs = new Map<string, string>();
@@ -279,6 +286,30 @@ export class StreamManager {
    */
   setToolOutputMode(mode: ToolOutputMode): void {
     this.toolOutputs = mode;
+  }
+
+  /**
+   * Ask restore for stubbed image previews, fetched on demand.
+   *
+   * The same caution as `setToolOutputMode`, sharper: a consumer that cannot
+   * resolve one (`isToolImageStub`, `client.getToolImage`) finds an `images`
+   * entry with no `url` and draws a broken image where the preview was.
+   */
+  setToolImageMode(mode: ToolImageMode): void {
+    this.toolImages = mode;
+  }
+
+  /**
+   * The ONE options object both event waves fetch with — the newest page and
+   * every `loadEarlierTurns` page. Built in one place so an opt-in added here
+   * reaches both by construction: two literals at two call sites is how one
+   * wave would silently keep asking for inline payloads.
+   */
+  private get eventFetchOptions(): {
+    toolOutputs: ToolOutputMode;
+    toolImages: ToolImageMode;
+  } {
+    return { toolOutputs: this.toolOutputs, toolImages: this.toolImages };
   }
 
   private emit(event: StreamManagerEvent): void {
@@ -943,10 +974,7 @@ export class StreamManager {
    * probe and the message list while ``replayHistory``, which consumes it,
    * keeps owning the shape it reads.
    */
-  private jobList(
-    conversationId: string,
-    before?: string,
-  ): Promise<JobsPage> {
+  private jobList(conversationId: string, before?: string): Promise<JobsPage> {
     return this.session.client.getConversationJobsPage(conversationId, {
       limit: RESTORE_TURN_PAGE_SIZE,
       ...(before ? { before } : {}),
@@ -1317,9 +1345,11 @@ export class StreamManager {
       const eventLists = await Promise.all(
         page.jobs.map((job) =>
           session.client
-            .getConversationEvents(conversationId, job.job_id, {
-              toolOutputs: this.toolOutputs,
-            })
+            .getConversationEvents(
+              conversationId,
+              job.job_id,
+              this.eventFetchOptions,
+            )
             .catch(() => []),
         ),
       );
@@ -1376,7 +1406,13 @@ export class StreamManager {
           break;
         }
         if (step.kind === "steer") {
-          session.replayTurn(conversationId, [], step.content, step.messageId, true);
+          session.replayTurn(
+            conversationId,
+            [],
+            step.content,
+            step.messageId,
+            true,
+          );
         } else {
           session.replayTurn(
             conversationId,
@@ -1559,9 +1595,11 @@ export class StreamManager {
       const eventLists = await Promise.all(
         replayableJobs.map((job: { job_id: string }) =>
           this.session.client
-            .getConversationEvents(conversationId, job.job_id, {
-              toolOutputs: this.toolOutputs,
-            })
+            .getConversationEvents(
+              conversationId,
+              job.job_id,
+              this.eventFetchOptions,
+            )
             .catch(() => []),
         ),
       );

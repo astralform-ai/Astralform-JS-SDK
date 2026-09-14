@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`StreamManager.setToolImageMode("stub")`** — restore asks for tool image previews as fetch handles instead of inline data URLs. An entry of a `tool_use` final's `images` then arrives as a `ToolImageStub` (`{ __stub: "tool_image", call_id, index, job_id }`) that keeps `mime_type`, `width`, `height` and `bytes` — enough to reserve the image's box — and drops only `url`. Resolve one with **`client.getToolImage(conversationId, stub)`**, which returns a `Blob` of the preview's bytes; recognise one with **`isToolImageStub`**. `ToolImageStub` and `ToolImageMode` are exported.
+
+  Previews are hoisted out of a tool's `output` so a stubbed pill keeps its thumbnail, which exempts them from `toolOutputs: "stub"`. On the [#1014](https://github.com/astralform-ai/Astralform/issues/1014) reference conversation that left them 3.73 MB of the 4.96 MB a restore shipped before first render ([#1178](https://github.com/astralform-ai/Astralform/issues/1178)); with this opt-in the same restore is 1.24 MB, and each preview is fetched when a consumer chooses to draw it.
+
+  `getToolImage` takes the stub itself, with no by-ids form, so the `job_id` a version-switched read depends on cannot be dropped. It returns a `Blob` rather than a URL because the route is authenticated and an `<img src>` cannot send the bearer token: a browser consumer makes an object URL and revokes it on unmount. Responses are `Cache-Control: private, immutable`, so a repeat fetch is served by the HTTP cache.
+
+### Compatibility
+
+- **Opt-in and independent of `toolOutputs`.** The default request is byte-identical, and `setToolOutputMode("stub")` does NOT ask for image stubs: every installed consumer sends `tool_outputs=stub` and draws `url` directly, so the two are separate settings on the wire (`tool_images=stub`) and here. One setting governs both event waves — the newest page and every `loadEarlierTurns` page.
+- **Needs a backend that serves `tool_images`.** An older backend ignores the unknown parameter and returns inline previews, so a consumer that handles both shapes — `isToolImageStub(entry)` or a `url` — works against either.
+
 ## 9.2.0
 
 ### Added

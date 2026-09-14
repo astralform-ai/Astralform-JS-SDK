@@ -75,8 +75,13 @@ export type { ProtocolAdapter } from "./protocol-registry.js";
 export { ChatEventType } from "./types.js";
 // A consumer cannot resolve a stub it has no way to recognise, so the guard is
 // public surface alongside the shape it guards.
-export { isToolOutputStub } from "./types.js";
-export type { ToolOutputStub, ToolOutputMode } from "./types.js";
+export { isToolOutputStub, isToolImageStub } from "./types.js";
+export type {
+  ToolOutputStub,
+  ToolOutputMode,
+  ToolImageStub,
+  ToolImageMode,
+} from "./types.js";
 export type { ChatEventTypeValue } from "./types.js";
 
 // High-level ChatEvent (SDK → consumer)
@@ -197,4 +202,8 @@ export type {
   VoiceTranscribeOptions,
   VoiceTranscript,
 } from "./types.js";
-export { VOICE_POLISH_MODES, isVoiceLLMMode, isVoicePolishMode } from "./types.js";
+export {
+  VOICE_POLISH_MODES,
+  isVoiceLLMMode,
+  isVoicePolishMode,
+} from "./types.js";
