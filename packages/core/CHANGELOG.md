@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 9.2.0
 
 ### Added
 
@@ -22,7 +22,9 @@
 
 ### Compatibility
 
-- Source-compatible. The field and its type are unchanged, so nothing stops compiling; `@deprecated` shows as a strikethrough in editors and does not fail `tsc`.
+- **Additive for the event and type changes.** `restoreSettled` and `historyPageEnd` gain a field; existing handlers that ignore it are unaffected, and nothing new goes on the wire — `jobs` is data the restore already fetched. The four newly exported types were previously unnameable, so no import changes meaning.
+- **`ConversationJob` gained optional fields only.** Code constructing one (a test double, a fake backend) still compiles; code reading one should treat the new fields as genuinely optional — `plan_mode`/`image_mode`/`video_mode` are three-valued, where absent/null means "the backend cannot say", which is NOT false.
+- **`VoiceConfig.autoSend` stays source-compatible.** The field and its type are unchanged, so nothing stops compiling; `@deprecated` shows as a strikethrough in editors and does not fail `tsc`.
 - A client that honoured `autoSend` stops auto-sending a dictation. That is the intended outcome, and it holds against every backend version, including one that still sends `true`.
 
 ## 9.1.0
