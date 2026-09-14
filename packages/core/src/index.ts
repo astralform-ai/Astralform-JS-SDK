@@ -1,5 +1,10 @@
 // Core classes
 export { AstralformClient, parseVoicePolishFrame } from "./client.js";
+// The wire shapes the paged reads return. `ConversationJob` is the payload
+// `restoreSettled`/`historyPageEnd` hand over, so a consumer that cannot name
+// it cannot type the rehydration pass those events exist for — it was
+// reachable only as `Extract<StreamManagerEvent, { type: "restoreSettled" }>`.
+export type { ConversationJob, JobsPage, MessagesPage } from "./client.js";
 export { ChatSession, CONVERSATION_PAGE_SIZE } from "./session.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
 export { InMemoryStorage, type ChatStorage } from "./storage.js";

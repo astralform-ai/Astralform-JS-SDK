@@ -181,10 +181,13 @@ export type StreamManagerEvent =
       /**
        * The newest page's turns, as the job list describes them.
        *
-       * The restore ALREADY fetched these (`jobList`, bounded by
-       * `RESTORE_TURN_PAGE_SIZE`); handing them over is what lets a consumer
-       * rehydrate without issuing its own unbounded `GET /jobs`, which is a
-       * payload that grows with the transcript and lands before first paint.
+       * The restore ALREADY fetched these — `jobList` asks for
+       * `RESTORE_TURN_PAGE_SIZE` of them, and gets that many from any server
+       * that honours the cursor (an older one ignores `limit` and answers with
+       * the whole list, the documented degrade). Handing them over is what lets
+       * a consumer rehydrate without issuing its OWN unbounded `GET /jobs`,
+       * which is unbounded against every server, not just an old one, and lands
+       * before first paint.
        */
       jobs: ConversationJob[];
     };

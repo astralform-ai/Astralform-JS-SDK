@@ -99,6 +99,11 @@ describe("public export surface", () => {
     // nearly shipped it unnameable, which is why `types.ts` is here too.
     ["custom-events.ts", 20],
     ["types.ts", 60],
+    // #78 added this one: `ConversationJob` shipped as the payload of two
+    // StreamManager events while being unnameable from the package, which is
+    // exactly the failure this guard exists to catch — it just was not looking
+    // at `client.ts`.
+    ["client.ts", 2],
   ])("re-exports every public type declared in %s", (file, floor) => {
     const declared = declaredPublicTypes(read(file));
     // A scan that silently matched nothing would pass every assertion below.
