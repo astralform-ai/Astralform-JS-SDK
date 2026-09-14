@@ -176,6 +176,71 @@ export interface ConversationJob {
   status: string;
   message_id?: string | null;
   metrics?: Record<string, unknown>;
+
+  /**
+   * The per-turn state a consumer rehydrates a restored transcript from —
+   * attachment chips, composer modes, goal linkage, the model the turn ran on.
+   *
+   * Every field below was ALREADY in this response and already fetched by the
+   * restore's own paged read. They were simply not TYPED, and a field the SDK
+   * does not surface is one a consumer cannot reach without re-requesting the
+   * endpoint itself — which is exactly what happened: the chat issued a second,
+   * UNBOUNDED `GET /jobs` on `restoreSettled`, a payload that grows with the
+   * transcript, landing before first paint (measured 409-959 ms on the #1052
+   * reference conversation). Widening the type is what lets that request be
+   * deleted rather than merely bounded, which keeps ONE page size and ONE
+   * cursor in the SDK instead of a second copy of both in every consumer.
+   *
+   * Optional throughout, because "the backend cannot say" is a real answer for
+   * most of them: a job older than the field, or a server that does not project
+   * it yet. `plan_mode`/`image_mode`/`video_mode` are three-valued for that
+   * reason — absent/null is NOT false. `llm_provider`/`llm_model` come as a
+   * pair or not at all.
+   */
+  created_at?: string | null;
+  completed_at?: string | null;
+  goal_id?: string | null;
+  goal_objective?: string | null;
+  plan_mode?: boolean | null;
+  image_mode?: boolean | null;
+  video_mode?: boolean | null;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  /**
+   * Files that rode along with this turn's user message, as display metadata.
+   *
+   * Present for every job that carried uploads WHATEVER its status — the files
+   * are stored at attach time, before the turn starts, so a stopped or failed
+   * turn still carried them and its bubble should still show them.
+   */
+  attachments?: ConversationJobAttachment[] | null;
+}
+
+/**
+ * One file that rode along with a turn's user message.
+ *
+ * Named rather than inlined into `ConversationJob.attachments`: a consumer
+ * rebuilding attachment chips writes a function over ONE of these, and an
+ * inline literal is nameable only by indexing back out of the parent
+ * (`NonNullable<ConversationJob["attachments"]>[number]`). Handing the rows
+ * over is pointless if the row's element type cannot be spelled.
+ *
+ * `asset_id` and `filename` are required while the rest of `ConversationJob`
+ * is optional, and that is not an oversight: the others are optional because
+ * the BACKEND may not project them (a job older than the field, a server that
+ * does not send it yet), whereas this whole object is built in one place and
+ * both fields are unconditionally populated from the asset row whenever an
+ * entry exists at all.
+ */
+export interface ConversationJobAttachment {
+  asset_id: string;
+  filename: string;
+  media_type?: string | null;
+  size_bytes?: number | null;
+  /** Signed and expiring — the restored thumbnail. */
+  url?: string | null;
+  /** Permanent address, for keeping or linking. */
+  content_url?: string | null;
 }
 
 /** One page of turns, plus where the next older page starts. */
