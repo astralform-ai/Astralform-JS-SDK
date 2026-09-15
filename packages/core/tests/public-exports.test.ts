@@ -114,9 +114,14 @@ describe("public export surface", () => {
 
   it("reads the export list without over-collecting", () => {
     // Positive controls, and only that. The negative control — the one that
-    // fails if the parser over-collects — is `has("a:Shared") === false` in
-    // "keys the export list by module" below, where the fixture asserts set
-    // equality and a stray name shows up.
+    // fails if the parser over-collects — is the set-equality assertion in
+    // "keys the export list by module" below: it lists the fixture's keys
+    // exhaustively, so a stray name shows up there.
+    //
+    // The `it` name above is historical: this block is where the old
+    // inverse-failure note lived, so a failure still prints "without
+    // over-collecting" while nothing asserted here distinguishes a sweeping
+    // parser.
     //
     // `types.ts` declares this one without `export`. Cheap to pin, though note
     // the name appears nowhere in `index.ts`, so it holds for any parser.

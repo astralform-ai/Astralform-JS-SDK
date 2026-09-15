@@ -52,8 +52,9 @@ const sendOptionFields = (source: string): string[] => {
   // The counter is over `;`-separated members, and that bounds it twice. A `;`
   // inside a member's own type over-counts — `(e: { pct: number; label:
   // string }) => void` reads as two — which throws rather than misses, so it
-  // is friction, not a hole. It takes two inline properties to carry a `;` at
-  // all; `{ pct: number }` has none and is read correctly.
+  // is friction, not a hole. It takes a separator inside the braces to trip at
+  // all — two properties, or one with a trailing `;`; `{ pct: number }` has
+  // none and is read correctly.
   //
   // The hole is the reverse: TS also accepts `,` between members, so
   // `goal?: string, other?: string;` is one member and one name, counts agree,
