@@ -163,6 +163,8 @@ export type {
 export type {
   ChatStreamRequest,
   CodeProject,
+  CodeGroupMembership,
+  ConversationGroup,
   AvailableRepository,
   AvailableRepositories,
   EffortRung,

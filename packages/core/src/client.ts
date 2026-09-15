@@ -12,9 +12,11 @@ import type {
   AvailableRepositories,
   ChatStreamEvent,
   ChatStreamRequest,
+  CodeGroupMembership,
   CodeProject,
   Conversation,
   ConversationAsset,
+  ConversationGroup,
   ConversationEvent,
   FeedbackRequest,
   FeedbackResponse,
@@ -1283,6 +1285,108 @@ export class AstralformClient {
       remove: async (owner: string, repo: string): Promise<void> => {
         await this.del(
           `/v1/code/projects/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+        );
+      },
+    },
+
+    /**
+     * Code groups: a user-named container under one repository, for a feature
+     * whose work outlives a single session. Its sessions share one plan and one
+     * set of notes, so what one writes the others read.
+     *
+     * A group is a LABEL, not a binding — unlike a task's project, which is
+     * written once on the first turn. A task may join, move between, or leave
+     * groups at any time, and a deleted group's sessions survive as ungrouped.
+     *
+     * The server enforces three things worth knowing before you render a
+     * failure: a group that is not this user's answers `404` (never `403`, so a
+     * group id cannot be probed); filing a task into a group under a DIFFERENT
+     * repository than the task's answers `409`; and the group's plan and notes
+     * are deleted with the group, while each session keeps its own.
+     */
+    groups: {
+      /**
+       * This user's groups, oldest first. Pass a repository to narrow to one
+       * repository's — the composer's picker does; the sidebar asks once and
+       * nests them itself.
+       */
+      list: async (repository?: string): Promise<ConversationGroup[]> => {
+        const query = repository ? `?repository=${encodeURIComponent(repository)}` : "";
+        const raw = await this.get<
+          {
+            id: string;
+            repository: string;
+            title: string;
+            created_at: string;
+            updated_at: string;
+          }[]
+        >(`/v1/code/groups${query}`);
+        return raw.map((g) => camelizeKeys<ConversationGroup>(g as unknown as Record<string, unknown>));
+      },
+
+      /**
+       * Create a group under a repository. The repository goes through the same
+       * normaliser the Projects surface uses, so a pasted GitHub URL is accepted
+       * and anything that is not `owner/repo` is refused.
+       */
+      create: async (repository: string, title: string): Promise<ConversationGroup> => {
+        const raw = await this.post<{
+          id: string;
+          repository: string;
+          title: string;
+          created_at: string;
+          updated_at: string;
+        }>("/v1/code/groups", { repository, title });
+        return camelizeKeys<ConversationGroup>(raw as unknown as Record<string, unknown>);
+      },
+
+      /** Rename a group. A group that is not this user's answers `404`. */
+      rename: async (groupId: string, title: string): Promise<ConversationGroup> => {
+        const raw = await this.patch<{
+          id: string;
+          repository: string;
+          title: string;
+          created_at: string;
+          updated_at: string;
+        }>(`/v1/code/groups/${encodeURIComponent(groupId)}`, { title });
+        return camelizeKeys<ConversationGroup>(raw as unknown as Record<string, unknown>);
+      },
+
+      /**
+       * Delete a group. Its tasks survive and become ungrouped, each keeping its
+       * own plan and notes; the group's SHARED documents are deleted with it.
+       */
+      remove: async (groupId: string): Promise<void> => {
+        await this.del(`/v1/code/groups/${encodeURIComponent(groupId)}`);
+      },
+
+      /**
+       * File a task into a group. Idempotent — filing an already-filed task
+       * again is the same state, not an error. Refused with `409` when the task
+       * belongs to a different repository than the group, because it would
+       * render nowhere in the sidebar.
+       */
+      assign: async (
+        groupId: string,
+        conversationId: string,
+      ): Promise<CodeGroupMembership> => {
+        const raw = await this.post<{ group_id: string; conversation_id: string }>(
+          `/v1/code/groups/${encodeURIComponent(groupId)}/tasks/${encodeURIComponent(conversationId)}`,
+          undefined,
+        );
+        return camelizeKeys<CodeGroupMembership>(raw as unknown as Record<string, unknown>);
+      },
+
+      /**
+       * Take a task out of its group. The task and its documents are untouched.
+       *
+       * Deliberately not strict about WHICH group the task is in: a task that is
+       * in a different one (or in none) already satisfies "this task should not
+       * be grouped", so the call clears it rather than refusing.
+       */
+      unassign: async (groupId: string, conversationId: string): Promise<void> => {
+        await this.del(
+          `/v1/code/groups/${encodeURIComponent(groupId)}/tasks/${encodeURIComponent(conversationId)}`,
         );
       },
     },
