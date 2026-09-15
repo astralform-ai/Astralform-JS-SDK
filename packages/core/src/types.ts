@@ -624,6 +624,17 @@ export interface Conversation {
    * null) from an Astralform older than 0.69.46.
    */
   repository?: string | null;
+  /**
+   * The code group this task is filed under, or `null`/absent when it is not in
+   * one. MUTABLE — unlike `repository`, which is written once on the first turn:
+   * a group is a label the user applies to work that already exists, so a task
+   * may join, move between, or leave groups at any time.
+   *
+   * Absent from an Astralform older than the one that introduced groups (phase 1
+   * of `docs/refactor/workspace-groups`), which is why it is optional rather
+   * than `string | null`.
+   */
+  groupId?: string | null;
 }
 
 /** One citation on a `web_search`-style tool row, as the clients parse it. */
@@ -978,6 +989,33 @@ export interface ChatStreamRequest {
 export interface CodeProject {
   repoFullName: string;
   addedAt: string;
+}
+
+/**
+ * One group of tasks working a single feature, under one repository.
+ *
+ * Groups are the app user's own, on one agent, under one repository: two people
+ * using the same agent curate their own. The title is user-supplied and
+ * renameable, and membership is mutable — see {@link Conversation.groupId}.
+ */
+export interface ConversationGroup {
+  id: string;
+  repository: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A task filed under a group, as the assign call answers it.
+ *
+ * The server returns this body rather than `204`: `post` always parses a JSON
+ * body, so a No Content reply would surface as a parse error on a successful
+ * write. It is also the confirmation that the write landed.
+ */
+export interface CodeGroupMembership {
+  groupId: string;
+  conversationId: string;
 }
 
 /** A repository the workspace's GitHub installations cover. */

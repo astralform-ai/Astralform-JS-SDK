@@ -1,5 +1,27 @@
 # Changelog
 
+## 9.4.0
+
+### Added
+
+- **`client.code.groups`** — a group is the app user's own, user-named container under one GitHub repository, for a feature whose work outlives a single session. Its sessions share one plan and one set of notes, so what one writes the others read.
+
+  Six methods, over `/v1/code/groups`: **`list(repository?)`** (the sidebar asks once and nests them by repository; the composer's picker narrows to one), **`create(repository, title)`**, **`rename(id, title)`**, **`remove(id)`**, **`assign(groupId, conversationId)`** and **`unassign(groupId, conversationId)`**. `remove` and `unassign` are the reason the namespace exists at all: the client's `del` is private, so no consumer could issue those DELETEs for themselves.
+
+  Membership is a **label, not a binding**. Unlike `Conversation.repository`, which is written once on the first turn and refuses a different value, a task may join, move between, or leave groups at any time — `assign` is idempotent, and `unassign` clears whatever group the task is in rather than insisting on the one named in the path.
+
+  `assign` answers with **`CodeGroupMembership`** rather than `204`: `post` parses a JSON body unconditionally, so a No Content reply would surface as a parse error on a successful write. It is also the confirmation that the write landed.
+
+  Three server-side refusals are worth rendering rather than treating as transient: a group that is not the caller's answers **`404`** (never `403`, so a group id cannot be probed for existence), filing a task into a group under a **different repository** than the task's answers **`409`** (it would render nowhere in the sidebar), and a malformed group id answers `404` rather than a 500 from the uuid bind.
+
+- **`Conversation.groupId`** (`string | null`, optional) — the group a task is filed under, or null/absent when it is not in one. Optional rather than `string | null` because a server older than the groups feature omits the field entirely; treat absent and null the same.
+
+- **`ConversationGroup`** and **`CodeGroupMembership`** are exported.
+
+### Compatibility
+
+- Requires an Astralform that serves `/v1/code/groups` (the workspace-groups backend). Against an older server the namespace's calls 404 and `Conversation.groupId` is absent, which existing code already tolerates — neither changes any existing call.
+
 ## 9.3.0
 
 ### Added
