@@ -6,7 +6,7 @@
 
 - **`client.code.groups`** — a group is the app user's own, user-named container under one GitHub repository, for a feature whose work outlives a single session. Its sessions share one plan and one set of notes, so what one writes the others read.
 
-  Six methods, over `/v1/code/groups`: **`list(repository?)`** (the sidebar asks once and nests them by repository; the composer's picker narrows to one), **`create(repository, title)`**, **`rename(id, title)`**, **`remove(id)`**, **`assign(groupId, conversationId)`** and **`unassign(groupId, conversationId)`**. `remove` and `unassign` are the reason the namespace exists at all: the client's `del` is private, so no consumer could issue those DELETEs for themselves.
+  Six methods, over `/v1/code/groups`: **`list(repository?)`** (the sidebar asks once and nests them by repository; the composer's picker narrows to one), **`create(repository, title)`**, **`rename(groupId, title)`**, **`remove(groupId)`**, **`assign(groupId, conversationId)`** and **`unassign(groupId, conversationId)`**. `remove` and `unassign` are the reason the namespace exists at all: the client's `del` is private, so no consumer could issue those DELETEs for themselves.
 
   Membership is a **label, not a binding**. Unlike `Conversation.repository`, which is written once on the first turn and refuses a different value, a task may join, move between, or leave groups at any time — `assign` is idempotent, and `unassign` clears whatever group the task is in rather than insisting on the one named in the path.
 
