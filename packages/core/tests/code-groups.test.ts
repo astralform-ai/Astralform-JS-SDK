@@ -116,8 +116,24 @@ describe("code.groups", () => {
     const created = await client.code.groups.create("acme/api", "Billing rewrite");
 
     expect(calls[0].method).toBe("POST");
+    // The URL is asserted, not just the body: `recordingFetch` matches with
+    // `url.includes(pattern)`, so a drifted path would still resolve to the
+    // canned body and the case would pass without this line.
+    expect(calls[0].url).toBe("http://localhost:8000/v1/code/groups");
     expect(calls[0].body).toEqual({ repository: "acme/api", title: "Billing rewrite" });
-    expect(created.title).toBe("Billing rewrite");
+    // The WHOLE row, not just its title. `camelizeKeys` is structural, so a
+    // response path that dropped a field would hand back `undefined` and an
+    // assertion on one field would not notice — and the field that costs a user
+    // is `id`, because assign/rename/remove are all called with it. A create
+    // that returned the right object minus its id ships as "create does
+    // nothing" the moment the sidebar files or renames the group.
+    expect(created).toEqual({
+      id: GROUP,
+      repository: "acme/api",
+      title: "Billing rewrite",
+      createdAt: "2026-09-01T00:00:00Z",
+      updatedAt: "2026-09-02T00:00:00Z",
+    });
   });
 
   it("renames a group", async () => {
@@ -130,7 +146,16 @@ describe("code.groups", () => {
     expect(calls[0].method).toBe("PATCH");
     expect(calls[0].url).toBe(`http://localhost:8000/v1/code/groups/${GROUP}`);
     expect(calls[0].body).toEqual({ title: "Billing v2" });
-    expect(renamed.title).toBe("Billing v2");
+    // The whole row for the same reason as create: the title is the one field
+    // the request already carried, so asserting only it cannot tell the parsed
+    // response from the argument that was sent.
+    expect(renamed).toEqual({
+      id: GROUP,
+      repository: "acme/api",
+      title: "Billing v2",
+      createdAt: "2026-09-01T00:00:00Z",
+      updatedAt: "2026-09-02T00:00:00Z",
+    });
   });
 
   it("deletes a group with a real DELETE", async () => {
@@ -177,16 +202,40 @@ describe("code.groups", () => {
     expect(calls[0].url).toBe(
       `http://localhost:8000/v1/code/groups/${GROUP}/tasks/${CONV}`,
     );
+    // No body, like `remove`: the ids are in the path.
+    expect(calls[0].body).toBeUndefined();
   });
 
   it("encodes ids rather than interpolating them raw", async () => {
     // Ids are uuids today, but a path built by concatenation is the shape that
-    // breaks the day one is not.
-    const { client, calls } = clientWith({ "/v1/code/groups/": { status: 204 } });
+    // breaks the day one is not — and every method here builds one from a group
+    // id, so encoding is exercised on each rather than on `remove` alone.
+    // One routes object per call: `recordingFetch` answers with the FIRST
+    // pattern the url contains, so a broad `/v1/code/groups/` entry would
+    // swallow the membership paths and answer them a 204.
+    const removal = clientWith({ "/v1/code/groups/": { status: 204 } });
+    await removal.client.code.groups.remove("a/b c");
+    expect(removal.calls[0].url).toBe("http://localhost:8000/v1/code/groups/a%2Fb%20c");
 
-    await client.code.groups.remove("a/b c");
+    const renaming = clientWith({
+      "/v1/code/groups/a%2Fb%20c": { body: { id: "a/b c", title: "x" } },
+    });
+    await renaming.client.code.groups.rename("a/b c", "x");
+    expect(renaming.calls[0].url).toBe("http://localhost:8000/v1/code/groups/a%2Fb%20c");
 
-    expect(calls[0].url).toBe("http://localhost:8000/v1/code/groups/a%2Fb%20c");
+    const assigning = clientWith({
+      "/tasks/": { body: { group_id: "a/b c", conversation_id: CONV } },
+    });
+    await assigning.client.code.groups.assign("a/b c", CONV);
+    expect(assigning.calls[0].url).toBe(
+      `http://localhost:8000/v1/code/groups/a%2Fb%20c/tasks/${CONV}`,
+    );
+
+    const unassigning = clientWith({ "/tasks/": { status: 204 } });
+    await unassigning.client.code.groups.unassign("a/b c", CONV);
+    expect(unassigning.calls[0].url).toBe(
+      `http://localhost:8000/v1/code/groups/a%2Fb%20c/tasks/${CONV}`,
+    );
   });
 });
 
