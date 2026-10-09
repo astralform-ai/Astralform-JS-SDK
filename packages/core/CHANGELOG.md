@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Deprecated
+
+- **`VoiceConfig.silenceAutoStopSeconds`** — always `2`, and slated for removal in the next major. The silence window was retired from the platform (2026-10-09, [#1225](https://github.com/astralform-ai/Astralform/issues/1225)): no shipped client implements pause detection, the server no longer sends `silence_auto_stop_seconds`, and the dashboard's Defaults row is gone. It stays on the type so existing code compiles.
+
+### Changed
+
+- **`getVoiceConfig()` no longer reads `silence_auto_stop_seconds`.** The property is pinned to `2`; a value an older server still carries is ignored rather than passed through, mirroring `autoSend`.
+
 ## 9.4.0
 
 ### Added
