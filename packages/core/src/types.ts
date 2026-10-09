@@ -1173,7 +1173,11 @@ export interface VoiceConfig {
    * (or compare against `"raw"`) before polishing.
    */
   defaultMode: VoicePolishMode;
-  /** In tap-to-talk mode, the pause that ends a recording. */
+  /**
+   * @deprecated Always `2`. The server no longer sends the field and no
+   * shipped client implements pause detection; kept so existing code compiles,
+   * slated for removal in the next major.
+   */
   silenceAutoStopSeconds: number;
   /**
    * @deprecated Always `false`. Auto-send was removed from the platform

@@ -91,6 +91,11 @@ describe("getVoiceConfig", () => {
     const config = await voiceConfigFrom({ enabled: true, auto_send: true });
     expect(config.autoSend).toBe(false);
   });
+
+  it("reads silenceAutoStopSeconds as 2 even when an older server still sends it", async () => {
+    const config = await voiceConfigFrom({ enabled: true, silence_auto_stop_seconds: 4.5 });
+    expect(config.silenceAutoStopSeconds).toBe(2);
+  });
 });
 
 describe("mode guards", () => {
