@@ -1066,8 +1066,11 @@ export class AstralformClient {
       // A mode this SDK does not know must not reach a `switch` typed as
       // `VoicePolishMode`; `structured` is the server's own default.
       defaultMode: isVoicePolishMode(raw.default_mode) ? raw.default_mode : "structured",
-      silenceAutoStopSeconds:
-        (raw.silence_auto_stop_seconds as number | undefined) ?? 2,
+      // Deliberately not read from the wire. The field was retired from the
+      // platform (2026-10-09): no shipped client implements pause detection
+      // and the server no longer sends it, so an older server's stored value
+      // must not resurrect it.
+      silenceAutoStopSeconds: 2,
       // Deliberately not read from the wire. Auto-send was removed from the
       // platform (2026-09-14) and the server pins `auto_send` to false; an
       // older server still sending `true` must not make a client auto-send, so
