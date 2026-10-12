@@ -345,22 +345,24 @@ export function translateWireEvent(wire: WireEvent): ChatEvent | null {
         status: wire.status,
         final: wire.final,
       };
-    case "message_stop":
+    case "message_stop": {
+      const usage = wire.usage ?? {};
       return {
         type: "message_stop",
         turnId: wire.turn_id,
         jobId: wire.job_id,
         stopReason: wire.stop_reason,
         usage: {
-          inputTokens: wire.usage.input_tokens ?? 0,
-          outputTokens: wire.usage.output_tokens ?? 0,
-          cachedTokens: wire.usage.cached_tokens ?? 0,
-          cacheCreationTokens: wire.usage.cache_creation_tokens ?? 0,
+          inputTokens: usage.input_tokens ?? 0,
+          outputTokens: usage.output_tokens ?? 0,
+          cachedTokens: usage.cached_tokens ?? 0,
+          cacheCreationTokens: usage.cache_creation_tokens ?? 0,
         },
         ttfbMs: wire.ttfb_ms,
         totalMs: wire.total_ms,
         stallCount: wire.stall_count,
       };
+    }
     case "stall":
       return {
         type: "stall",

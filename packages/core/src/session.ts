@@ -21,6 +21,7 @@ import type {
 } from "./types.js";
 import { generateId } from "./utils.js";
 import {
+  AstralformError,
   AuthenticationError,
   ConnectionError,
   RateLimitError,
@@ -562,7 +563,7 @@ export class ChatSession {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
         this.emit({
           type: "error",
-          code: "connection_error",
+          code: err instanceof AstralformError ? err.code : "connection_error",
           message: err instanceof Error ? err.message : String(err),
           blockPath: null,
         });
@@ -842,6 +843,20 @@ export class ChatSession {
             if (typeof (data as { seq?: unknown })?.seq === "number") {
               this.lastSeq = (data as { seq: number }).seq;
             }
+            if (
+              typeof data === "object" &&
+              data !== null &&
+              "data" in data &&
+              data.data === "[DONE]"
+            ) {
+              // The sentinel IS a terminal signal: a job that finished without a
+              // replayed message_stop (completed or cancelled) ends with this
+              // frame and nothing else. Treating it as a transport drop made
+              // every such reconnect storm through the backoff ladder and then
+              // paint "Lost connection to the response stream." over a run that
+              // had already finished.
+              sawTerminal = true;
+            }
             continue;
           }
           parsed = data as WireEvent;
@@ -1037,7 +1052,7 @@ export class ChatSession {
       case "block_delta":
         if (
           ownsTurnState &&
-          wire.delta.channel === "text" &&
+          wire.delta?.channel === "text" &&
           this.currentTextPath !== null &&
           pathEquals(this.currentTextPath, wire.path)
         ) {

@@ -191,6 +191,37 @@ describe("ChatSession auto-reconnect", () => {
     expect(urls).toHaveLength(1); // single connection, no reconnect
   });
 
+  it("treats the transport done sentinel as terminal — a finished run replayed without message_stop does not storm", async () => {
+    // The backend ends every subscription with the sentinel frame (`event: done`,
+    // `data: {"seq":N,"data":"[DONE]"}`), and a job that already finished —
+    // completed or cancelled — replays with it as the ONLY terminal. It used to
+    // be consumed silently, so the stream looked dropped: six backoff sleeps, a
+    // `connection_error` banner over a finished run, and the conversation left
+    // marked running.
+    const replayed =
+      msgStart(0) +
+      blockStart(1) +
+      blockDelta(2, "Hi") +
+      ev("done", { seq: 3, data: "[DONE]" });
+    const urls: string[] = [];
+    const events: ChatEvent[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: reconnectFetch([replayed], urls),
+    });
+    await session.connect();
+    session.on((e) => events.push(e));
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+    vi.useRealTimers();
+
+    expect(urls).toHaveLength(1); // the sentinel ended it — no reconnect ladder
+    expect(events.some((e) => e.type === "error")).toBe(false); // and no invented failure
+  });
+
   it("gives up with a connection error after exhausting reconnects (never loops forever)", async () => {
     const partial = msgStart(0) + blockStart(1); // never terminal
     const urls: string[] = [];

@@ -169,7 +169,16 @@ export type WireBlockStatus =
   | "cancelled";
 
 export type WireStopReason =
-  "end_turn" | "tool_use" | "max_tokens" | "context_overflow" | "error";
+  | "end_turn"
+  | "tool_use"
+  | "max_tokens"
+  | "context_overflow"
+  // A generation the box saw end with no provider finish. It is consumed host-side
+  // (re-driven, or failed by name), so it should never reach this enum from the
+  // wire — declaring it keeps the type honest against the backend's vocabulary
+  // (backend/src/loop/events.py `StopReason`) instead of silently lacking a case.
+  | "incomplete"
+  | "error";
 
 // --- BlockDelta payloads (discriminated on `channel`) ---
 
