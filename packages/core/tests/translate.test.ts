@@ -404,3 +404,85 @@ describe("translateWireEvent", () => {
   });
 
 });
+
+describe("the subagent lifecycle frames", () => {
+  /**
+   * The backend renamed these to `agent_start` / `agent_stop` and flattened the
+   * identity onto the payload (`AgentRunStartPayload`: `agent_name`,
+   * `agent_display_name`, `agent_avatar_url`), while this translator was
+   * written against a NESTED `agent` object on `subagent_*`. So every frame the
+   * current backend emits arrived with an EMPTY identity: the events still
+   * reached consumers, they just said nothing about which agent was running.
+   */
+  it("maps the CURRENT wire name, with the flat identity", () => {
+    const ev = translateCustomEvent("agent_start", {
+      run_id: "run-1",
+      parent_call_id: "call-7",
+      agent_name: "researcher",
+      agent_display_name: "Researcher",
+      agent_avatar_url: "https://example.test/a.png",
+    });
+    expect(ev).toEqual({
+      type: "subagent_start",
+      runId: "run-1",
+      agent: {
+        name: "researcher",
+        displayName: "Researcher",
+        avatarUrl: "https://example.test/a.png",
+        description: null,
+      },
+      taskCallId: "call-7",
+    });
+  });
+
+  it("still maps the older nested shape", () => {
+    const ev = translateCustomEvent("subagent_start", {
+      agent: { name: "writer", display_name: "Writer", avatar_url: null },
+      task_call_id: "call-9",
+    });
+    expect(ev).toEqual({
+      type: "subagent_start",
+      runId: undefined,
+      agent: {
+        name: "writer",
+        displayName: "Writer",
+        avatarUrl: null,
+        description: null,
+      },
+      taskCallId: "call-9",
+    });
+  });
+
+  it("carries the child's own spend and outcome on agent_stop", () => {
+    // The wire surfaces the child's spend separately from the turn totals
+    // (`message_stop.usage` folds them in as well); a consumer that wants to
+    // attribute cost to one subagent has no other source.
+    const ev = translateCustomEvent("agent_stop", {
+      run_id: "run-1",
+      parent_call_id: "call-7",
+      agent_name: "researcher",
+      stop_reason: "end_turn",
+      input_tokens: 1200,
+      output_tokens: 340,
+      duration_ms: 9100,
+    });
+    expect(ev).toMatchObject({
+      type: "subagent_stop",
+      runId: "run-1",
+      taskCallId: "call-7",
+      stopReason: "end_turn",
+      inputTokens: 1200,
+      outputTokens: 340,
+      durationMs: 9100,
+    });
+  });
+
+  it("degrades to an empty identity rather than a crash on a malformed frame", () => {
+    const ev = translateCustomEvent("agent_start", { agent: "not-an-object" });
+    expect(ev).toMatchObject({
+      type: "subagent_start",
+      agent: { name: "", displayName: null, avatarUrl: null, description: null },
+      taskCallId: null,
+    });
+  });
+});

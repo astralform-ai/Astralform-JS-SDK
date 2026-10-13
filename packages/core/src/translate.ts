@@ -13,7 +13,7 @@ import type {
   WireBlockDeltaPayload,
   WireEvent,
 } from "./types.js";
-import type { MemoryRecord, TodoItem } from "./custom-events.js";
+import type { AgentIdentity, MemoryRecord, TodoItem } from "./custom-events.js";
 
 // --- Delta channels ---
 
@@ -55,13 +55,45 @@ export function translateDelta(
 
 // --- Custom events ---
 
-function translateAgentIdentity(raw: Record<string, unknown>) {
+function translateAgentIdentity(raw: unknown): AgentIdentity {
+  const source: Record<string, unknown> =
+    raw !== null && typeof raw === "object" ? { ...raw } : {};
+  const read = (key: string): unknown => source[key];
   return {
-    name: (raw.name as string) ?? "",
-    displayName: (raw.display_name as string | null) ?? null,
-    avatarUrl: (raw.avatar_url as string | null) ?? null,
-    description: (raw.description as string | null) ?? null,
+    name: (read("name") as string) ?? "",
+    displayName: (read("display_name") as string | null) ?? null,
+    avatarUrl: (read("avatar_url") as string | null) ?? null,
+    description: (read("description") as string | null) ?? null,
   };
+}
+
+/**
+ * A subagent run's identity, from EITHER shape the wire has used.
+ *
+ * The backend's `agent_start` / `agent_stop` carry it FLAT (`agent_name`,
+ * `agent_display_name`, `agent_avatar_url` — `backend/src/stream/protocol.py`
+ * `AgentRunStartPayload`); the older `subagent_start` / `subagent_stop` frames
+ * this translator was written against nested it under `agent`. Reading only the
+ * nested shape is what made every frame the current backend emits arrive with an
+ * EMPTY identity — the events still reached consumers, they just said nothing.
+ */
+function agentIdentityFromEvent(data: Record<string, unknown>): AgentIdentity {
+  if ("agent" in data) return translateAgentIdentity(data.agent);
+  return translateAgentIdentity({
+    name: data.agent_name,
+    display_name: data.agent_display_name,
+    avatar_url: data.agent_avatar_url,
+  });
+}
+
+/** A string field of a parsed frame, or `undefined` when it is not one. */
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/** A number field of a parsed frame, or `undefined` when it is not one. */
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
 }
 
 /**
@@ -131,21 +163,39 @@ export function translateCustomEvent(
         phase: (data.phase as string | null) ?? null,
         updatedAt: (data.updated_at as number | null) ?? null,
       };
+    // Two names for one event: the backend renamed these to `agent_*` (a nested
+    // run is not necessarily a "subagent" in the product's vocabulary) while
+    // older servers still emit `subagent_*`. Both are translated, so a client
+    // works across the rename.
+    case "agent_start":
     case "subagent_start":
       return {
         type: "subagent_start",
-        agent: translateAgentIdentity(
-          (data.agent as Record<string, unknown>) ?? {},
-        ),
-        taskCallId: (data.task_call_id as string | null) ?? null,
+        runId: optionalString(data.run_id),
+        agent: agentIdentityFromEvent(data),
+        // `parent_call_id` is the spawn block's call_id — the same key a client
+        // uses to find the tool block whose subtree is this child's work.
+        taskCallId:
+          optionalString(data.parent_call_id) ??
+          optionalString(data.task_call_id) ??
+          null,
       };
+    case "agent_stop":
     case "subagent_stop":
       return {
         type: "subagent_stop",
-        agent: translateAgentIdentity(
-          (data.agent as Record<string, unknown>) ?? {},
-        ),
-        taskCallId: (data.task_call_id as string | null) ?? null,
+        runId: optionalString(data.run_id),
+        agent: agentIdentityFromEvent(data),
+        taskCallId:
+          optionalString(data.parent_call_id) ??
+          optionalString(data.task_call_id) ??
+          null,
+        // The child's OWN spend and outcome, which the wire surfaces separately
+        // from the turn totals (`message_stop.usage` folds them in too).
+        stopReason: optionalString(data.stop_reason),
+        inputTokens: optionalNumber(data.input_tokens),
+        outputTokens: optionalNumber(data.output_tokens),
+        durationMs: optionalNumber(data.duration_ms),
       };
     case "context_warning":
       return {

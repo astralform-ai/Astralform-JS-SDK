@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **`agent_start` / `agent_stop` reach consumers with their identity again.** The backend renamed the subagent lifecycle frames (`AgentRunStartPayload` / `AgentRunStopPayload`) and flattened the identity onto the payload — `agent_name`, `agent_display_name`, `agent_avatar_url` — while the translator was written against a nested `agent` object on `subagent_*`. Every frame the current backend emits therefore arrived with an EMPTY identity: the events still reached consumers, they just said nothing about which agent was running. Both name pairs are translated now, both shapes are read, and `agent_stop` carries the child's own outcome and spend (`stop_reason`, `input_tokens`, `output_tokens`, `duration_ms`) — surfaced separately from the turn totals, which fold them in as well.
+
+  `SubagentStartEvent` / `SubagentStopEvent` gain optional `runId` (and, on the stop, the spend fields), so nothing that compiles today changes meaning.
+
+### Added
+
 - **A `keepalive` frame no longer rewinds the reconnect cursor.** The backend sends its 45 s idle tick as an ordinary `data:` frame carrying `seq: 0` BY DESIGN (`WireKeepalive(seq=0, ts=0.0)` — it is not a position in the event log), and the pump harvested any numeric `seq` it saw into `lastSeq`. One keepalive — sent exactly when a turn is quiet for 45 s, i.e. during a long tool run — set the cursor to 0, so a transport drop then reconnected with `?after=0` and replayed the whole turn, deltas and all, over blocks the consumer was already rendering.
 
   The cursor now skips `keepalive` and only ever ADVANCES: `send` and `reconnectToJob` reset it per job, so a new job's `seq: 0` still moves it forward, while a frame carrying an older (or sentinel) position cannot move it back. Two tests in `session-reconnect.test.ts` pin both halves, and they are orthogonal: the keepalive case fails on the pre-fix code with `after=0`, the stale-seq case with `after=1` (delete either guard alone and exactly one of them fails).
