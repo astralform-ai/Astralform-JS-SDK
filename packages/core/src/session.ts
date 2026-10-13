@@ -1309,12 +1309,20 @@ export class ChatSession {
    * Reconnect to a running job's SSE stream (e.g. after page reload).
    * Replays all events from the beginning and continues live.
    */
-  async reconnectToJob(jobId: string): Promise<void> {
+  /**
+   * @param afterSeq Resume the job's event stream AFTER this sequence number.
+   *   Omitted (the reconnect default) replays the job from the beginning. A
+   *   caller that holds the job's events up to `afterSeq` — the transcript
+   *   cache — passes it so the backend replays only the delta and then goes
+   *   live; the backend's `?after=` handles a job that already ended by
+   *   back-filling its terminal event.
+   */
+  async reconnectToJob(jobId: string, afterSeq?: number): Promise<void> {
     if (this.isStreaming) return;
 
     this.isStreaming = true;
     this.currentJobId = jobId;
-    this.lastSeq = -1;
+    this.lastSeq = afterSeq ?? -1;
     this.submittedToolCallIds.clear();
     this.resetStreamingState();
     const controller = new AbortController();

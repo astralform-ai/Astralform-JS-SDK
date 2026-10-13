@@ -495,7 +495,35 @@ export class StreamManager {
    */
   async switchTo(
     conversationId: string,
-    opts?: { skipHistoryReplay?: boolean },
+    opts?: {
+      skipHistoryReplay?: boolean;
+      /**
+       * Jobs whose events the caller ALREADY holds — the transcript-cache
+       * resume. A COMPLETED job named here is neither fetched nor replayed: its
+       * blocks are in the caller's store, and replaying them would draw a
+       * second copy.
+       *
+       * Two limits, both deliberate and both stating what a review proved the
+       * wider contract could not:
+       *
+       *  - **The newest turn page only.** The marks are matched against the page
+       *    of jobs this restore walks, so a mark for a turn OLDER than that page
+       *    is not consulted. The message window (40 rows) and the turn page (10)
+       *    are independent spans, so a cache deeper than one page would need its
+       *    own cursor design — a prompt whose turn is not on the page cannot be
+       *    recognized as held, and would come back as a steer bubble.
+       *  - **Completed jobs only.** A mark for the RUNNING job is ignored (its
+       *    stream starts from the beginning, as it always did). Resuming a live
+       *    turn's stream from a mark would deliver the delta but NOT the prompt
+       *    — a prompt is a message-table row, not a stream event — so the plan
+       *    would still draw a bubble the caller's cache already renders.
+       *
+       * Absent → today's behaviour exactly. A job NOT named is fetched whole, as
+       * now, so a stale mark loses at most one completed turn's skip, never a
+       * turn.
+       */
+      have?: ReadonlyArray<{ jobId: string; lastSeq: number }>;
+    },
   ): Promise<void> {
     if (conversationId === this._activeConversationId) return;
 
@@ -559,7 +587,7 @@ export class StreamManager {
 
     let tookOver = false;
     try {
-      await this.restore(conversationId, gen);
+      await this.restore(conversationId, gen, opts?.have);
       tookOver = gen === this.generation;
     } finally {
       // In a `finally`, because `restore` awaits `loadConversation` unguarded
@@ -981,7 +1009,17 @@ export class StreamManager {
     });
   }
 
-  private async restore(conversationId: string, gen: number): Promise<void> {
+  private async restore(
+    conversationId: string,
+    gen: number,
+    have?: ReadonlyArray<{ jobId: string; lastSeq: number }>,
+  ): Promise<void> {
+    // The caller's cached marks, resolved once for both halves: which jobs to
+    // skip fetching, and where to start the running job's stream.
+    const haveByJobId = new Map<string, number>(
+      (have ?? []).map((h) => [h.jobId, h.lastSeq] as const),
+    );
+
     /**
      * Has the user moved on since this restore started?
      *
@@ -1161,6 +1199,7 @@ export class StreamManager {
         activeJobId,
         turn,
         jobsRequest,
+        haveByJobId,
       ))
     )
       return;
@@ -1168,6 +1207,11 @@ export class StreamManager {
     if (activeJobId) {
       this.setState("streaming");
       try {
+        // NO mark for the running job, deliberately: `switchTo`'s `have` is
+        // documented as completed-jobs-only, and the reason is the prompt. A
+        // prompt is a message-table row, not a stream event, so resuming from a
+        // mark delivers the turn's delta without it — while the plan still
+        // draws the bubble, over the one the caller's cache renders.
         await this.session.reconnectToJob(activeJobId);
       } catch {
         // Stream ended or aborted
@@ -1462,6 +1506,8 @@ export class StreamManager {
     activeJobId: string | null,
     turn: number,
     jobsRequest: Promise<JobsPage>,
+    /** The caller's cached per-job marks — see `switchTo`'s `have`. */
+    haveByJobId: ReadonlyMap<string, number>,
   ): Promise<boolean> {
     // Three ways to lose the right to replay, checked at every await boundary
     // below because all of them arrive from outside this function while it
@@ -1516,8 +1562,14 @@ export class StreamManager {
       // turn ended says nothing about that, and a client that hides failed turns
       // does not make them not have happened — it just stops the user seeing
       // what the agent did before it stopped.
+      // The caller's cached marks: a job named here is NOT re-fetched and NOT
+      // replayed — the caller already holds its blocks. `claimedMessageIds`
+      // below is deliberately NOT filtered by this: those prompts are on
+      // screen already (from the cache), and un-claiming them would draw a
+      // second bubble for every cached turn.
       const replayableJobs = jobs.filter(
-        (j: { job_id: string }) => j.job_id !== activeJobId,
+        (j: { job_id: string }) =>
+          j.job_id !== activeJobId && !haveByJobId.has(j.job_id),
       );
 
       // User prompts aren't persisted in job_events — they live in the
@@ -1566,6 +1618,14 @@ export class StreamManager {
         // them, silently. Deriving both from `jobs` makes that impossible to
         // get half-right.
         claimedMessageIds: jobs.map((j) => j.message_id),
+        // The prompts whose turn the CALLER holds (see `switchTo`'s `have`).
+        // The walk below is empty for exactly those jobs — which is the
+        // primary cache scenario, a SETTLED conversation whose turns are all
+        // held — and the empty-walk rescue would otherwise re-emit every one of
+        // them as a steer bubble.
+        heldMessageIds: jobs
+          .filter((j) => haveByJobId.has(j.job_id))
+          .map((j) => j.message_id),
         userMessages: userMessages.map((m) => ({
           id: m.id,
           content: m.content,

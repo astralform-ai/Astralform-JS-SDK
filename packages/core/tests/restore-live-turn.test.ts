@@ -678,3 +678,163 @@ describe("a regenerate that starts no turn", () => {
     expect(manager.state).not.toBe("restoring");
   });
 });
+
+describe("switchTo's `have`: the transcript cache's resume marks", () => {
+  /**
+   * The client holds a conversation's blocks from its own cache and asks the
+   * SDK to restore only the DELTA. Two halves, and each is asserted separately
+   * because they fail differently:
+   *
+   *  - a completed job named in `have` must not be fetched or replayed (the
+   *    caller's store already renders it — replaying appends a second copy);
+   *  - the RUNNING job named in `have` must start its stream at the caller's
+   *    sequence number, so the backend replays `seq > lastSeq` and then goes
+   *    live instead of sending the whole turn again.
+   */
+  it("does not fetch or replay a completed job the caller already holds", async () => {
+    const { manager, events, calls } = setup();
+
+    await manager.switchTo("conv-1", { have: [{ jobId: "job-1", lastSeq: 2 }] });
+
+    // Not fetched...
+    expect(calls.some((u) => u.includes("job_id=job-1"))).toBe(false);
+    // ...and not replayed.
+    expect(
+      events.some((e) => e.type === "block_stop" && e.turnId === "t1"),
+    ).toBe(false);
+  });
+
+  it("still claims the cached job's prompt, so it is not drawn twice", async () => {
+    // The subtle half. `claimedMessageIds` decides which prompts the plan draws
+    // as bubbles; a cached turn's prompt is ALREADY on screen. Un-claiming it
+    // (filtering the same set as the replay) draws a second bubble for every
+    // cached turn.
+    const { manager, events } = setup();
+
+    await manager.switchTo("conv-1", { have: [{ jobId: "job-1", lastSeq: 2 }] });
+
+    expect(userMessages(events)).not.toContain("draw me a teapot");
+    // The running turn's prompt still arrives: it is not in `have`.
+    expect(userMessages(events)).toContain("now generate a video of it");
+  });
+
+  it("IGNORES a mark for the running job — the documented limit", async () => {
+    // The contract is completed-jobs-only, and the reason is the prompt: a
+    // prompt is a message-table row, not a stream event, so resuming the live
+    // turn from a mark would deliver its delta without its prompt — while the
+    // plan still draws the bubble, over the one the caller's cache renders.
+    // Pinned here so the limit cannot be "optimized" back in without a design
+    // for the prompt.
+    const { manager, calls } = setup();
+
+    await manager.switchTo("conv-1", {
+      have: [{ jobId: "job-2", lastSeq: 5 }],
+    });
+
+    const streamCall = calls.find((u) => u.includes("/v1/jobs/job-2/events"));
+    expect(streamCall).toBeDefined();
+    expect(streamCall).toContain("after=-1");
+  });
+
+  it("replays from the beginning when the mark is absent", async () => {
+    // The default must not move: a reconnect with no mark still asks for the
+    // whole turn.
+    const { manager, calls } = setup();
+
+    await manager.switchTo("conv-1");
+
+    const streamCall = calls.find((u) => u.includes("/v1/jobs/job-2/events"));
+    expect(streamCall).toContain("after=-1");
+  });
+
+  it("fetches and replays normally when the caller holds nothing", async () => {
+    const { manager, events, calls } = setup();
+
+    await manager.switchTo("conv-1", { have: [] });
+
+    expect(calls.some((u) => u.includes("job_id=job-1"))).toBe(true);
+    expect(
+      events.some((e) => e.type === "block_stop" && e.turnId === "t1"),
+    ).toBe(true);
+  });
+});
+
+describe("`have` on a SETTLED conversation (the cache's primary case)", () => {
+  /**
+   * Every job on the page is held, so the walk is EMPTY while the claim set is
+   * not. The empty-walk rescue in `planRestore` deliberately ignores the claim
+   * set (its premise: an empty walk emits no turn, so there is no second copy
+   * to avoid) — and under `have` that premise is false: the caller's store IS
+   * the first copy. Without the held-prompt guard this re-emitted every prompt
+   * on the page as a steer bubble, i.e. the whole transcript twice.
+   */
+  function settledBackend(calls: string[]): typeof globalThis.fetch {
+    return async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      calls.push(url);
+      if (url.includes("/active-job")) return json({ job_id: null, status: "idle" });
+      if (url.includes("/v1/jobs/")) return sse(LIVE_STREAM);
+      if (url.includes("/messages")) return json(MESSAGES);
+      if (url.includes("/jobs")) {
+        return json([
+          { job_id: "job-1", status: "completed", message_id: "m-1" },
+          { job_id: "job-2", status: "completed", message_id: "m-2" },
+        ]);
+      }
+      if (url.includes("/events")) return json(DONE_TURN_EVENTS);
+      return json([]);
+    };
+  }
+
+  it("emits NO prompt bubbles when every turn is held", async () => {
+    const calls: string[] = [];
+    const session = new ChatSession({ ...baseConfig, fetch: settledBackend(calls) });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await manager.switchTo("conv-1", {
+      have: [
+        { jobId: "job-1", lastSeq: 2 },
+        { jobId: "job-2", lastSeq: 9 },
+      ],
+    });
+
+    expect(userMessages(events)).toEqual([]);
+  });
+
+  it("fetches nothing when every turn is held", async () => {
+    const calls: string[] = [];
+    const session = new ChatSession({ ...baseConfig, fetch: settledBackend(calls) });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-1", {
+      have: [
+        { jobId: "job-1", lastSeq: 2 },
+        { jobId: "job-2", lastSeq: 9 },
+      ],
+    });
+
+    expect(calls.some((u) => u.includes("job_id=job-1"))).toBe(false);
+    expect(calls.some((u) => u.includes("job_id=job-2"))).toBe(false);
+  });
+
+  it("still emits the prompt of a turn the caller does NOT hold", async () => {
+    // job-2 is un-held, so it stays in the walk and its prompt is drawn the
+    // ordinary way — the guard must not touch it. (The empty-walk rescue is a
+    // different path; this is the control that keeps the guard from
+    // over-filtering a page that mixes held and un-held turns.)
+    const calls: string[] = [];
+    const session = new ChatSession({ ...baseConfig, fetch: settledBackend(calls) });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await manager.switchTo("conv-1", { have: [{ jobId: "job-1", lastSeq: 2 }] });
+
+    // job-2 is not held and not `completed` → its prompt is rescued...
+    expect(userMessages(events)).toContain("now generate a video of it");
+    // ...while the held turn's prompt is not re-emitted.
+    expect(userMessages(events)).not.toContain("draw me a teapot");
+  });
+});
