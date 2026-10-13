@@ -477,11 +477,24 @@ export type ChatEvent =
       type: "subagent_start";
       agent: AgentIdentity;
       taskCallId?: string | null;
+      /** The run's id, when the frame carries one (`agent_start`). */
+      runId?: string;
     }
   | {
       type: "subagent_stop";
       agent: AgentIdentity;
       taskCallId?: string | null;
+      /** The run's id, when the frame carries one (`agent_stop`). */
+      runId?: string;
+      /**
+       * The child's OWN outcome and spend, surfaced separately from the turn
+       * totals (`message_stop.usage` still folds them in). Absent on the older
+       * `subagent_stop` frames, which carried only the identity.
+       */
+      stopReason?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      durationMs?: number;
     }
   | {
       type: "context_warning";
