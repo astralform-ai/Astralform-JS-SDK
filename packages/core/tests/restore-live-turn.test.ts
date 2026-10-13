@@ -718,7 +718,13 @@ describe("switchTo's `have`: the transcript cache's resume marks", () => {
     expect(userMessages(events)).toContain("now generate a video of it");
   });
 
-  it("starts the running job's stream at the caller's mark", async () => {
+  it("IGNORES a mark for the running job — the documented limit", async () => {
+    // The contract is completed-jobs-only, and the reason is the prompt: a
+    // prompt is a message-table row, not a stream event, so resuming the live
+    // turn from a mark would deliver its delta without its prompt — while the
+    // plan still draws the bubble, over the one the caller's cache renders.
+    // Pinned here so the limit cannot be "optimized" back in without a design
+    // for the prompt.
     const { manager, calls } = setup();
 
     await manager.switchTo("conv-1", {
@@ -727,7 +733,7 @@ describe("switchTo's `have`: the transcript cache's resume marks", () => {
 
     const streamCall = calls.find((u) => u.includes("/v1/jobs/job-2/events"));
     expect(streamCall).toBeDefined();
-    expect(streamCall).toContain("after=5");
+    expect(streamCall).toContain("after=-1");
   });
 
   it("replays from the beginning when the mark is absent", async () => {
@@ -813,10 +819,11 @@ describe("`have` on a SETTLED conversation (the cache's primary case)", () => {
     expect(calls.some((u) => u.includes("job_id=job-2"))).toBe(false);
   });
 
-  it("still rescues the prompts of turns the caller does NOT hold", async () => {
-    // A page can hold cached turns AND turns that never landed a `completed`
-    // job (failed/cancelled). The rescue is for the latter — filtering per
-    // message, not per page, is what keeps them.
+  it("still emits the prompt of a turn the caller does NOT hold", async () => {
+    // job-2 is un-held, so it stays in the walk and its prompt is drawn the
+    // ordinary way — the guard must not touch it. (The empty-walk rescue is a
+    // different path; this is the control that keeps the guard from
+    // over-filtering a page that mixes held and un-held turns.)
     const calls: string[] = [];
     const session = new ChatSession({ ...baseConfig, fetch: settledBackend(calls) });
     const manager = new StreamManager(session);

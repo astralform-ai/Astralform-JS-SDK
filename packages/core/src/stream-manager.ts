@@ -499,15 +499,28 @@ export class StreamManager {
       skipHistoryReplay?: boolean;
       /**
        * Jobs whose events the caller ALREADY holds — the transcript-cache
-       * resume. A completed job named here is neither fetched nor replayed (its
-       * blocks are in the caller's store), and the running job named here has
-       * its stream started at `lastSeq` instead of from the beginning, so the
-       * backend replays only the delta. Absent → today's behaviour exactly.
+       * resume. A COMPLETED job named here is neither fetched nor replayed: its
+       * blocks are in the caller's store, and replaying them would draw a
+       * second copy.
        *
-       * The mark is trusted only for the job it names: a job NOT named here is
-       * fetched whole, as now. A stale mark can therefore lose at most that one
-       * job's delta, never a turn — and the recovery is the same fetch the
-       * client would have made.
+       * Two limits, both deliberate and both stating what a review proved the
+       * wider contract could not:
+       *
+       *  - **The newest turn page only.** The marks are matched against the page
+       *    of jobs this restore walks, so a mark for a turn OLDER than that page
+       *    is not consulted. The message window (40 rows) and the turn page (10)
+       *    are independent spans, so a cache deeper than one page would need its
+       *    own cursor design — a prompt whose turn is not on the page cannot be
+       *    recognized as held, and would come back as a steer bubble.
+       *  - **Completed jobs only.** A mark for the RUNNING job is ignored (its
+       *    stream starts from the beginning, as it always did). Resuming a live
+       *    turn's stream from a mark would deliver the delta but NOT the prompt
+       *    — a prompt is a message-table row, not a stream event — so the plan
+       *    would still draw a bubble the caller's cache already renders.
+       *
+       * Absent → today's behaviour exactly. A job NOT named is fetched whole, as
+       * now, so a stale mark loses at most one completed turn's skip, never a
+       * turn.
        */
       have?: ReadonlyArray<{ jobId: string; lastSeq: number }>;
     },
@@ -1194,13 +1207,12 @@ export class StreamManager {
     if (activeJobId) {
       this.setState("streaming");
       try {
-        // The cached mark, when the caller holds this job's events: the
-        // backend replays `seq > lastSeq` from storage and then goes live, so
-        // a reopen delivers the delta rather than the whole turn again.
-        await this.session.reconnectToJob(
-          activeJobId,
-          haveByJobId.get(activeJobId),
-        );
+        // NO mark for the running job, deliberately: `switchTo`'s `have` is
+        // documented as completed-jobs-only, and the reason is the prompt. A
+        // prompt is a message-table row, not a stream event, so resuming from a
+        // mark delivers the turn's delta without it — while the plan still
+        // draws the bubble, over the one the caller's cache renders.
+        await this.session.reconnectToJob(activeJobId);
       } catch {
         // Stream ended or aborted
       }
