@@ -217,6 +217,65 @@ describe("AstralformClient", () => {
     expect(convos[0]!.createdAt).toBe("2026-01-01T00:00:00Z");
   });
 
+  it("getConversations carries the row's liveness (active_job_id -> activeJobId)", async () => {
+    // The sidebar's per-row running indicator. Two rows, only one live: a
+    // mapping that dropped the field (or gave every row the same value) would
+    // pass a one-row test.
+    const mockFetch = createMockFetch({
+      "/v1/conversations": {
+        status: 200,
+        body: [
+          {
+            id: "c1",
+            title: "Running",
+            message_count: 5,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            active_job_id: "job-1",
+          },
+          {
+            id: "c2",
+            title: "Idle",
+            message_count: 1,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+            active_job_id: null,
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const convos = await client.getConversations();
+
+    expect(convos[0]!.activeJobId).toBe("job-1");
+    expect(convos[1]!.activeJobId).toBeNull();
+  });
+
+  it("getConversations degrades when an older server omits the field", async () => {
+    // A backend older than the field sends no key at all; consumers must read
+    // that as "not running" rather than crashing on undefined.
+    const mockFetch = createMockFetch({
+      "/v1/conversations": {
+        status: 200,
+        body: [
+          {
+            id: "c1",
+            title: "Old server",
+            message_count: 5,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const convos = await client.getConversations();
+
+    expect(convos[0]!.activeJobId).toBeUndefined();
+  });
+
   it("getConversations passes unknown fields through (no allowlist drop)", async () => {
     // Regression for #36: the mapper used to be an allowlist that dropped any
     // field it did not name. A new server field must reach the consumer under

@@ -644,6 +644,7 @@ export class AstralformClient {
         created_at: string;
         updated_at: string;
         repository?: string | null;
+        active_job_id?: string | null;
       }[]
     >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}${filter}`);
     return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));
