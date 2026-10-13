@@ -1750,17 +1750,23 @@ export class StreamManager {
       // the plan rather than from `jobs[].message_id` — the latter is NOT NULL
       // on the wire and can name a row absent from the message list, and a
       // bound that does not resolve re-opens the same hole.
-      this.session.hasMoreTurns = page.hasMore;
-      // Cursor and bound TOGETHER or NEITHER — the rule this file already
-      // states above, now enforced on the one input that can empty the plan
-      // without emptying the view: a caller holding every turn on the page
-      // (`have`). A restore that drew nothing has no bound to write, and a
-      // cursor with a null bound takes the deliberately-unbounded branch in
-      // `loadEarlierTurns` — which re-emits the held page's prompts as steers.
+      // Cursor, bound AND flag — all three or the page's own answers.
+      //
+      // The rule this file already states ("cursor and span bound, written
+      // TOGETHER") applies to the flag too, and the input that forces it is a
+      // caller holding every turn on the page (`have`): the plan draws nothing,
+      // so there is no bound to write. A cursor with a null bound takes the
+      // deliberately-unbounded branch in `loadEarlierTurns` — which re-emits the
+      // held page's prompts as steers — and `hasMoreTurns` left TRUE beside that
+      // null cursor disables paging back for the conversation entirely
+      // (`loadEarlierTurns` fails its own guard on every call, and nothing
+      // in-session re-arms the cursor). The windowed-load reset above writes the
+      // same pair for the same reason.
       const drewNothing = plan.length === 0;
       const holdsTurns = haveByJobId.size > 0;
-      this.session.oldestTurnCursor =
-        drewNothing && holdsTurns ? null : page.nextBefore;
+      const noDrawableTurns = drewNothing && holdsTurns;
+      this.session.hasMoreTurns = noDrawableTurns ? false : page.hasMore;
+      this.session.oldestTurnCursor = noDrawableTurns ? null : page.nextBefore;
       this.oldestDrawnMessageId = plan[0]?.messageId ?? null;
       complete = true;
 

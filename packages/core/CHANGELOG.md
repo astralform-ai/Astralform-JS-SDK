@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- **A restore that drew nothing no longer leaves a cursor behind.** `oldestTurnCursor` and `oldestDrawnMessageId` are written together or neither — the rule the code already stated — now enforced on the one input that can empty the plan without emptying the view: a caller holding every turn on the page. A cursor with a NULL bound takes the deliberately-unbounded branch in `loadEarlierTurns`, which re-emitted the held page's prompts as steers.
+- **A restore that drew nothing leaves neither a cursor NOR a "more turns" flag.** `oldestTurnCursor`, `oldestDrawnMessageId` and `hasMoreTurns` go together or the page's own answers — the rule the code already stated, now enforced on the one input that can empty the plan without emptying the view: a caller holding every turn on the page. A cursor with a NULL bound takes the deliberately-unbounded branch in `loadEarlierTurns`, which re-emitted the held page's prompts as steers; and `hasMoreTurns` left TRUE beside that null cursor disables paging back for the conversation entirely, because `loadEarlierTurns` fails its own guard on every call and nothing in-session re-arms the cursor. (Review caught the flag half: the first version of this fix wrote only the cursor.)
 
 ## 9.6.0
 

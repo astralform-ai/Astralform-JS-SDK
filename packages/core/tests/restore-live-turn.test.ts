@@ -939,6 +939,10 @@ describe("a cache deeper than one turn page", () => {
     });
 
     expect(session.oldestTurnCursor).toBeNull();
+    // The FLAG goes with it: `hasMoreTurns: true` beside a null cursor makes
+    // `loadEarlierTurns` fail its own guard on every call — paging back would be
+    // dead for the conversation, with nothing in-session to re-arm the cursor.
+    expect(session.hasMoreTurns).toBe(false);
   });
 
   it("still writes the cursor when the plan DREW turns", async () => {
@@ -972,5 +976,7 @@ describe("a cache deeper than one turn page", () => {
     await manager.switchTo("conv-1", { have: [] });
 
     expect(session.oldestTurnCursor).toBe("cursor-1");
+    // ...and the flag still follows the page, so paging stays available.
+    expect(session.hasMoreTurns).toBe(true);
   });
 });
