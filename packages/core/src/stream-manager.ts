@@ -1606,6 +1606,14 @@ export class StreamManager {
         // them, silently. Deriving both from `jobs` makes that impossible to
         // get half-right.
         claimedMessageIds: jobs.map((j) => j.message_id),
+        // The prompts whose turn the CALLER holds (see `switchTo`'s `have`).
+        // The walk below is empty for exactly those jobs — which is the
+        // primary cache scenario, a SETTLED conversation whose turns are all
+        // held — and the empty-walk rescue would otherwise re-emit every one of
+        // them as a steer bubble.
+        heldMessageIds: jobs
+          .filter((j) => haveByJobId.has(j.job_id))
+          .map((j) => j.message_id),
         userMessages: userMessages.map((m) => ({
           id: m.id,
           content: m.content,

@@ -106,6 +106,13 @@ export function planRestore(args: {
    * than de-duplicate it.
    */
   claimedMessageIds?: (string | null | undefined)[];
+  /**
+   * Prompts whose turn the CALLER already holds — the transcript cache's
+   * resume. Only the empty-walk branch reads this: with blocks in the caller's
+   * store the view is not empty, so that rescue must not re-emit those prompts
+   * as steers (a second bubble for every cached turn).
+   */
+  heldMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];
 }): ReplayStep[] {
   const { completedJobs, runningJob, userMessages } = args;
@@ -174,11 +181,26 @@ export function planRestore(args: {
   // definition and would otherwise fall into the pre-link branch below and
   // return [] from there.
   if (jobs.length === 0) {
-    return userMessages.map((m) => ({
-      kind: "steer" as const,
-      content: m.content,
-      messageId: m.id,
-    }));
+    // ...EXCEPT for the prompts the caller already holds (the transcript
+    // cache's resume). This branch's premise is "the view is empty, so the
+    // prompt has nowhere else to come from"; a caller passing `heldMessageIds`
+    // IS the elsewhere — its store renders those turns — so re-emitting them
+    // is the second copy the claim set exists to prevent, reached here because
+    // the walk is empty and this branch deliberately ignores the claim set.
+    //
+    // Filtered per MESSAGE rather than short-circuiting on "any held job": a
+    // page can hold cached turns AND failed ones, and the failed turns'
+    // prompts are exactly what this rescue is for.
+    const held = new Set(
+      (args.heldMessageIds ?? []).filter((id): id is string => !!id),
+    );
+    return userMessages
+      .filter((m) => !(m.id && held.has(m.id)))
+      .map((m) => ({
+        kind: "steer" as const,
+        content: m.content,
+        messageId: m.id,
+      }));
   }
 
   // Detection keys off whether a job's id actually MATCHES a message — never
