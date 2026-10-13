@@ -1610,6 +1610,49 @@ export class ChatSession {
     this.setMessages([...fresh, ...this.messages]);
   }
 
+  /**
+   * Re-fetch the NEWEST page of the conversation list and merge it in.
+   *
+   * The list the sidebar renders is seeded once at `connect()` and then only
+   * changed by this client's own actions (create, delete, rename) — so a row's
+   * `activeJobId` is as fresh as that seed, and a job started in ANOTHER tab or
+   * on another device never appears, while one that ended elsewhere stays lit
+   * forever. A caller that refreshes on a trigger (the tab becoming visible, or
+   * a bounded interval while any job is live) keeps the rows honest without a
+   * socket per conversation.
+   *
+   * Merge rules, and why each is what it is:
+   *
+   *  - the server's ORDER wins for the rows it returns: an updated conversation
+   *    moves to its new place, which is the whole point of the call;
+   *  - rows paged in EARLIER (`loadMoreConversations`) are kept — this reads page
+   *    1 only, and dropping the tail would make a refresh silently truncate a
+   *    list the reader has already scrolled;
+   *  - a row the caller MINTED locally and the server does not know yet is kept
+   *    too (it has no server row to be refreshed by);
+   *  - `conversationsGeneration` is bumped, for the same reason `connect()`
+   *    bumps it: a page request already in flight was cut against the old head
+   *    and its offset no longer means what it did.
+   */
+  async refreshConversations(): Promise<Conversation[]> {
+    const page = await this.client.getConversations(CONVERSATION_PAGE_SIZE, 0);
+    const pageIds = new Set(page.map((c) => c.id));
+    const known = new Set(this.conversations.map((c) => c.id));
+    this.conversationsGeneration++;
+    this.conversations = [
+      ...page,
+      // Everything the page did not mention: older pages, and rows that exist
+      // only on this client (a minted conversation the server has not been told
+      // about yet).
+      ...this.conversations.filter((c) => !pageIds.has(c.id)),
+    ];
+    for (const c of page) {
+      this.serverConversationIds.add(c.id);
+      known.delete(c.id);
+    }
+    return page;
+  }
+
   async loadMoreConversations(): Promise<Conversation[]> {
     // Scroll handlers fire far faster than the request completes; without this
     // guard every frame would refetch the same offset.
