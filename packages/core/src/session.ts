@@ -616,6 +616,15 @@ export class ChatSession {
    *  - **The cursor only advances.** `send` and `reconnectToJob` reset it to
    *    -1 per job, so a new job's `seq: 0` still moves it forward; a frame
    *    carrying an older (or zero) position cannot move it back.
+   *
+   * The one other frame on the wire with a non-position `seq` is the
+   * subscriber's SYNTHETIC terminal — a back-filled `error` for a job whose
+   * worker died, built without a `seq` so Pydantic's default `0` reaches the
+   * wire. Deliberately not named here: the advance-only rule already ignores it
+   * whenever the client has drained anything (0 never exceeds a real cursor),
+   * and when it is the FIRST frame the pump ends on `sawTerminal` before any
+   * reconnect could use the cursor. Naming it would add a rule that no
+   * reachable input exercises.
    */
   private harvestResumeCursor(seq: unknown, type: string | undefined): void {
     if (type === "keepalive") return;

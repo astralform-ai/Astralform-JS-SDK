@@ -6,7 +6,7 @@
 
 - **A `keepalive` frame no longer rewinds the reconnect cursor.** The backend sends its 45 s idle tick as an ordinary `data:` frame carrying `seq: 0` BY DESIGN (`WireKeepalive(seq=0, ts=0.0)` — it is not a position in the event log), and the pump harvested any numeric `seq` it saw into `lastSeq`. One keepalive — sent exactly when a turn is quiet for 45 s, i.e. during a long tool run — set the cursor to 0, so a transport drop then reconnected with `?after=0` and replayed the whole turn, deltas and all, over blocks the consumer was already rendering.
 
-  The cursor now skips `keepalive` and only ever ADVANCES: `send` and `reconnectToJob` reset it per job, so a new job's `seq: 0` still moves it forward, while a frame carrying an older (or sentinel) position cannot move it back. Two tests in `session-reconnect.test.ts` pin both halves — each fails on the pre-fix code with `after=0`.
+  The cursor now skips `keepalive` and only ever ADVANCES: `send` and `reconnectToJob` reset it per job, so a new job's `seq: 0` still moves it forward, while a frame carrying an older (or sentinel) position cannot move it back. Two tests in `session-reconnect.test.ts` pin both halves, and they are orthogonal: the keepalive case fails on the pre-fix code with `after=0`, the stale-seq case with `after=1` (delete either guard alone and exactly one of them fails).
 
 ### Deprecated
 
