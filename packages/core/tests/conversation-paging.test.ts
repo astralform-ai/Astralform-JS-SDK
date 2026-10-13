@@ -518,19 +518,46 @@ describe("refreshConversations", () => {
    * own actions, so a row's `activeJobId` goes stale the moment work happens
    * elsewhere — a job started in another tab never appears, and one that ended
    * elsewhere stays lit. This is the read a caller refreshes on a trigger.
+   *
+   * These use a mock whose PAGE 1 CHANGES BETWEEN CALLS. An offset-keyed mock
+   * serves the same body to `connect()` and to the refresh, which makes
+   * "the fresh page wins" and "the server's order wins" pass on values the list
+   * already held — i.e. exactly the two rules they are named for go untested.
    */
+  function sequenceFetch(pages: unknown[][]) {
+    let call = 0;
+    const fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const parsed = new URL(url);
+      if (parsed.pathname === "/v1/conversations") {
+        const body = pages[Math.min(call, pages.length - 1)];
+        call++;
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+    return { fetch, calls: () => call };
+  }
+
   it("replaces a row's server-owned fields with the fresh page", async () => {
-    const { fetch } = pagingFetch(3, {
-      overrides: {
-        0: [
-          { ...conv("c0"), active_job_id: "job-9", title: "renamed elsewhere" },
-          conv("c1"),
-          conv("c2"),
-        ],
-      },
-    });
+    const { fetch } = sequenceFetch([
+      // seed: no liveness, the old title
+      [conv("c0"), conv("c1")],
+      // refresh: the same conversation, now running, renamed elsewhere
+      [
+        { ...conv("c0"), active_job_id: "job-9", title: "renamed elsewhere" },
+        conv("c1"),
+      ],
+    ]);
     const session = new ChatSession({ ...baseConfig, fetch });
     await session.connect();
+    expect(session.conversations.find((c) => c.id === "c0")?.activeJobId).toBeFalsy();
 
     await session.refreshConversations();
 
@@ -566,13 +593,13 @@ describe("refreshConversations", () => {
   });
 
   it("puts the server's order first, so an updated row moves up", async () => {
-    const { fetch } = pagingFetch(3, {
-      overrides: {
-        0: [conv("c2"), conv("c0"), conv("c1")],
-      },
-    });
+    const { fetch } = sequenceFetch([
+      [conv("c0"), conv("c1"), conv("c2")],
+      [conv("c2"), conv("c0"), conv("c1")],
+    ]);
     const session = new ChatSession({ ...baseConfig, fetch });
     await session.connect();
+    expect(session.conversations.map((c) => c.id)).toEqual(["c0", "c1", "c2"]);
 
     await session.refreshConversations();
 
