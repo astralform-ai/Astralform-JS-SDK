@@ -108,6 +108,19 @@ function pathEquals(a: number[], b: number[]): boolean {
  * client-tool round-trip. Does NOT own block construction — consumers
  * build their own block state from the typed events.
  */
+/**
+ * The `seq` a parsed SSE frame carries, or `undefined` when it carries none.
+ *
+ * Narrowed rather than cast: the payload is `JSON.parse`d, so it is only
+ * "some object" until a check says otherwise — and this read feeds the resume
+ * cursor, where a wrong value is silent and expensive.
+ */
+function frameSeq(frame: unknown): unknown {
+  if (typeof frame !== "object" || frame === null) return undefined;
+  if (!("seq" in frame)) return undefined;
+  return frame.seq;
+}
+
 export class ChatSession {
   readonly client: AstralformClient;
   readonly toolRegistry: ToolRegistry;
@@ -588,6 +601,29 @@ export class ChatSession {
   private lastSeq = -1;
 
   /**
+   * Advance the resume cursor from a frame's `seq` — the position the next
+   * reconnect asks the backend to replay after (`?after=`).
+   *
+   * Two guards, because getting this wrong is silent and expensive: the whole
+   * turn replays over blocks the consumer is already rendering.
+   *
+   *  - **A keepalive is not an event.** The backend sends it as an ordinary
+   *    `data:` frame with `seq: 0` BY DESIGN (``WireKeepalive(seq=0, ts=0.0)``
+   *    — an idle tick, not a position), and it arrives exactly when a turn has
+   *    been quiet for 45 s: the long-tool-run case. Harvesting it rewound the
+   *    cursor to 0, so a reconnect after a blip replayed the turn from its
+   *    start — deltas and all.
+   *  - **The cursor only advances.** `send` and `reconnectToJob` reset it to
+   *    -1 per job, so a new job's `seq: 0` still moves it forward; a frame
+   *    carrying an older (or zero) position cannot move it back.
+   */
+  private harvestResumeCursor(seq: unknown, type: string | undefined): void {
+    if (type === "keepalive") return;
+    if (typeof seq !== "number") return;
+    if (seq > this.lastSeq) this.lastSeq = seq;
+  }
+
+  /**
    * Client-tool call_ids whose result was already submitted this turn. On a
    * reconnect the resumed stream can replay a tool request we already handled;
    * this dedups so each is executed + submitted at most once (but a request we
@@ -840,9 +876,7 @@ export class ChatSession {
           ) {
             // Legacy "done" sentinel — backend still emits it for subscribers.
             // Silently consume; the new protocol uses message_stop for turn end.
-            if (typeof (data as { seq?: unknown })?.seq === "number") {
-              this.lastSeq = (data as { seq: number }).seq;
-            }
+            this.harvestResumeCursor(frameSeq(data), undefined);
             if (
               typeof data === "object" &&
               data !== null &&
@@ -860,9 +894,7 @@ export class ChatSession {
             continue;
           }
           parsed = data as WireEvent;
-          if (typeof (data as Record<string, unknown>).seq === "number") {
-            this.lastSeq = (data as Record<string, unknown>).seq as number;
-          }
+          this.harvestResumeCursor(frameSeq(data), parsed.type);
         } catch {
           continue;
         }
