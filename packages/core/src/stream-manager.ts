@@ -522,7 +522,22 @@ export class StreamManager {
        * now, so a stale mark loses at most one completed turn's skip, never a
        * turn.
        */
-      have?: ReadonlyArray<{ jobId: string; lastSeq: number }>;
+      have?: ReadonlyArray<{
+        jobId: string;
+        lastSeq: number;
+        /**
+         * The prompt this job's turn drew, when the caller knows it.
+         *
+         * The caller's cache holds the PROMPT too (it renders the turn), and a
+         * prompt is a message-table row rather than a stream event — so the
+         * plan's empty-walk rescue has to be told which prompts are already on
+         * screen. Marks are matched against the page of jobs this restore walks,
+         * so a mark for an OLDER turn is not otherwise visible to that rescue,
+         * and a cache deeper than one turn page would re-emit those prompts as
+         * steer bubbles.
+         */
+        messageId?: string | null;
+      }>;
     },
   ): Promise<void> {
     if (conversationId === this._activeConversationId) return;
@@ -1012,13 +1027,23 @@ export class StreamManager {
   private async restore(
     conversationId: string,
     gen: number,
-    have?: ReadonlyArray<{ jobId: string; lastSeq: number }>,
+    have?: ReadonlyArray<{
+      jobId: string;
+      lastSeq: number;
+      messageId?: string | null;
+    }>,
   ): Promise<void> {
     // The caller's cached marks, resolved once for both halves: which jobs to
     // skip fetching, and where to start the running job's stream.
     const haveByJobId = new Map<string, number>(
       (have ?? []).map((h) => [h.jobId, h.lastSeq] as const),
     );
+    // The prompts the caller holds, from the marks THEMSELVES rather than from
+    // the page: a mark for a turn older than the newest page is not in `jobs`,
+    // and its prompt is exactly the one the empty-walk rescue would re-emit.
+    const heldFromMarks = (have ?? [])
+      .map((h) => h.messageId)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
 
     /**
      * Has the user moved on since this restore started?
@@ -1200,6 +1225,7 @@ export class StreamManager {
         turn,
         jobsRequest,
         haveByJobId,
+        heldFromMarks,
       ))
     )
       return;
@@ -1508,6 +1534,12 @@ export class StreamManager {
     jobsRequest: Promise<JobsPage>,
     /** The caller's cached per-job marks — see `switchTo`'s `have`. */
     haveByJobId: ReadonlyMap<string, number>,
+    /**
+     * The prompts those marks name. Passed separately from the map because a
+     * mark for a turn OLDER than the newest page is not in `jobs` at all, and
+     * its prompt is the one the empty-walk rescue would otherwise re-emit.
+     */
+    heldFromMarks: readonly string[],
   ): Promise<boolean> {
     // Three ways to lose the right to replay, checked at every await boundary
     // below because all of them arrive from outside this function while it
@@ -1623,9 +1655,12 @@ export class StreamManager {
         // primary cache scenario, a SETTLED conversation whose turns are all
         // held — and the empty-walk rescue would otherwise re-emit every one of
         // them as a steer bubble.
-        heldMessageIds: jobs
-          .filter((j) => haveByJobId.has(j.job_id))
-          .map((j) => j.message_id),
+        heldMessageIds: [
+          ...jobs
+            .filter((j) => haveByJobId.has(j.job_id))
+            .map((j) => j.message_id),
+          ...heldFromMarks,
+        ],
         userMessages: userMessages.map((m) => ({
           id: m.id,
           content: m.content,
@@ -1716,7 +1751,16 @@ export class StreamManager {
       // on the wire and can name a row absent from the message list, and a
       // bound that does not resolve re-opens the same hole.
       this.session.hasMoreTurns = page.hasMore;
-      this.session.oldestTurnCursor = page.nextBefore;
+      // Cursor and bound TOGETHER or NEITHER — the rule this file already
+      // states above, now enforced on the one input that can empty the plan
+      // without emptying the view: a caller holding every turn on the page
+      // (`have`). A restore that drew nothing has no bound to write, and a
+      // cursor with a null bound takes the deliberately-unbounded branch in
+      // `loadEarlierTurns` — which re-emits the held page's prompts as steers.
+      const drewNothing = plan.length === 0;
+      const holdsTurns = haveByJobId.size > 0;
+      this.session.oldestTurnCursor =
+        drewNothing && holdsTurns ? null : page.nextBefore;
       this.oldestDrawnMessageId = plan[0]?.messageId ?? null;
       complete = true;
 
