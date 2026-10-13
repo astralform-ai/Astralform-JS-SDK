@@ -511,3 +511,75 @@ describe("conversation paging — known offset-drift limitations", () => {
     expect(session.conversations.map((c) => c.id)).toContain("c50");
   });
 });
+
+describe("refreshConversations", () => {
+  /**
+   * The list is seeded once at connect and then only changed by this client's
+   * own actions, so a row's `activeJobId` goes stale the moment work happens
+   * elsewhere — a job started in another tab never appears, and one that ended
+   * elsewhere stays lit. This is the read a caller refreshes on a trigger.
+   */
+  it("replaces a row's server-owned fields with the fresh page", async () => {
+    const { fetch } = pagingFetch(3, {
+      overrides: {
+        0: [
+          { ...conv("c0"), active_job_id: "job-9", title: "renamed elsewhere" },
+          conv("c1"),
+          conv("c2"),
+        ],
+      },
+    });
+    const session = new ChatSession({ ...baseConfig, fetch });
+    await session.connect();
+
+    await session.refreshConversations();
+
+    const c0 = session.conversations.find((c) => c.id === "c0");
+    expect(c0?.activeJobId).toBe("job-9");
+    expect(c0?.title).toBe("renamed elsewhere");
+  });
+
+  it("keeps rows paged in earlier, which page 1 does not mention", async () => {
+    // A refresh reads page 1 only; dropping the rest would silently truncate a
+    // list the reader has already scrolled.
+    const { fetch } = pagingFetch(CONVERSATION_PAGE_SIZE * 2);
+    const session = new ChatSession({ ...baseConfig, fetch });
+    await session.connect();
+    await session.loadMoreConversations();
+    const before = session.conversations.length;
+    expect(before).toBe(CONVERSATION_PAGE_SIZE * 2);
+
+    await session.refreshConversations();
+
+    expect(session.conversations).toHaveLength(before);
+  });
+
+  it("keeps a locally minted conversation the server does not know about", async () => {
+    const { fetch } = pagingFetch(1);
+    const session = new ChatSession({ ...baseConfig, fetch });
+    await session.connect();
+    session.conversations.unshift(conv("local-only"));
+
+    await session.refreshConversations();
+
+    expect(session.conversations.map((c) => c.id)).toContain("local-only");
+  });
+
+  it("puts the server's order first, so an updated row moves up", async () => {
+    const { fetch } = pagingFetch(3, {
+      overrides: {
+        0: [conv("c2"), conv("c0"), conv("c1")],
+      },
+    });
+    const session = new ChatSession({ ...baseConfig, fetch });
+    await session.connect();
+
+    await session.refreshConversations();
+
+    expect(session.conversations.slice(0, 3).map((c) => c.id)).toEqual([
+      "c2",
+      "c0",
+      "c1",
+    ]);
+  });
+});
