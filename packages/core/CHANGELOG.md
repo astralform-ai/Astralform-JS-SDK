@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+<!-- Nothing yet: the next entry lands here. -->
+
+## 9.6.0
+
 ### Added
 
 - **`session.refreshConversations()`** — re-fetch the NEWEST page of the conversation list and merge it in. The list is seeded once at `connect()` and then only changed by this client's own actions, so a row's `activeJobId` is as fresh as that seed: a job started in ANOTHER tab or on another device never appears, and one that ended elsewhere stays lit. A caller that refreshes on a trigger (the tab becoming visible, or a bounded interval while any job is live) keeps the rows honest without a socket per conversation.
