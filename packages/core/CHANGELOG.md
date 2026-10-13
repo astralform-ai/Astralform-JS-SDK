@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+<!-- Nothing yet: the next entry lands here. -->
+
+## 9.5.0
+
+Four changes from the chat client's status work, all additive or fixes:
+
+- **`Conversation.activeJobId`** — the list's per-row liveness, so a sidebar can
+  show that a conversation it has never opened is running.
+- **`switchTo(id, { have })`** — resume a restore from marks the caller already
+  holds, scoped to completed jobs on the newest turn page.
+- **A `keepalive` no longer rewinds the reconnect cursor** — the idle tick
+  carries `seq: 0` by design, and harvesting it made the next reconnect replay
+  the whole turn.
+- **`agent_start` / `agent_stop` translate again** — the backend flattened the
+  identity onto the payload; both shapes are read now.
+
 ### Fixed
 
 - **`agent_start` / `agent_stop` reach consumers with their identity again.** The backend renamed the subagent lifecycle frames (`AgentRunStartPayload` / `AgentRunStopPayload`) and flattened the identity onto the payload — `agent_name`, `agent_display_name`, `agent_avatar_url` — while the translator was written against a nested `agent` object on `subagent_*`. Every frame the current backend emits therefore arrived with an EMPTY identity: the events still reached consumers, they just said nothing about which agent was running. Both name pairs are translated now, both shapes are read, and `agent_stop` carries the child's own outcome and spend (`stop_reason`, `input_tokens`, `output_tokens`, `duration_ms`) — surfaced separately from the turn totals, which fold them in as well.
