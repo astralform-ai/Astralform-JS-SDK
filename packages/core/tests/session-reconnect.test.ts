@@ -153,6 +153,70 @@ describe("ChatSession auto-reconnect", () => {
     expect(urls[1]).toContain("after=2"); // resumed from the last seq before the drop
   });
 
+  it("does not let a keepalive reset the resume point", async () => {
+    // The backend's keepalive is a normal `data:` frame and carries `seq: 0`
+    // (`src/stream/protocol.py`: `WireKeepalive(seq=0, ts=0.0)`) — it is an
+    // idle tick, not an event. It arrives exactly when a turn is quiet for 45 s,
+    // which is the LONG TOOL RUN case, and the harvest that feeds `?after=`
+    // took any numeric `seq` it saw: one keepalive and the resume point fell
+    // back to 0, so the next reconnect replayed the whole turn (deltas and
+    // all) over blocks the consumer was already rendering.
+    const keepalive = ev("keepalive", {
+      type: "keepalive",
+      job_id: "job-1",
+      seq: 0,
+      ts: 0,
+      since_last_event_ms: 45000,
+    });
+    const partial = msgStart(0) + blockStart(1) + blockDelta(2, "Hi") + keepalive;
+    const terminal = msgStop(3) + DONE;
+    const urls: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: reconnectFetch([partial, terminal], urls),
+    });
+    await session.connect();
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+    vi.useRealTimers();
+
+    expect(urls).toHaveLength(2);
+    // 2 = the last real event, NOT the keepalive's 0.
+    expect(urls[1]).toContain("after=2");
+  });
+
+  it("never rewinds the resume point on a frame with an older seq", async () => {
+    // The second half of the rule: the cursor only ADVANCES. A frame that
+    // carries an older position (a re-delivered row, a future frame with a
+    // sentinel seq) must not move it back — the failure mode is the same
+    // whole-turn replay the keepalive case has.
+    const stale = blockDelta(1, "old");
+    const partial = msgStart(0) + blockStart(1) + blockDelta(2, "Hi") + stale;
+    const terminal = msgStop(3) + DONE;
+    const urls: string[] = [];
+    const session = new ChatSession({
+      ...baseConfig,
+      fetch: reconnectFetch([partial, terminal], urls),
+    });
+    await session.connect();
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    vi.useFakeTimers();
+    const p = session.send("Hi");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+    vi.useRealTimers();
+
+    expect(urls).toHaveLength(2);
+    expect(urls[1]).toContain("after=2");
+  });
+
   it("stops reconnecting once the backend back-fills a terminal error", async () => {
     const partial = msgStart(0) + blockStart(1); // no terminal
     const backfill = errorEv(2, "stream_interrupted") + DONE; // backend #229 back-fill
