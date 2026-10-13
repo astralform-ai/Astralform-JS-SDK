@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-<!-- Nothing yet: the next entry lands here. -->
+### Added
+
+- **`switchTo({ have })` marks may carry `messageId`** — the prompt their turn drew. The marks are matched against the newest TURN PAGE the restore walks, while the message window is a different span (40 rows vs 10 turns), so a caller caching more than one page's worth of turns had marks for older turns that the walk could not see — and the plan's empty-walk rescue re-emitted those prompts as steer bubbles, over the blocks the cache already holds. Passing the prompt with the mark is what lets that rescue tell "already on screen" from "must be drawn".
+
+### Fixed
+
+- **A restore that drew nothing leaves neither a cursor NOR a "more turns" flag.** `oldestTurnCursor`, `oldestDrawnMessageId` and `hasMoreTurns` go together or the page's own answers — the rule the code already stated, now enforced on the one input that can empty the plan without emptying the view: a caller holding every turn on the page. A cursor with a NULL bound takes the deliberately-unbounded branch in `loadEarlierTurns`, which re-emitted the held page's prompts as steers; and `hasMoreTurns` left TRUE beside that null cursor disables paging back for the conversation entirely, because `loadEarlierTurns` fails its own guard on every call and nothing in-session re-arms the cursor. (Review caught the flag half: the first version of this fix wrote only the cursor.)
 
 ## 9.6.0
 

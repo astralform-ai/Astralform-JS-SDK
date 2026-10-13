@@ -838,3 +838,145 @@ describe("`have` on a SETTLED conversation (the cache's primary case)", () => {
     expect(userMessages(events)).not.toContain("draw me a teapot");
   });
 });
+
+describe("a cache deeper than one turn page", () => {
+  /**
+   * The marks are matched against the page of jobs this restore walks, so a
+   * mark for a turn OLDER than that page is invisible to the walk — and the
+   * message window (40 rows) spans turns the turn page (10) does not. Without
+   * the mark's own `messageId`, the empty-walk rescue re-emits those older
+   * prompts as steer bubbles, over the blocks the caller's cache already holds.
+   */
+  function deepBackend(calls: string[]): typeof globalThis.fetch {
+    return async (input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      calls.push(url);
+      if (url.includes("/active-job")) return json({ job_id: null, status: "idle" });
+      if (url.includes("/messages")) {
+        // The window names BOTH turns, including one the page will not carry.
+        return json([
+          ...MESSAGES,
+          {
+            id: "m-3",
+            conversation_id: "conv-1",
+            role: "user",
+            content: "an older turn's prompt",
+            created_at: "2026-01-01T00:02:00Z",
+          },
+        ]);
+      }
+      if (url.includes("/jobs")) {
+        // Page 1 holds only the newest turn; `m-3`'s job is older.
+        return json([{ job_id: "job-2", status: "completed", message_id: "m-2" }]);
+      }
+      if (url.includes("/events")) return json(DONE_TURN_EVENTS);
+      return json([]);
+    };
+  }
+
+  it("does not re-emit an older held prompt whose job is off the page", async () => {
+    const calls: string[] = [];
+    const session = new ChatSession({ ...baseConfig, fetch: deepBackend(calls) });
+    const manager = new StreamManager(session);
+    const events: ChatEvent[] = [];
+    session.on((e) => events.push(e));
+
+    await manager.switchTo("conv-1", {
+      have: [
+        // The page's turn, held.
+        { jobId: "job-2", lastSeq: -1, messageId: "m-2" },
+        // An older turn, held, whose job this page does not carry.
+        { jobId: "job-0", lastSeq: -1, messageId: "m-3" },
+      ],
+    });
+
+    const prompts = userMessages(events);
+    expect(prompts).not.toContain("an older turn's prompt");
+    expect(prompts).not.toContain("now generate a video of it");
+  });
+
+  it("writes no cursor when the plan drew nothing but turns are held", async () => {
+    // A cursor with a NULL bound takes the deliberately-unbounded branch in
+    // `loadEarlierTurns`, which re-emits the held page's prompts as steers.
+    //
+    // The page here CARRIES a cursor, so "no cursor" is the guard's doing
+    // rather than the fixture's — without it this reads `cursor-held` and the
+    // test is a tautology.
+    const calls: string[] = [];
+    const fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      calls.push(url);
+      if (url.includes("/active-job")) return json({ job_id: null, status: "idle" });
+      if (url.includes("/messages")) return json(MESSAGES);
+      if (url.includes("/jobs")) {
+        const body = [
+          { job_id: "job-2", status: "completed", message_id: "m-2" },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Next-Before": "cursor-held",
+            "X-Has-More": "true",
+          },
+        });
+      }
+      if (url.includes("/events")) return json(DONE_TURN_EVENTS);
+      return json([]);
+    }) as typeof globalThis.fetch;
+    const session = new ChatSession({ ...baseConfig, fetch });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-1", {
+      have: [
+        // The page's turn...
+        { jobId: "job-2", lastSeq: -1, messageId: "m-2" },
+        // ...and the older one, which the page does not carry: with BOTH held,
+        // every prompt in the message window is already on screen, so the
+        // rescue emits nothing and the plan is empty.
+        { jobId: "job-1", lastSeq: -1, messageId: "m-1" },
+      ],
+    });
+
+    expect(session.oldestTurnCursor).toBeNull();
+    // The FLAG goes with it: `hasMoreTurns: true` beside a null cursor makes
+    // `loadEarlierTurns` fail its own guard on every call — paging back would be
+    // dead for the conversation, with nothing in-session to re-arm the cursor.
+    expect(session.hasMoreTurns).toBe(false);
+  });
+
+  it("still writes the cursor when the plan DREW turns", async () => {
+    // The control: the guard must not disable paging for an ordinary restore.
+    // The page carries a cursor, so "written" is observable.
+    const calls: string[] = [];
+    const fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      calls.push(url);
+      if (url.includes("/active-job")) return json({ job_id: null, status: "idle" });
+      if (url.includes("/messages")) return json(MESSAGES);
+      if (url.includes("/jobs")) {
+        const body = [
+          { job_id: "job-1", status: "completed", message_id: "m-1" },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Next-Before": "cursor-1",
+            "X-Has-More": "true",
+          },
+        });
+      }
+      if (url.includes("/events")) return json(DONE_TURN_EVENTS);
+      return json([]);
+    }) as typeof globalThis.fetch;
+    const session = new ChatSession({ ...baseConfig, fetch });
+    const manager = new StreamManager(session);
+
+    await manager.switchTo("conv-1", { have: [] });
+
+    expect(session.oldestTurnCursor).toBe("cursor-1");
+    // ...and the flag still follows the page, so paging stays available.
+    expect(session.hasMoreTurns).toBe(true);
+  });
+});
