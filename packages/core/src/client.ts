@@ -636,6 +636,10 @@ export class AstralformClient {
     const filter = options?.repository
       ? `&repository=${encodeURIComponent(options.repository)}`
       : "";
+    // The inline shape is the WIRE (snake) and `Conversation` is the mapped
+    // type; `camelizeKeys` casts, so the compiler does not tie the two together
+    // — the per-row tests are what catch a drift. Same house pattern as every
+    // other endpoint here.
     const raw = await this.get<
       {
         id: string;
@@ -644,6 +648,7 @@ export class AstralformClient {
         created_at: string;
         updated_at: string;
         repository?: string | null;
+        active_job_id?: string | null;
       }[]
     >(`/v1/conversations?limit=${safeLimit}&offset=${safeOffset}${filter}`);
     return raw.map((c) => camelizeKeys<Conversation>(c as unknown as Record<string, unknown>));

@@ -634,6 +634,19 @@ export interface Conversation {
    */
   repository?: string | null;
   /**
+   * The live job for this conversation, or `null`/absent when nothing is
+   * running. The sidebar's per-row liveness signal: without it a client cannot
+   * know that a conversation it has never opened is running, because its only
+   * other liveness signals are the per-conversation streams it is attached to.
+   *
+   * A JOB ID rather than a state string, deliberately: the backend can cheaply
+   * say "a job is live here", while "waiting for the user" lives in the
+   * worker's in-memory state and reaches only the open conversation's stream.
+   * `null` from a server that projects the field; `undefined` from one older
+   * than it (same convention as `repository`), so treat both as "not running".
+   */
+  activeJobId?: string | null;
+  /**
    * The code group this task is filed under, or `null`/absent when it is not in
    * one. MUTABLE — unlike `repository`, which is written once on the first turn:
    * a group is a label the user applies to work that already exists, so a task
