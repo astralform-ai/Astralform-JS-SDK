@@ -495,7 +495,22 @@ export class StreamManager {
    */
   async switchTo(
     conversationId: string,
-    opts?: { skipHistoryReplay?: boolean },
+    opts?: {
+      skipHistoryReplay?: boolean;
+      /**
+       * Jobs whose events the caller ALREADY holds — the transcript-cache
+       * resume. A completed job named here is neither fetched nor replayed (its
+       * blocks are in the caller's store), and the running job named here has
+       * its stream started at `lastSeq` instead of from the beginning, so the
+       * backend replays only the delta. Absent → today's behaviour exactly.
+       *
+       * The mark is trusted only for the job it names: a job NOT named here is
+       * fetched whole, as now. A stale mark can therefore lose at most that one
+       * job's delta, never a turn — and the recovery is the same fetch the
+       * client would have made.
+       */
+      have?: ReadonlyArray<{ jobId: string; lastSeq: number }>;
+    },
   ): Promise<void> {
     if (conversationId === this._activeConversationId) return;
 
@@ -559,7 +574,7 @@ export class StreamManager {
 
     let tookOver = false;
     try {
-      await this.restore(conversationId, gen);
+      await this.restore(conversationId, gen, opts?.have);
       tookOver = gen === this.generation;
     } finally {
       // In a `finally`, because `restore` awaits `loadConversation` unguarded
@@ -981,7 +996,17 @@ export class StreamManager {
     });
   }
 
-  private async restore(conversationId: string, gen: number): Promise<void> {
+  private async restore(
+    conversationId: string,
+    gen: number,
+    have?: ReadonlyArray<{ jobId: string; lastSeq: number }>,
+  ): Promise<void> {
+    // The caller's cached marks, resolved once for both halves: which jobs to
+    // skip fetching, and where to start the running job's stream.
+    const haveByJobId = new Map<string, number>(
+      (have ?? []).map((h) => [h.jobId, h.lastSeq] as const),
+    );
+
     /**
      * Has the user moved on since this restore started?
      *
@@ -1161,6 +1186,7 @@ export class StreamManager {
         activeJobId,
         turn,
         jobsRequest,
+        haveByJobId,
       ))
     )
       return;
@@ -1168,7 +1194,13 @@ export class StreamManager {
     if (activeJobId) {
       this.setState("streaming");
       try {
-        await this.session.reconnectToJob(activeJobId);
+        // The cached mark, when the caller holds this job's events: the
+        // backend replays `seq > lastSeq` from storage and then goes live, so
+        // a reopen delivers the delta rather than the whole turn again.
+        await this.session.reconnectToJob(
+          activeJobId,
+          haveByJobId.get(activeJobId),
+        );
       } catch {
         // Stream ended or aborted
       }
@@ -1462,6 +1494,8 @@ export class StreamManager {
     activeJobId: string | null,
     turn: number,
     jobsRequest: Promise<JobsPage>,
+    /** The caller's cached per-job marks — see `switchTo`'s `have`. */
+    haveByJobId: ReadonlyMap<string, number>,
   ): Promise<boolean> {
     // Three ways to lose the right to replay, checked at every await boundary
     // below because all of them arrive from outside this function while it
@@ -1516,8 +1550,14 @@ export class StreamManager {
       // turn ended says nothing about that, and a client that hides failed turns
       // does not make them not have happened — it just stops the user seeing
       // what the agent did before it stopped.
+      // The caller's cached marks: a job named here is NOT re-fetched and NOT
+      // replayed — the caller already holds its blocks. `claimedMessageIds`
+      // below is deliberately NOT filtered by this: those prompts are on
+      // screen already (from the cache), and un-claiming them would draw a
+      // second bubble for every cached turn.
       const replayableJobs = jobs.filter(
-        (j: { job_id: string }) => j.job_id !== activeJobId,
+        (j: { job_id: string }) =>
+          j.job_id !== activeJobId && !haveByJobId.has(j.job_id),
       );
 
       // User prompts aren't persisted in job_events — they live in the

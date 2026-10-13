@@ -678,3 +678,77 @@ describe("a regenerate that starts no turn", () => {
     expect(manager.state).not.toBe("restoring");
   });
 });
+
+describe("switchTo's `have`: the transcript cache's resume marks", () => {
+  /**
+   * The client holds a conversation's blocks from its own cache and asks the
+   * SDK to restore only the DELTA. Two halves, and each is asserted separately
+   * because they fail differently:
+   *
+   *  - a completed job named in `have` must not be fetched or replayed (the
+   *    caller's store already renders it — replaying appends a second copy);
+   *  - the RUNNING job named in `have` must start its stream at the caller's
+   *    sequence number, so the backend replays `seq > lastSeq` and then goes
+   *    live instead of sending the whole turn again.
+   */
+  it("does not fetch or replay a completed job the caller already holds", async () => {
+    const { manager, events, calls } = setup();
+
+    await manager.switchTo("conv-1", { have: [{ jobId: "job-1", lastSeq: 2 }] });
+
+    // Not fetched...
+    expect(calls.some((u) => u.includes("job_id=job-1"))).toBe(false);
+    // ...and not replayed.
+    expect(
+      events.some((e) => e.type === "block_stop" && e.turnId === "t1"),
+    ).toBe(false);
+  });
+
+  it("still claims the cached job's prompt, so it is not drawn twice", async () => {
+    // The subtle half. `claimedMessageIds` decides which prompts the plan draws
+    // as bubbles; a cached turn's prompt is ALREADY on screen. Un-claiming it
+    // (filtering the same set as the replay) draws a second bubble for every
+    // cached turn.
+    const { manager, events } = setup();
+
+    await manager.switchTo("conv-1", { have: [{ jobId: "job-1", lastSeq: 2 }] });
+
+    expect(userMessages(events)).not.toContain("draw me a teapot");
+    // The running turn's prompt still arrives: it is not in `have`.
+    expect(userMessages(events)).toContain("now generate a video of it");
+  });
+
+  it("starts the running job's stream at the caller's mark", async () => {
+    const { manager, calls } = setup();
+
+    await manager.switchTo("conv-1", {
+      have: [{ jobId: "job-2", lastSeq: 5 }],
+    });
+
+    const streamCall = calls.find((u) => u.includes("/v1/jobs/job-2/events"));
+    expect(streamCall).toBeDefined();
+    expect(streamCall).toContain("after=5");
+  });
+
+  it("replays from the beginning when the mark is absent", async () => {
+    // The default must not move: a reconnect with no mark still asks for the
+    // whole turn.
+    const { manager, calls } = setup();
+
+    await manager.switchTo("conv-1");
+
+    const streamCall = calls.find((u) => u.includes("/v1/jobs/job-2/events"));
+    expect(streamCall).toContain("after=-1");
+  });
+
+  it("fetches and replays normally when the caller holds nothing", async () => {
+    const { manager, events, calls } = setup();
+
+    await manager.switchTo("conv-1", { have: [] });
+
+    expect(calls.some((u) => u.includes("job_id=job-1"))).toBe(true);
+    expect(
+      events.some((e) => e.type === "block_stop" && e.turnId === "t1"),
+    ).toBe(true);
+  });
+});

@@ -10,6 +10,14 @@
 
 ### Added
 
+- **`switchTo(id, { have })`** — resume a conversation's restore from marks the caller already holds, instead of replaying it whole. Each entry is `{ jobId, lastSeq }`: a COMPLETED job named there is neither fetched nor replayed (its blocks are in the caller's own store, and replaying them appends a second copy). A job NOT named is fetched whole, exactly as before; absent, `switchTo` behaves byte-for-byte as today.
+
+  Two limits, both deliberate and both from review: the marks are matched against the NEWEST TURN PAGE this restore walks (a mark for an older turn is not consulted — the message window and the turn page are independent spans, so a deeper cache needs its own cursor design), and a mark for the RUNNING job is ignored. The second is the subtler one: resuming a live turn from a mark delivers its delta but not its prompt — a prompt is a message-table row, not a stream event — so the plan would still draw a bubble the caller's cache already renders.
+
+  The prompts of `have` jobs stay CLAIMED, deliberately: a cached turn's bubble is already on screen, and un-claiming it would draw a second one for every cached turn. They are also passed to `planRestore` as `heldMessageIds`, because a SETTLED conversation whose turns are all held gives the plan an empty walk — and the empty-walk rescue deliberately ignores the claim set, so it re-emitted every prompt on the page as a steer bubble (the whole transcript, twice).
+
+  This is the seam the transcript-cache resume needs — `lastSeq` lives in memory and dies with the tab, and the cache is where it should survive.
+
 - **A `keepalive` frame no longer rewinds the reconnect cursor.** The backend sends its 45 s idle tick as an ordinary `data:` frame carrying `seq: 0` BY DESIGN (`WireKeepalive(seq=0, ts=0.0)` — it is not a position in the event log), and the pump harvested any numeric `seq` it saw into `lastSeq`. One keepalive — sent exactly when a turn is quiet for 45 s, i.e. during a long tool run — set the cursor to 0, so a transport drop then reconnected with `?after=0` and replayed the whole turn, deltas and all, over blocks the consumer was already rendering.
 
   The cursor now skips `keepalive` and only ever ADVANCES: `send` and `reconnectToJob` reset it per job, so a new job's `seq: 0` still moves it forward, while a frame carrying an older (or sentinel) position cannot move it back. Two tests in `session-reconnect.test.ts` pin both halves, and they are orthogonal: the keepalive case fails on the pre-fix code with `after=0`, the stale-seq case with `after=1` (delete either guard alone and exactly one of them fails).
