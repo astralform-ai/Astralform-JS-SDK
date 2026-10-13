@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A `keepalive` frame no longer rewinds the reconnect cursor.** The backend sends its 45 s idle tick as an ordinary `data:` frame carrying `seq: 0` BY DESIGN (`WireKeepalive(seq=0, ts=0.0)` — it is not a position in the event log), and the pump harvested any numeric `seq` it saw into `lastSeq`. One keepalive — sent exactly when a turn is quiet for 45 s, i.e. during a long tool run — set the cursor to 0, so a transport drop then reconnected with `?after=0` and replayed the whole turn, deltas and all, over blocks the consumer was already rendering.
+
+  The cursor now skips `keepalive` and only ever ADVANCES: `send` and `reconnectToJob` reset it per job, so a new job's `seq: 0` still moves it forward, while a frame carrying an older (or sentinel) position cannot move it back. Two tests in `session-reconnect.test.ts` pin both halves — each fails on the pre-fix code with `after=0`.
+
 ### Deprecated
 
 - **`VoiceConfig.silenceAutoStopSeconds`** — always `2`, and slated for removal in the next major. The silence window was retired from the platform (2026-10-09, [#1225](https://github.com/astralform-ai/Astralform/issues/1225)): no shipped client implements pause detection, the server no longer sends `silence_auto_stop_seconds`, and the dashboard's Defaults row is gone. It stays on the type so existing code compiles.
