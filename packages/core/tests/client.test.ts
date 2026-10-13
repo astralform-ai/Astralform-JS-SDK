@@ -253,8 +253,10 @@ describe("AstralformClient", () => {
   });
 
   it("getConversations degrades when an older server omits the field", async () => {
-    // A backend older than the field sends no key at all; consumers must read
-    // that as "not running" rather than crashing on undefined.
+    // A backend older than the field sends no key at all, so the mapped value
+    // is `undefined` rather than `null` — the mapper neither crashes nor
+    // invents a value. (What a CONSUMER does with undefined is the consumer's
+    // test; this pins the SDK's half of the contract.)
     const mockFetch = createMockFetch({
       "/v1/conversations": {
         status: 200,
