@@ -9,6 +9,8 @@ export type {
   ConversationJobAttachment,
   JobsPage,
   MessagesPage,
+  Roster,
+  RosterEntry,
 } from "./client.js";
 export { ChatSession, CONVERSATION_PAGE_SIZE } from "./session.js";
 export { ToolRegistry, type ToolHandler } from "./tools.js";
@@ -88,6 +90,7 @@ export type {
   TaskStatus,
   TodoItem,
   TodoUpdatePayload,
+  GoalProgressPayload,
   PlanUpdatePayload,
   NoteUpdatePayload,
   TitleGeneratedPayload,

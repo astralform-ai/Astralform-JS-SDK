@@ -254,6 +254,38 @@ export interface JobsPage {
   nextBefore: string | null;
 }
 
+/** One subagent on a conversation's roster — either kind the backend merges. */
+export interface RosterEntry {
+  kind: "background" | "nested";
+  /** The child job id (background) or run id (nested). */
+  id: string;
+  /** The job whose stream carries this run's blocks (nested) or the child job itself. */
+  job_id?: string | null;
+  parent_job_id?: string | null;
+  /** Spawn block's call id (background) — the transcript attach key. */
+  spawn_call_id?: string | null;
+  parent_call_id?: string | null;
+  agent_name?: string | null;
+  status: string;
+  stop_reason?: string | null;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  /**
+   * Tokens × catalog rates at read time, or null when unpriced (self-hosted,
+   * BYOK, unknown model — NOT free; callers must not total it as zero).
+   * Nested runs are always null: the frames carry no model.
+   */
+  cost_microcents?: number | null;
+}
+
+/** A conversation's subagent roster. */
+export interface Roster {
+  conversation_id: string;
+  roster: RosterEntry[];
+}
+
 /** One page of messages, plus where the next older page starts. */
 export interface MessagesPage {
   messages: Message[];
@@ -687,6 +719,24 @@ export class AstralformClient {
     };
   }
 
+  /**
+   * A conversation's subagent roster: background children + nested runs,
+   * with per-entry tokens and read-time cost.
+   *
+   * Returns null on an old backend (404): the roster endpoint ships with
+   * the goal-progress release, and a consumer must read "no endpoint" as
+   * "no roster", not as an error.
+   */
+  async getConversationRoster(conversationId: string): Promise<Roster | null> {
+    try {
+      return await this.get<Roster>(
+        `/v1/conversations/${encodeURIComponent(conversationId)}/roster`,
+      );
+    } catch (err) {
+      if (err instanceof ServerError && err.status === 404) return null;
+      throw err;
+    }
+  }
   /**
    * One page of a conversation's messages, oldest-first within the page.
    *

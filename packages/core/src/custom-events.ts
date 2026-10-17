@@ -36,6 +36,24 @@ export interface TodoUpdatePayload {
   todos: TodoItem[];
 }
 
+/** A goal's full snapshot after a run settled. One frame, not three —
+ *  `status` + `settled` + the verdict carry what separate created/settled
+ *  frames would, without a correlation key. */
+export interface GoalProgressPayload {
+  goalId: string;
+  conversationId: string;
+  objective?: string | null;
+  status: string;
+  settled: boolean;
+  continuationCount: number;
+  budget?: Record<string, unknown> | null;
+  usage?: Record<string, unknown> | null;
+  progress?: Record<string, unknown> | null;
+  verdict?: string | null;
+  blocker?: string | null;
+  stopReason?: string | null;
+}
+
 /** The conversation's plan, as markdown, after the agent wrote or revised it.
  *  Full body rather than a diff — `write_plan` replaces the document wholesale. */
 export interface PlanUpdatePayload {
@@ -55,11 +73,15 @@ export interface TitleGeneratedPayload {
 export interface SubagentStartPayload {
   agent: AgentIdentity;
   taskCallId?: string | null;
+  /** Set only for background children (their own job) — the drill-through key. */
+  childJobId?: string | null;
 }
 
 export interface SubagentStopPayload {
   agent: AgentIdentity;
   taskCallId?: string | null;
+  /** Mirrors the start frame: set only for background children. */
+  childJobId?: string | null;
 }
 
 export interface ContextWarningPayload {

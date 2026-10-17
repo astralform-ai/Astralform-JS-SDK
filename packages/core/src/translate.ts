@@ -146,6 +146,22 @@ export function translateCustomEvent(
           translateTodoItem(t as Record<string, unknown>),
         ),
       };
+    case "goal_progress":
+      return {
+        type: "goal_progress",
+        goalId: (data.goal_id as string) ?? "",
+        conversationId: (data.conversation_id as string) ?? "",
+        objective: optionalString(data.objective) ?? null,
+        status: (data.status as string) ?? "unknown",
+        settled: (data.settled as boolean) ?? false,
+        continuationCount: optionalNumber(data.continuation_count) ?? 0,
+        budget: (data.budget as Record<string, unknown> | null) ?? null,
+        usage: (data.usage as Record<string, unknown> | null) ?? null,
+        progress: (data.progress as Record<string, unknown> | null) ?? null,
+        verdict: optionalString(data.verdict) ?? null,
+        blocker: optionalString(data.blocker) ?? null,
+        stopReason: optionalString(data.stop_reason) ?? null,
+      };
     case "plan_update":
       return {
         type: "plan_update",
@@ -179,6 +195,8 @@ export function translateCustomEvent(
           optionalString(data.parent_call_id) ??
           optionalString(data.task_call_id) ??
           null,
+        // Background children only: their own job id, the drill-through key.
+        childJobId: optionalString(data.child_job_id),
       };
     case "agent_stop":
     case "subagent_stop":
@@ -196,6 +214,7 @@ export function translateCustomEvent(
         inputTokens: optionalNumber(data.input_tokens),
         outputTokens: optionalNumber(data.output_tokens),
         durationMs: optionalNumber(data.duration_ms),
+        childJobId: optionalString(data.child_job_id),
       };
     case "context_warning":
       return {
