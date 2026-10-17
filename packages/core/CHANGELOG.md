@@ -1,5 +1,13 @@
 # Changelog
 
+## 9.8.0
+
+### Added
+
+- **`childJobId` on `subagent_start` / `subagent_stop`** — set only for background children (their own job, announced on the parent's stream by the launch/settle path). The drill-through key: a client that wants the child's own trajectory reads the job id here instead of joining run ids across streams. `undefined` on nested runs and on frames from servers that predate the field.
+- **`goal_progress` custom event** — a goal's full snapshot after a run (status, settled, continuation count, budget/usage/progress, verdict, blocker, stop reason). Full snapshot per frame (the `todo_update` pattern), never a diff: each job's stream carries a complete reading, so a restored client converges from any single stream. `ChatEventType.GoalProgress` + `GoalProgressPayload` + translate.
+- **`client.getConversationRoster(conversationId)`** — the conversation's subagent roster (background children + nested runs, with per-entry tokens and read-time cost). Returns `null` on a 404 (old backend) rather than throwing. `Roster` / `RosterEntry` types exported.
+
 ## 9.7.0
 
 ### Added

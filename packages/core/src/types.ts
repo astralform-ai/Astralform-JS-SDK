@@ -125,6 +125,7 @@ export const ChatEventType = {
   UserMessage: "user_message",
   TitleGenerated: "title_generated",
   TodoUpdate: "todo_update",
+  GoalProgress: "goal_progress",
   PlanUpdate: "plan_update",
   NoteUpdate: "note_update",
   ContextUpdate: "context_update",
@@ -459,6 +460,25 @@ export type ChatEvent =
     }
   | { type: "title_generated"; title: string }
   | { type: "todo_update"; todos: TodoItem[] }
+  /** A goal's FULL snapshot after a run settled — status, verdict, spend.
+   *  Full snapshot rather than a diff (the `todo_update` pattern): each
+   *  job's stream carries a complete reading, so a restored client converges
+   *  from any single stream. */
+  | {
+      type: "goal_progress";
+      goalId: string;
+      conversationId: string;
+      objective?: string | null;
+      status: string;
+      settled: boolean;
+      continuationCount: number;
+      budget?: Record<string, unknown> | null;
+      usage?: Record<string, unknown> | null;
+      progress?: Record<string, unknown> | null;
+      verdict?: string | null;
+      blocker?: string | null;
+      stopReason?: string | null;
+    }
   /** The conversation's plan, as markdown, after the agent wrote or revised it.
    *  Carries the FULL body rather than a diff: the backend replaces the plan
    *  wholesale (`write_plan` — "Replaces any existing plan"), so a consumer that
@@ -479,6 +499,8 @@ export type ChatEvent =
       taskCallId?: string | null;
       /** The run's id, when the frame carries one (`agent_start`). */
       runId?: string;
+      /** Background children only: their own job id, the drill-through key. */
+      childJobId?: string | null;
     }
   | {
       type: "subagent_stop";
@@ -495,6 +517,8 @@ export type ChatEvent =
       inputTokens?: number;
       outputTokens?: number;
       durationMs?: number;
+      /** Mirrors the start frame: set only for background children. */
+      childJobId?: string | null;
     }
   | {
       type: "context_warning";

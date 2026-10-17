@@ -453,6 +453,33 @@ describe("the subagent lifecycle frames", () => {
     });
   });
 
+  it("passes the background child's job id through on both frames", () => {
+    // Background children are their own job, announced on the parent's stream
+    // by the launch/settle path — the client needs the job id to fetch the
+    // child's own trajectory for drill-through.
+    const start = translateCustomEvent("agent_start", {
+      run_id: "job-child-1",
+      parent_call_id: "call-7",
+      agent_name: "researcher",
+      child_job_id: "job-child-1",
+    });
+    expect(start).toMatchObject({
+      type: "subagent_start",
+      runId: "job-child-1",
+      childJobId: "job-child-1",
+    });
+    const stop = translateCustomEvent("agent_stop", {
+      run_id: "job-child-1",
+      stop_reason: "end_turn",
+      child_job_id: "job-child-1",
+    });
+    expect(stop).toMatchObject({
+      type: "subagent_stop",
+      runId: "job-child-1",
+      childJobId: "job-child-1",
+    });
+  });
+
   it("carries the child's own spend and outcome on agent_stop", () => {
     // The wire surfaces the child's spend separately from the turn totals
     // (`message_stop.usage` folds them in as well); a consumer that wants to
@@ -483,6 +510,51 @@ describe("the subagent lifecycle frames", () => {
       type: "subagent_start",
       agent: { name: "", displayName: null, avatarUrl: null, description: null },
       taskCallId: null,
+    });
+  });
+});
+
+describe("the goal progress frame", () => {
+  it("maps the full snapshot with snake_case folded", () => {
+    const ev = translateCustomEvent("goal_progress", {
+      goal_id: "g1",
+      conversation_id: "c1",
+      objective: "ship it",
+      status: "active",
+      settled: false,
+      continuation_count: 2,
+      budget: { max_continuations: 5 },
+      usage: { continuations: 2 },
+      progress: { done: ["a"] },
+      verdict: null,
+      blocker: null,
+      stop_reason: null,
+    });
+    expect(ev).toEqual({
+      type: "goal_progress",
+      goalId: "g1",
+      conversationId: "c1",
+      objective: "ship it",
+      status: "active",
+      settled: false,
+      continuationCount: 2,
+      budget: { max_continuations: 5 },
+      usage: { continuations: 2 },
+      progress: { done: ["a"] },
+      verdict: null,
+      blocker: null,
+      stopReason: null,
+    });
+  });
+
+  it("defaults a sparse frame rather than crashing", () => {
+    const ev = translateCustomEvent("goal_progress", { goal_id: "g1" });
+    expect(ev).toMatchObject({
+      type: "goal_progress",
+      goalId: "g1",
+      status: "unknown",
+      settled: false,
+      continuationCount: 0,
     });
   });
 });
