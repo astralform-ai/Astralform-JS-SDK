@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.8.1
+
+### Fixed
+
+- **Restore excludes background children from the transcript.** Jobs with `parent_job_id` set no longer fetch or replay into the parent turn list (both the newest-page walk and history paging) — their blocks render under the spawn block via `agent_start`/`agent_stop`, not as headless turns. Previously each failed child contributed its own error blocks, so one `idle_timeout` rendered twice.
+
 ## 9.8.0
 
 ### Added
