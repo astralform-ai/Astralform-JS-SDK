@@ -205,6 +205,11 @@ export interface ConversationJob {
   completed_at?: string | null;
   goal_id?: string | null;
   goal_objective?: string | null;
+  /** Non-null when this job is a background subagent's own run: the parent
+   *  it reports to. Restore keeps child turns out of the parent transcript —
+   *  their blocks replay under the spawn block, not as turns. Absent/null on
+   *  old servers, where every job replays as before. */
+  parent_job_id?: string | null;
   plan_mode?: boolean | null;
   image_mode?: boolean | null;
   video_mode?: boolean | null;

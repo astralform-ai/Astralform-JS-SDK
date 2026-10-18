@@ -1412,8 +1412,11 @@ export class StreamManager {
       // to reconstruct that.
       const boundary = this.oldestDrawnMessageId;
 
+      // Same child exclusion as the newest-page path: background children are
+      // not turns, and a paged child would replay as a headless turn here too.
+      const pageTurns = page.jobs.filter((j) => j.parent_job_id == null || j.parent_job_id === "");
       const eventLists = await Promise.all(
-        page.jobs.map((job) =>
+        pageTurns.map((job) =>
           session.client
             .getConversationEvents(conversationId, job.job_id, this.eventFetchOptions)
             .catch(() => []),
@@ -1429,14 +1432,17 @@ export class StreamManager {
       // alone would then find no prompt and draw those turns headless.
       if (messages) session.prependMessages(messages.messages);
       const plan = planRestore({
-        completedJobs: page.jobs.map((j) => ({
+        completedJobs: pageTurns.map((j) => ({
           job_id: j.job_id,
           message_id: j.message_id,
         })),
         // Same array feeds the walk and the claim set, for the reason the
         // newest-page path documents: derived apart, they drift, and the
         // prompts of any turn dropped from one surface as steers in the other.
-        claimedMessageIds: page.jobs.map((j) => j.message_id),
+        // Children claim nothing: they carry no prompt (message_id null), so
+        // excluding them from the claim set changes nothing — and including
+        // the unfiltered page would re-add them to the walk the filter removed.
+        claimedMessageIds: pageTurns.map((j) => j.message_id),
         userMessages: (() => {
           const all = session.messages;
           if (!boundary) return StreamManager.userMessagesOf(all);
@@ -1459,7 +1465,7 @@ export class StreamManager {
       });
       let emitted = 0;
       const byJob = new Map(
-        page.jobs.map((job, i) => [job.job_id, eventLists[i] ?? []]),
+        pageTurns.map((job, i) => [job.job_id, eventLists[i] ?? []]),
       );
       let completed = true;
       for (const step of plan) {
@@ -1599,9 +1605,16 @@ export class StreamManager {
       // below is deliberately NOT filtered by this: those prompts are on
       // screen already (from the cache), and un-claiming them would draw a
       // second bubble for every cached turn.
+      // Background children are NOT turns: their blocks replay under the spawn
+      // block via agent_start/stop, and fetching their events here replays
+      // each child as a headless turn — including its error blocks, which is
+      // how one idle_timeout rendered twice. Absent/null on old servers keeps
+      // the old behaviour there (every job replays).
       const replayableJobs = jobs.filter(
-        (j: { job_id: string }) =>
-          j.job_id !== activeJobId && !haveByJobId.has(j.job_id),
+        (j: { job_id: string; parent_job_id?: string | null }) =>
+          j.job_id !== activeJobId &&
+          !haveByJobId.has(j.job_id) &&
+          (j.parent_job_id == null || j.parent_job_id === ""),
       );
 
       // User prompts aren't persisted in job_events — they live in the
