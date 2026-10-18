@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.8.2
+
+### Fixed
+
+- **Republish of 9.8.1.** The 9.8.1 release run printed `+ @astralform/js@9.8.1` but the version never reached the registry (verified absent via the registry API); contents identical to 9.8.1.
+
 ## 9.8.1
 
 ### Fixed
