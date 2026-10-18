@@ -275,8 +275,10 @@ export interface RosterEntry {
   stop_reason?: string | null;
   llm_provider?: string | null;
   llm_model?: string | null;
-  input_tokens: number;
-  output_tokens: number;
+  /** Null on failed runs: spend unmeasured (the usage extractor returns zeros
+   *  for a message with no usage block). Render "—", never "0 in / 0 out". */
+  input_tokens: number | null;
+  output_tokens: number | null;
   /**
    * Tokens × catalog rates at read time, or null when unpriced (self-hosted,
    * BYOK, unknown model — NOT free; callers must not total it as zero).
