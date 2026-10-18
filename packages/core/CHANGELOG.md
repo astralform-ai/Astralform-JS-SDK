@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.8.3
+
+### Fixed
+
+- **Roster token fields nullable for unmeasured failures.** Failed runs carry no measured spend; `input_tokens`/`output_tokens` widen to `number | null` so consumers render "—" instead of "0 in / 0 out".
+
 ## 9.8.2
 
 ### Fixed
