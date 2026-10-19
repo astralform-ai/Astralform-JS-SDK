@@ -926,6 +926,7 @@ describe("AstralformClient", () => {
             replaces_job_id: null,
             response_content: { text: "hi" },
             metrics: { total_ms: 1234 },
+            suggestions: ["tell me more"],
             created_at: "2026-01-01T00:00:00Z",
           },
           {
@@ -942,6 +943,8 @@ describe("AstralformClient", () => {
     expect(jobs).toHaveLength(2);
     expect(jobs[0]!.jobId).toBe("job-1");
     expect(jobs[0]!.metrics).toEqual({ total_ms: 1234 });
+    expect(jobs[0]!.suggestions).toEqual(["tell me more"]);
+    expect(jobs[1]!.suggestions).toBeNull();
     expect(jobs[1]!.replacesJobId).toBeNull();
     expect(jobs[1]!.responseContent).toBeNull();
     expect(jobs[1]!.createdAt).toBeNull();

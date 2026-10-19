@@ -919,6 +919,7 @@ export interface JobSummary {
   replacesJobId: string | null;
   responseContent: Record<string, unknown> | null;
   metrics: Record<string, unknown> | null;
+  suggestions: string[] | null;
   createdAt: string | null;
 }
 
