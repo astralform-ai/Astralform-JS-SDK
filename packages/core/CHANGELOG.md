@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.9.0
+
+### Added
+
+- **Follow-up suggestions and version lineage on the jobs read.** `ConversationJob` now types `suggestions` (the job's newest persisted `prompt_suggestion` list; `null` when none/predates, `[]` when the model suggested nothing) and `replaces_job_id` (the turn this job replaced). `listJobs` carries `suggestions` as `JobSummary.suggestions` so both read paths agree. A restoring client can re-render the composer and version chain from the jobs page without replaying a held turn's events.
+
 ## 9.8.3
 
 ### Fixed

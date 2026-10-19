@@ -215,6 +215,16 @@ export interface ConversationJob {
   video_mode?: boolean | null;
   llm_provider?: string | null;
   llm_model?: string | null;
+  /** The job this turn replaced (regeneration lineage), or null. */
+  replaces_job_id?: string | null;
+  /**
+   * The job's newest persisted follow-up suggestion list, derived from the
+   * `prompt_suggestion` custom event. `null`/absent means the job has none or
+   * the backend does not project it; an empty array means the model suggested
+   * nothing. Read by a restoring client so a held
+   * transcript can re-render the composer without replaying events.
+   */
+  suggestions?: string[] | null;
   /**
    * Files that rode along with this turn's user message, as display metadata.
    *
@@ -1541,6 +1551,7 @@ export class AstralformClient {
         replaces_job_id?: string | null;
         response_content?: Record<string, unknown> | null;
         metrics?: Record<string, unknown> | null;
+        suggestions?: string[] | null;
         created_at?: string | null;
       }[]
     >(`/v1/conversations/${encodeURIComponent(conversationId)}/jobs`);
@@ -1550,6 +1561,7 @@ export class AstralformClient {
       replacesJobId: j.replaces_job_id ?? null,
       responseContent: j.response_content ?? null,
       metrics: j.metrics ?? null,
+      suggestions: j.suggestions ?? null,
       createdAt: j.created_at ?? null,
     }));
   }
