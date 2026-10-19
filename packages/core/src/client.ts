@@ -218,9 +218,10 @@ export interface ConversationJob {
   /** The job this turn replaced (regeneration lineage), or null. */
   replaces_job_id?: string | null;
   /**
-   * The job's newest persisted follow-up suggestion list. `null`/absent means
-   * the job has none or the backend does not project it; an empty array means
-   * the model suggested nothing. Read by a restoring client so a held
+   * The job's newest persisted follow-up suggestion list, derived from the
+   * `prompt_suggestion` custom event. `null`/absent means the job has none or
+   * the backend does not project it; an empty array means the model suggested
+   * nothing. Read by a restoring client so a held
    * transcript can re-render the composer without replaying events.
    */
   suggestions?: string[] | null;

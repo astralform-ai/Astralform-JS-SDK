@@ -950,6 +950,28 @@ describe("AstralformClient", () => {
     expect(jobs[1]!.createdAt).toBeNull();
   });
 
+  it("getConversationJobsPage carries suggestions and version lineage", async () => {
+    const mockFetch = createMockFetch({
+      "/v1/conversations/c1/jobs": {
+        status: 200,
+        body: [
+          {
+            job_id: "job-1",
+            status: "completed",
+            replaces_job_id: "job-0",
+            suggestions: ["tell me more"],
+          },
+        ],
+      },
+    });
+
+    const client = new AstralformClient({ ...config, fetch: mockFetch });
+    const page = await client.getConversationJobsPage("c1");
+
+    expect(page.jobs[0]!.suggestions).toEqual(["tell me more"]);
+    expect(page.jobs[0]!.replaces_job_id).toBe("job-0");
+  });
+
   it("getJob throws ServerError on 404", async () => {
     const mockFetch: typeof globalThis.fetch = async () =>
       new Response(JSON.stringify({ detail: "Job not found" }), {
