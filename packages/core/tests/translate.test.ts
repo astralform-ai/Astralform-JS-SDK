@@ -544,6 +544,27 @@ describe("the goal progress frame", () => {
       verdict: null,
       blocker: null,
       stopReason: null,
+      budgetExhaustedDimension: null,
+    });
+  });
+
+  it("carries the exhausted budget dimension on a budget-limited stand-down", () => {
+    // long-horizon phase 2: a goal paused on budget names the dimension that
+    // ran out — the field a raise-and-resume affordance moves.
+    const ev = translateCustomEvent("goal_progress", {
+      goal_id: "g1",
+      conversation_id: "c1",
+      status: "paused",
+      settled: false,
+      continuation_count: 3,
+      stop_reason: "goal_budget_exhausted",
+      budget_exhausted_dimension: "max_tokens",
+    });
+    expect(ev).toMatchObject({
+      type: "goal_progress",
+      status: "paused",
+      stopReason: "goal_budget_exhausted",
+      budgetExhaustedDimension: "max_tokens",
     });
   });
 
@@ -555,6 +576,41 @@ describe("the goal progress frame", () => {
       status: "unknown",
       settled: false,
       continuationCount: 0,
+    });
+  });
+});
+
+describe("the usage snapshot frame", () => {
+  it("maps the cumulative in-flight usage frame (long-horizon phase 3)", () => {
+    const ev = translateCustomEvent("usage_snapshot", {
+      input_tokens: 1200,
+      output_tokens: 340,
+      cache_read_tokens: 800,
+      elapsed_s: 942.5,
+      iteration: 20,
+      interrupted_tools: 1,
+    });
+    expect(ev).toEqual({
+      type: "usage_snapshot",
+      inputTokens: 1200,
+      outputTokens: 340,
+      cacheReadTokens: 800,
+      elapsedS: 942.5,
+      iteration: 20,
+      interruptedTools: 1,
+    });
+  });
+
+  it("defaults a sparse frame rather than crashing", () => {
+    const ev = translateCustomEvent("usage_snapshot", {});
+    expect(ev).toEqual({
+      type: "usage_snapshot",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      elapsedS: 0,
+      iteration: 0,
+      interruptedTools: 0,
     });
   });
 });

@@ -52,6 +52,26 @@ export interface GoalProgressPayload {
   verdict?: string | null;
   blocker?: string | null;
   stopReason?: string | null;
+  /** When `stopReason` is `goal_budget_exhausted`: the budget dimension that
+   *  ran out (`max_rounds` / `max_continuations` / `max_tokens` /
+   *  `max_wall_clock_ms` / legacy `max_turns`) — the field a raise must move,
+   *  so a client renders "Paused — budget reached (max_tokens)" with a
+   *  raise-and-resume affordance rather than a dead resume. */
+  budgetExhaustedDimension?: string | null;
+}
+
+/** Cumulative in-flight usage for a long turn (long-horizon phase 3): the
+ *  backend emits one every ~10 rounds plus a final frame whose token totals
+ *  equal the terminal `message_stop`'s. Token totals, rounds, and the
+ *  interrupted-tool count are turn-cumulative across resumes; `elapsedS` is
+ *  per-segment (the clock restarts at each resume). */
+export interface UsageSnapshotPayload {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  elapsedS: number;
+  iteration: number;
+  interruptedTools: number;
 }
 
 /** The conversation's plan, as markdown, after the agent wrote or revised it.

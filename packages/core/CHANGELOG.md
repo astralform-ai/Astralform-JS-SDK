@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.10.0
+
+### Added
+
+- **The long-horizon budget and usage contract.** `goal_progress` now carries `budgetExhaustedDimension` — when `stopReason` is `goal_budget_exhausted`, the dimension that ran out (`max_rounds` / `max_continuations` / `max_tokens` / `max_wall_clock_ms` / legacy `max_turns`), the field a raise-and-resume affordance moves; a budget-paused goal is resumable, never terminal. New `usage_snapshot` ChatEvent: cumulative in-flight usage for a long turn (tokens, per-segment elapsed, iteration, interrupted-tool count) every ~10 rounds plus a final frame whose token totals equal the terminal `message_stop`'s.
+
 ## 9.9.0
 
 ### Added
