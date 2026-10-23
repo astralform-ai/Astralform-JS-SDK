@@ -161,6 +161,18 @@ export function translateCustomEvent(
         verdict: optionalString(data.verdict) ?? null,
         blocker: optionalString(data.blocker) ?? null,
         stopReason: optionalString(data.stop_reason) ?? null,
+        budgetExhaustedDimension: optionalString(data.budget_exhausted_dimension) ?? null,
+      };
+    case "usage_snapshot":
+      // Long-horizon phase 3: cumulative in-flight usage for a long turn.
+      return {
+        type: "usage_snapshot",
+        inputTokens: optionalNumber(data.input_tokens) ?? 0,
+        outputTokens: optionalNumber(data.output_tokens) ?? 0,
+        cacheReadTokens: optionalNumber(data.cache_read_tokens) ?? 0,
+        elapsedS: optionalNumber(data.elapsed_s) ?? 0,
+        iteration: optionalNumber(data.iteration) ?? 0,
+        interruptedTools: optionalNumber(data.interrupted_tools) ?? 0,
       };
     case "plan_update":
       return {

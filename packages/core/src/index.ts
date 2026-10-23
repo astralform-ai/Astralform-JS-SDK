@@ -111,6 +111,7 @@ export type {
   ToolHarnessWarningPayload,
   ToolProgressPayload,
   NestedLlmUsagePayload,
+  UsageSnapshotPayload,
   UserUnavailablePayload,
   PromptSuggestionPayload,
 } from "./custom-events.js";

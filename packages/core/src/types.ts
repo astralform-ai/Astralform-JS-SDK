@@ -126,7 +126,7 @@ export const ChatEventType = {
   TitleGenerated: "title_generated",
   TodoUpdate: "todo_update",
   GoalProgress: "goal_progress",
-  PlanUpdate: "plan_update",
+  UsageSnapshot: "usage_snapshot",
   NoteUpdate: "note_update",
   ContextUpdate: "context_update",
   SubagentStart: "subagent_start",
@@ -478,6 +478,23 @@ export type ChatEvent =
       verdict?: string | null;
       blocker?: string | null;
       stopReason?: string | null;
+      /** The exhausted dimension when `stopReason` is
+       *  `goal_budget_exhausted` — the field a raise-and-resume affordance
+       *  moves. Null when the goal did not stand down on budget. */
+      budgetExhaustedDimension?: string | null;
+    }
+  /** Cumulative in-flight usage for a long turn: emitted every ~10 rounds plus
+   *  a final frame reconciling with the terminal `message_stop`. Token totals,
+   *  rounds, and interrupted tools are turn-cumulative; elapsed is
+   *  per-segment (restarts at each resume). */
+  | {
+      type: "usage_snapshot";
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      elapsedS: number;
+      iteration: number;
+      interruptedTools: number;
     }
   /** The conversation's plan, as markdown, after the agent wrote or revised it.
    *  Carries the FULL body rather than a diff: the backend replaces the plan
