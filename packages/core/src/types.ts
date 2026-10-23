@@ -127,6 +127,7 @@ export const ChatEventType = {
   TodoUpdate: "todo_update",
   GoalProgress: "goal_progress",
   UsageSnapshot: "usage_snapshot",
+  PlanUpdate: "plan_update",
   NoteUpdate: "note_update",
   ContextUpdate: "context_update",
   SubagentStart: "subagent_start",
