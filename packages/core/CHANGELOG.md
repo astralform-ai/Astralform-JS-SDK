@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.11.0
+
+### Added
+
+- **`getMessagesByIds`** — fetch specific messages by id, oldest-first (`?message_ids=` on the messages read).
+
+### Fixed
+
+- **A turn whose prompt fell outside the restored message window rendered with no user bubble.** Turn paging and message paging are independent: restore asks for 10 turns and the newest 40 messages, so a turn that produced hundreds of messages pushed its own prompt before the window (measured: 426 messages, prompt at seq 1, window 387-426). `replayHistory` now asks for the ids its jobs reference and the window does not carry, and `planRestore` accepts them as `extraPrompts` — an id present in both still uses the window's copy, so positional bookkeeping is unchanged.
+
 ## 9.10.0
 
 ### Added

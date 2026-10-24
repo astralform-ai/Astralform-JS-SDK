@@ -418,3 +418,56 @@ describe("no turn survived to anchor the prompt", () => {
     ).toEqual([]);
   });
 });
+
+describe("planRestore — prompts resolved outside the message window", () => {
+  it("pairs a turn with a prompt fetched by id after the window missed it", () => {
+    // The reported bug: one turn, 426 messages, prompt at seq 1, and the newest
+    // window (387-426) carries no user message at all. Without `extraPrompts`
+    // this turn renders headless.
+    const steps = planRestore({
+      completedJobs: [job("j1", "m1")],
+      userMessages: [],
+      extraPrompts: new Map([["m1", "build a gba emulator"]]),
+    });
+    expect(steps).toEqual([
+      { kind: "turn", jobId: "j1", content: "build a gba emulator", messageId: "m1" },
+    ]);
+  });
+
+  it("keeps a multi-turn walk in order when only the first prompt is outside the window", () => {
+    const steps = planRestore({
+      completedJobs: [job("j1", "m1"), job("j2", "m2")],
+      userMessages: [tagged("second", "m2")],
+      extraPrompts: new Map([["m1", "first"]]),
+    });
+    expect(steps).toEqual([
+      { kind: "turn", jobId: "j1", content: "first", messageId: "m1" },
+      { kind: "turn", jobId: "j2", content: "second", messageId: "m2" },
+    ]);
+  });
+
+  it("prefers the window's copy when an id is in both", () => {
+    const steps = planRestore({
+      completedJobs: [job("j1", "m1")],
+      userMessages: [tagged("from the window", "m1")],
+      extraPrompts: new Map([["m1", "from the fetch"]]),
+    });
+    expect(steps).toEqual([
+      { kind: "turn", jobId: "j1", content: "from the window", messageId: "m1" },
+    ]);
+  });
+
+  it("does not invent a bubble for a continuation whose id resolves nothing", () => {
+    // Goal/tool continuations carry an id that matches nothing by design; an
+    // empty extras map must leave them exactly as they were.
+    const steps = planRestore({
+      completedJobs: [job("j1", "m1"), job("j2", "hidden-seed")],
+      userMessages: [tagged("first", "m1")],
+      extraPrompts: new Map(),
+    });
+    expect(steps).toEqual([
+      { kind: "turn", jobId: "j1", content: "first", messageId: "m1" },
+      { kind: "turn", jobId: "j2" },
+    ]);
+  });
+});

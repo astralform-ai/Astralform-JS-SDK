@@ -1635,6 +1635,38 @@ export class StreamManager {
       const runningJob = activeJobId
         ? jobs.find((j) => j.job_id === activeJobId)
         : undefined;
+      // Prompts OUTSIDE the fetched message window. Turn paging and message
+      // paging are independent, so a turn that produced hundreds of messages
+      // pushes its own prompt before the window (measured: one turn, 426
+      // messages, prompt at seq 1, window 387-426) — and the pairing below then
+      // finds nothing and draws the turn with no user bubble at all. Ask for
+      // exactly the ids the window does not carry, once, and only when there is
+      // a gap. Failure is non-fatal: the turn renders without its prompt, which
+      // is the behavior this replaces.
+      const knownPromptIds = new Set(
+        userMessages.map((m) => m.id).filter((id): id is string => !!id),
+      );
+      const missingPromptIds = [
+        ...new Set(
+          jobs
+            .map((j) => j.message_id)
+            .filter((id): id is string => !!id && !knownPromptIds.has(id)),
+        ),
+      ];
+      const extraPrompts =
+        missingPromptIds.length > 0
+          ? new Map(
+              (
+                await this.session.client
+                  .getMessagesByIds(conversationId, missingPromptIds)
+                  .catch(() => [])
+              )
+                .filter((m) => m.role === "user")
+                .map((m) => [m.id, m.content] as const),
+            )
+          : undefined;
+      if (stopReplay()) return false;
+
       const plan = planRestore({
         completedJobs: replayableJobs.map((j) => ({
           job_id: j.job_id,
@@ -1678,6 +1710,10 @@ export class StreamManager {
           id: m.id,
           content: m.content,
         })),
+        // Ids resolved outside the window. Present only when the window missed
+        // a turn's own prompt; an id in both places still uses the window's
+        // copy, so positional bookkeeping is untouched.
+        extraPrompts,
       });
 
       // Fetch every turn's events up front, in PARALLEL. The backend strips

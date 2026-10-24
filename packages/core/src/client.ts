@@ -784,6 +784,29 @@ export class AstralformClient {
     };
   }
 
+  /**
+   * Specific messages, by id, oldest-first.
+   *
+   * The restore path needs each turn's PROMPT, but it fetches messages in
+   * windows — and a turn that produced hundreds of messages pushes its own
+   * prompt outside the newest window (measured: 426 messages, prompt at seq 1,
+   * window 387-426). Fetching by id is what closes that gap without loading the
+   * branch. Ids that are not on the active branch are absent from the result;
+   * the caller treats a missing id as "no prompt", never as an error.
+   */
+  async getMessagesByIds(
+    conversationId: string,
+    messageIds: readonly string[],
+  ): Promise<Message[]> {
+    if (messageIds.length === 0) return [];
+    const params = new URLSearchParams();
+    for (const id of messageIds) params.append("message_ids", id);
+    const raw = await this.get<RawMessage[]>(
+      `/v1/conversations/${encodeURIComponent(conversationId)}/messages?${params}`,
+    );
+    return raw.map(toMessage);
+  }
+
   async getMessages(conversationId: string): Promise<Message[]> {
     const raw = await this.get<RawMessage[]>(
       `/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
