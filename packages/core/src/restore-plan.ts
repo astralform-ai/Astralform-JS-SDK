@@ -114,6 +114,18 @@ export function planRestore(args: {
    */
   heldMessageIds?: (string | null | undefined)[];
   userMessages: RestoreMessage[];
+  /**
+   * Prompts resolved OUTSIDE the fetched message window, keyed by message id.
+   *
+   * Turn paging and message paging are independent, so a turn can be in the
+   * page while its prompt is not: one turn of 426 messages put the prompt at
+   * seq 1 and the newest window at 387-426. Fetching those ids afterwards is
+   * what stops such a turn rendering headless — the reported "scrolled to the
+   * top and my message is not there". Only ids the caller could not find in
+   * `userMessages` belong here, and an id present in BOTH uses the window's
+   * copy, so the walk's positional bookkeeping is unaffected.
+   */
+  extraPrompts?: ReadonlyMap<string, string>;
 }): ReplayStep[] {
   const { completedJobs, runningJob, userMessages } = args;
   // The running turn sits after every completed one, which is where it belongs
@@ -134,6 +146,12 @@ export function planRestore(args: {
   /** The message index this job's prompt lives at, if it is visible. */
   const linkOf = (j: RestoreJob): number | undefined =>
     j.message_id ? byId.get(j.message_id) : undefined;
+  /** A prompt fetched by id because the message window did not contain it. */
+  const extraOf = (j: RestoreJob): string | undefined =>
+    j.message_id && args.extraPrompts ? args.extraPrompts.get(j.message_id) : undefined;
+  /** Whether this job's prompt is known at all (window or by-id fetch). */
+  const linked = (j: RestoreJob): boolean =>
+    linkOf(j) !== undefined || extraOf(j) !== undefined;
 
   // `slice`, not `jobs`: the caller hands this a PORTION of the walk (the
   // pre-cutover head, or the whole list), and reusing the outer name for
@@ -209,7 +227,7 @@ export function planRestore(args: {
   // a positional index string when a row has no id of its own), so a
   // presence check silently classifies every pre-link conversation as linked
   // and strips every prompt bubble from it.
-  const firstLinked = jobs.findIndex((j) => linkOf(j) !== undefined);
+  const firstLinked = jobs.findIndex(linked);
   if (firstLinked === -1) {
     // Nothing matches: the whole conversation predates the tagging.
     return positional(jobs, userMessages);
@@ -256,6 +274,16 @@ export function planRestore(args: {
     // continuation: its seed is deliberately hidden from the message list, so
     // it replays its events with no bubble — which is what the positional
     // version did by accident when it ran off the end of the messages.
+    const extra = extraOf(job);
+    if (extra !== undefined) {
+      steps.push({
+        kind: "turn",
+        jobId: job.job_id,
+        content: extra,
+        messageId: job.message_id ?? undefined,
+      });
+      continue;
+    }
     steps.push({ kind: "turn", jobId: job.job_id });
   }
 
