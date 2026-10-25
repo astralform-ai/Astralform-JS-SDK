@@ -195,6 +195,21 @@ describe("a parked background job is reconciled against the refreshed list", () 
     expect(manager.backgroundJobs.has("conv-a")).toBe(false);
   });
 
+  it("drops the entry when the row predates activeJobId", async () => {
+    // `Conversation.activeJobId` is `undefined` on servers older than the
+    // field, and the type documents BOTH null and absent as "not running".
+    // A row that cannot answer "is this job live?" is therefore not licence to
+    // keep a badge lit for ever — the whole point of reconciling.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-a")];
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+    expect(state.probes).toEqual([]);
+  });
+
   it("probes a parked conversation the page does not mention, and drops it when the job is gone", async () => {
     // A refresh reads page 1 only. A parked conversation outside it has no
     // row in hand, so the per-conversation probe — the same authority

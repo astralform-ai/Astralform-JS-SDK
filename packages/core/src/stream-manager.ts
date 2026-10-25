@@ -392,7 +392,7 @@ export class StreamManager {
     // stream that would otherwise announce the job's end. Reconcile the parked
     // entries against it — before the turn-end branch below, so consumers see
     // the map corrected in the same tick the page arrived.
-    if (event.type === "conversations_refreshed") {
+    if (event.type === ChatEventType.ConversationsRefreshed) {
       this.reconcileBackgroundJobs(event.conversations);
     }
 
