@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.13.0
+
+### Added
+
+- **`conversations_refreshed` ChatEvent** — emitted by `connect()` and `refreshConversations()` with the page the server just returned. Every row in it carries a fresh `activeJobId`, which is the only liveness answer a client gets for conversations it is not attached to; rows paged in earlier are absent and stay as stale as they were. SDK-local (`ChatEventType.ConversationsRefreshed`), not a wire event.
+
+### Fixed
+
+- **A parked background job no longer outlives its run.** `StreamManager.backgroundJobs` was written by a switch-away and by `deleteConversation`, and nothing ever consulted the server once the parked job's stream was detached — so an entry survived its job for the life of the page. Consumers reading the map as "work is happening" (astralform-chat's list-poll cadence and tab title both do) polled forever, one extra request every 25 s per open tab, and kept a running indicator on settled conversations. The map is now reconciled against server truth: a conversation row on a refreshed page keeps its entry only when `activeJobId` still names that job, and a parked conversation the page does not mention is answered by a single `getActiveJob` probe. A probe that errors leaves the entry alone — a network blip is not an answer — while a probe 404 drops it, because that endpoint reports "no live job" as a 200 with a null id, so 404 means the conversation itself is gone. Entries are never cancelled here — a job the server says is over has nothing left to cancel.
+
 ## 9.12.0
 
 ### Added

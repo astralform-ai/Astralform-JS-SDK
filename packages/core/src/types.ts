@@ -111,6 +111,9 @@ export const ChatEventType = {
   Connected: "connected",
   Disconnected: "disconnected",
 
+  // Conversation list (SDK-local, not wire)
+  ConversationsRefreshed: "conversations_refreshed",
+
   // Turn lifecycle
   MessageStart: "message_start",
   MessageStop: "message_stop",
@@ -382,6 +385,27 @@ export type ChatEvent =
   // Connection lifecycle
   | { type: "connected" }
   | { type: "disconnected" }
+
+  // Conversation list
+  | {
+      /**
+       * An authoritative conversation page was installed — by `connect()`'s
+       * re-seed, or by `refreshConversations()`.
+       *
+       * `conversations` is the page the server JUST returned, not the merged
+       * list. Every row in it is fresh, which is what makes its `activeJobId`
+       * usable as a per-row liveness answer; rows paged in earlier are absent
+       * and stay exactly as stale as they were, so their absence says nothing
+       * about whether work is running in them.
+       *
+       * Locally synthesized, like `connected` — not a wire event. It exists
+       * because the list is the only read that carries liveness for
+       * conversations this client is not attached to, and `StreamManager`
+       * reconciles its parked background jobs against precisely this answer.
+       */
+      type: "conversations_refreshed";
+      conversations: Conversation[];
+    }
 
   // Turn lifecycle
   | {

@@ -1,0 +1,310 @@
+import { describe, it, expect } from "vitest";
+import { ChatSession } from "../src/session.js";
+import {
+  StreamManager,
+  type StreamManagerEvent,
+} from "../src/stream-manager.js";
+
+/**
+ * A parked background job has to be forgotten when it ends.
+ *
+ * `_backgroundJobs` maps a conversation this instance left mid-turn to the job
+ * it left running there. Every mutation was local bookkeeping — park on
+ * switch-away, claim on switch-back, delete on conversation delete — and
+ * NOTHING consulted the server once the job's own stream was detached, so an
+ * entry outlived its run for the life of the page. Consumers read the map as a
+ * liveness signal (astralform-chat's list-poll cadence and tab title both key
+ * off it), so a stale entry means "working" forever: an extra list request
+ * every 25s per open tab, and a spinner on a settled conversation.
+ *
+ * The reconciliation point is the conversation list, which is the one read
+ * that already carries `activeJobId` per row. A refreshed page is an
+ * authoritative answer for every row it carries; a conversation the page does
+ * not mention is answered by the per-conversation probe the switch path
+ * already trusts.
+ */
+
+const baseConfig = {
+  apiKey: "test-key",
+  baseURL: "http://localhost:8000",
+  userId: "user-1",
+};
+
+function json(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** Let every pending fetch chain settle — microtasks alone are not enough,
+ *  since each mocked request resolves through several await points. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+}
+
+/** A promise plus its resolver, for holding one endpoint open. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    open = () => resolve();
+  });
+  return { wait, open };
+}
+
+function conversationRow(id: string, activeJobId?: string | null) {
+  return {
+    id,
+    title: id,
+    message_count: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...(activeJobId === undefined ? {} : { active_job_id: activeJobId }),
+  };
+}
+
+/**
+ * A backend where conversation A has a live turn held open on `events`.
+ *
+ * `activeJobs` is mutable on purpose: the switch-away has to see A idle (so
+ * the initial restore replays instead of reconnecting), and the refresh that
+ * follows has to be able to answer either way — the server's answer CHANGING
+ * is the whole subject of these tests.
+ */
+function scenario() {
+  const events = gate();
+  const activeJobs: Record<string, string | null> = {
+    "conv-a": null,
+    "conv-b": null,
+  };
+  const state = {
+    /** The body of the next `GET /v1/conversations?limit=…` refresh. */
+    page: [] as unknown[],
+    probes: [] as string[],
+    /** Status the active-job probe answers with — 200, 404, or 500. */
+    probeStatus: 200,
+    /** When set, the probe stays on the wire until it is opened. */
+    probeGate: null as { wait: Promise<void>; open: () => void } | null,
+    events,
+    activeJobs,
+  };
+
+  const fetch = async (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    // The list read, distinguished from the per-conversation reads below by
+    // the query string; both share the path prefix.
+    if (url.includes("/v1/conversations?")) return json(state.page);
+
+    const probe = /\/v1\/conversations\/([^/]+)\/active-job/.exec(url);
+    if (probe) {
+      const id = probe[1];
+      state.probes.push(id);
+      if (state.probeGate) await state.probeGate.wait;
+      if (state.probeStatus !== 200) {
+        return new Response(JSON.stringify({ detail: "nope" }), {
+          status: state.probeStatus,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return json({ job_id: activeJobs[id] ?? null, status: "none" });
+    }
+
+    if (url.includes("/v1/jobs/") && url.includes("/events")) {
+      await events.wait;
+      return new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    if (url.includes("/v1/jobs")) {
+      return json({
+        job_id: "job-a",
+        conversation_id: "conv-a",
+        message_id: "m1",
+        status: "queued",
+      });
+    }
+    return json([]);
+  };
+
+  return { state, fetch };
+}
+
+/**
+ * Park a live turn on A by switching to B mid-stream — the exact state that
+ * writes the map, and the one no path ever cleared.
+ */
+async function parkJobOnA() {
+  const s = scenario();
+  const session = new ChatSession({ ...baseConfig, fetch: s.fetch });
+  const manager = new StreamManager(session);
+
+  await manager.switchTo("conv-a");
+  void manager.send("start a turn on A");
+  await flush();
+  expect(manager.state).toBe("streaming");
+
+  await manager.switchTo("conv-b");
+  await flush();
+  expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+  // The switches above probed conv-a and conv-b to restore them; only probes
+  // from here on are reconciliation's.
+  s.state.probes.length = 0;
+  return { ...s, session, manager };
+}
+
+describe("a parked background job is reconciled against the refreshed list", () => {
+  it("drops the entry when the refreshed page reports no active job", async () => {
+    const { state, session, manager } = await parkJobOnA();
+    const seen: StreamManagerEvent[] = [];
+    manager.on((e) => seen.push(e));
+    // The server now says A is idle; the page is the authoritative answer and
+    // no per-conversation probe is needed for a row it carries.
+    state.page = [conversationRow("conv-a", null)];
+
+    await session.refreshConversations();
+
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+    expect(state.probes).toEqual([]);
+    const changes = seen.filter((e) => e.type === "backgroundJobsChanged");
+    expect(changes).toHaveLength(1);
+    expect(
+      changes[0].type === "backgroundJobsChanged" && changes[0].jobs.size,
+    ).toBe(0);
+  });
+
+  it("keeps the entry when the row still names that job as live", async () => {
+    const { state, session, manager } = await parkJobOnA();
+    const seen: StreamManagerEvent[] = [];
+    manager.on((e) => seen.push(e));
+    state.page = [conversationRow("conv-a", "job-a")];
+
+    await session.refreshConversations();
+
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+    expect(seen.some((e) => e.type === "backgroundJobsChanged")).toBe(false);
+    expect(state.probes).toEqual([]);
+  });
+
+  it("drops the entry when the row names a different job", async () => {
+    // The parked job is gone; a newer turn's job is what the server calls
+    // live. This instance parked nothing it can rejoin.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-a", "job-next")];
+
+    await session.refreshConversations();
+
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+  });
+
+  it("drops the entry when the row predates activeJobId", async () => {
+    // `Conversation.activeJobId` is `undefined` on servers older than the
+    // field, and the type documents BOTH null and absent as "not running".
+    // A row that cannot answer "is this job live?" is therefore not licence to
+    // keep a badge lit for ever — the whole point of reconciling.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-a")];
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+    expect(state.probes).toEqual([]);
+  });
+
+  it("probes a parked conversation the page does not mention, and drops it when the job is gone", async () => {
+    // A refresh reads page 1 only. A parked conversation outside it has no
+    // row in hand, so the per-conversation probe — the same authority
+    // `switchTo` trusts — is what answers for it.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.activeJobs["conv-a"] = null;
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(state.probes).toEqual(["conv-a"]);
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+  });
+
+  it("keeps it when that probe still names the parked job as live", async () => {
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.activeJobs["conv-a"] = "job-a";
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(state.probes).toEqual(["conv-a"]);
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+  });
+
+  it("keeps it when the probe cannot answer", async () => {
+    // A failed probe is not an answer: deleting on a network blip would drop
+    // the one record of a job the user can still switch back to. The entry
+    // stands until an authoritative read succeeds.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.probeStatus = 500;
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(state.probes).toEqual(["conv-a"]);
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+  });
+
+  it("drops it when the probe says the conversation is gone", async () => {
+    // A 404 is an answer, not a blip: this endpoint reports "no live job" as
+    // `200 {job_id: null}` for a conversation that exists, so 404 means the
+    // conversation itself was deleted — in another tab or on another device.
+    // Keeping the entry would 404 on every refresh for ever, which is exactly
+    // the permanent badge this reconciliation exists to remove.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.probeStatus = 404;
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(state.probes).toEqual(["conv-a"]);
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+  });
+
+  it("does not stack a second probe while one is still in flight", async () => {
+    // The list poll is on a fixed cadence, so a stalled probe must not add
+    // another request on every poll. Two refreshes landing inside one probe
+    // cost exactly one request, and the entry is still reconciled when that
+    // answer arrives.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.probeGate = gate();
+
+    void session.refreshConversations();
+    void session.refreshConversations();
+    await flush();
+    expect(state.probes).toEqual(["conv-a"]);
+
+    state.probeGate.open();
+    await flush();
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+
+    // The entry is gone, so a later poll costs nothing.
+    await session.refreshConversations();
+    await flush();
+    expect(state.probes).toEqual(["conv-a"]);
+  });
+
+  it("reconciles on a reconnect's re-seed too", async () => {
+    // `connect()` installs an authoritative page as well; a job that ended
+    // while the page was disconnected must not survive the reconnect.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-a", null)];
+
+    await session.connect();
+    await flush();
+
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+  });
+});
