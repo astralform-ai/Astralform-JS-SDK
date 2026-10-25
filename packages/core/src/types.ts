@@ -16,7 +16,7 @@ import type {
 } from "./custom-events.js";
 
 // Re-export so consumers can import from types.ts or custom-events.ts
-export type { AgentIdentity, MemoryRecord, TodoItem };
+export type { AgentIdentity, GoalAvailability, MemoryRecord, TodoItem };
 
 // --- Configuration ---
 //

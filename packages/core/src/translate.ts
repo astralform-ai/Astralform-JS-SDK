@@ -13,10 +13,12 @@ import type {
   WireBlockDeltaPayload,
   WireEvent,
 } from "./types.js";
-import type { AgentIdentity, MemoryRecord, TodoItem } from "./custom-events.js";
 import type {
+  AgentIdentity,
   GoalActionAvailability,
   GoalAvailability,
+  MemoryRecord,
+  TodoItem,
 } from "./custom-events.js";
 
 // --- Delta channels ---
