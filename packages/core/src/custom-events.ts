@@ -36,6 +36,29 @@ export interface TodoUpdatePayload {
   todos: TodoItem[];
 }
 
+/**
+ * One goal-control action's server-computed availability
+ * (`goal_progress.availability.pause|resume`).
+ *
+ * `allowed` is the ONLY bit a client may act on: render the control when it is
+ * true, and never infer it from `status` or `stopReason`. When false,
+ * `reasonCode` names why (`noGoalToPause`, `noGoalToResume`, `goalNotActive`,
+ * `goalNotPaused`, `goalBudgetExhausted`, …). A code this SDK version does not
+ * know still means "do not act" — a client keeps the control hidden rather
+ * than guessing a state the server did not describe.
+ */
+export interface GoalActionAvailability {
+  allowed: boolean;
+  reasonCode?: string | null;
+}
+
+/** The pause/resume availability a goal snapshot carries, computed by the
+ *  backend from the goal's true status and budget. */
+export interface GoalAvailability {
+  pause: GoalActionAvailability;
+  resume: GoalActionAvailability;
+}
+
 /** A goal's full snapshot after a run settled. One frame, not three —
  *  `status` + `settled` + the verdict carry what separate created/settled
  *  frames would, without a correlation key. */
@@ -58,6 +81,10 @@ export interface GoalProgressPayload {
    *  so a client renders "Paused — budget reached (max_tokens)" with a
    *  raise-and-resume affordance rather than a dead resume. */
   budgetExhaustedDimension?: string | null;
+  /** Server-computed pause/resume availability — the whole contract for the
+   *  goal control. Null when the server predates the field; a client then
+   *  renders no control rather than deriving one from `status`. */
+  availability?: GoalAvailability | null;
 }
 
 /** Cumulative in-flight usage for a long turn (long-horizon phase 3): the
