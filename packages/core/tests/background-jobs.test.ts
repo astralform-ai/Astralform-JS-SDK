@@ -83,6 +83,8 @@ function scenario() {
     probes: [] as string[],
     /** Status the active-job probe answers with — 200, 404, or 500. */
     probeStatus: 200,
+    /** When set, the probe stays on the wire until it is opened. */
+    probeGate: null as { wait: Promise<void>; open: () => void } | null,
     events,
     activeJobs,
   };
@@ -98,6 +100,7 @@ function scenario() {
     if (probe) {
       const id = probe[1];
       state.probes.push(id);
+      if (state.probeGate) await state.probeGate.wait;
       if (state.probeStatus !== 200) {
         return new Response(JSON.stringify({ detail: "nope" }), {
           status: state.probeStatus,
@@ -267,6 +270,30 @@ describe("a parked background job is reconciled against the refreshed list", () 
 
     expect(state.probes).toEqual(["conv-a"]);
     expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+  });
+
+  it("does not stack a second probe while one is still in flight", async () => {
+    // The list poll is on a fixed cadence, so a stalled probe must not add
+    // another request on every poll. Two refreshes landing inside one probe
+    // cost exactly one request, and the entry is still reconciled when that
+    // answer arrives.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.probeGate = gate();
+
+    void session.refreshConversations();
+    void session.refreshConversations();
+    await flush();
+    expect(state.probes).toEqual(["conv-a"]);
+
+    state.probeGate.open();
+    await flush();
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
+
+    // The entry is gone, so a later poll costs nothing.
+    await session.refreshConversations();
+    await flush();
+    expect(state.probes).toEqual(["conv-a"]);
   });
 
   it("reconciles on a reconnect's re-seed too", async () => {
