@@ -577,6 +577,10 @@ describe("the goal progress frame", () => {
   });
 
   it("defaults a sparse frame rather than crashing", () => {
+    // A server that predates `availability` sends no field at all: the
+    // descriptor must read null (the client renders no control), not crash or
+    // fabricate one. This is the absent half of the CHANGELOG's
+    // "missing or malformed → null" promise.
     const ev = translateCustomEvent("goal_progress", { goal_id: "g1" });
     expect(ev).toMatchObject({
       type: "goal_progress",
@@ -584,6 +588,7 @@ describe("the goal progress frame", () => {
       status: "unknown",
       settled: false,
       continuationCount: 0,
+      availability: null,
     });
   });
 
