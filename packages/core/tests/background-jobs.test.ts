@@ -81,6 +81,8 @@ function scenario() {
     /** The body of the next `GET /v1/conversations?limit=…` refresh. */
     page: [] as unknown[],
     probes: [] as string[],
+    /** When true the active-job probe answers 500, like a network failure. */
+    failProbes: false,
     events,
     activeJobs,
   };
@@ -96,6 +98,12 @@ function scenario() {
     if (probe) {
       const id = probe[1];
       state.probes.push(id);
+      if (state.failProbes) {
+        return new Response(JSON.stringify({ detail: "boom" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return json({ job_id: activeJobs[id] ?? null, status: "none" });
     }
 
@@ -206,6 +214,21 @@ describe("a parked background job is reconciled against the refreshed list", () 
     const { state, session, manager } = await parkJobOnA();
     state.page = [conversationRow("conv-b", null)];
     state.activeJobs["conv-a"] = "job-a";
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(state.probes).toEqual(["conv-a"]);
+    expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+  });
+
+  it("keeps it when the probe cannot answer", async () => {
+    // A failed probe is not an answer: deleting on a network blip would drop
+    // the one record of a job the user can still switch back to. The entry
+    // stands until an authoritative read succeeds.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.failProbes = true;
 
     await session.refreshConversations();
     await flush();
