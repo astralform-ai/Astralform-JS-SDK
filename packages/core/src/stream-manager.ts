@@ -19,6 +19,7 @@
  */
 import { planRestore } from "./restore-plan";
 
+import { ServerError } from "./errors";
 import type { ChatEvent, Conversation, ModelChoiceOptions } from "./types.js";
 import { ChatEventType } from "./types.js";
 import type { ChatSession } from "./session.js";
@@ -1079,11 +1080,14 @@ export class StreamManager {
    * Ask the server whether one parked job is still the conversation's live
    * job, and drop the entry when it is not.
    *
-   * Errors leave the entry alone — the same best-effort rule `restore`'s probe
-   * follows, where a failed `getActiveJob` reads as "no active job" for the
-   * RECONNECT decision but must not be mistaken for an authoritative "ended"
-   * here, because deleting on a network blip loses the one record of a job the
-   * user can still switch back to.
+   * A FAILED probe leaves the entry alone, because deleting on a network blip
+   * would lose the one record of a job the user can still switch back to. A
+   * 404 is not that: the endpoint answers "no live job" with `200 {job_id:
+   * null}` for a conversation that exists, so a 404 is the server saying the
+   * conversation is gone — and the entry must go with it. Keeping it would
+   * re-probe 404 on every refresh for ever, which is the permanent-badge harm
+   * this reconciliation exists to end, reached through the path a tab that
+   * deleted the conversation elsewhere creates.
    */
   private async probeParkedJob(
     conversationId: string,
@@ -1097,8 +1101,11 @@ export class StreamManager {
       try {
         activeJobId = (await this.session.client.getActiveJob(conversationId))
           .jobId;
-      } catch {
-        return;
+      } catch (err) {
+        if (!(err instanceof ServerError && err.status === 404)) return;
+        // Authoritative: nothing to rejoin on a conversation that no longer
+        // exists. Fall through to the delete the comparison below performs.
+        activeJobId = null;
       }
       // Re-read after the await. A switch may have claimed the job (entry
       // deleted), the conversation may have been deleted, or a newer turn may

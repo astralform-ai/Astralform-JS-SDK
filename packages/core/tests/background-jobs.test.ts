@@ -81,8 +81,8 @@ function scenario() {
     /** The body of the next `GET /v1/conversations?limit=…` refresh. */
     page: [] as unknown[],
     probes: [] as string[],
-    /** When true the active-job probe answers 500, like a network failure. */
-    failProbes: false,
+    /** Status the active-job probe answers with — 200, 404, or 500. */
+    probeStatus: 200,
     events,
     activeJobs,
   };
@@ -98,9 +98,9 @@ function scenario() {
     if (probe) {
       const id = probe[1];
       state.probes.push(id);
-      if (state.failProbes) {
-        return new Response(JSON.stringify({ detail: "boom" }), {
-          status: 500,
+      if (state.probeStatus !== 200) {
+        return new Response(JSON.stringify({ detail: "nope" }), {
+          status: state.probeStatus,
           headers: { "Content-Type": "application/json" },
         });
       }
@@ -228,13 +228,30 @@ describe("a parked background job is reconciled against the refreshed list", () 
     // stands until an authoritative read succeeds.
     const { state, session, manager } = await parkJobOnA();
     state.page = [conversationRow("conv-b", null)];
-    state.failProbes = true;
+    state.probeStatus = 500;
 
     await session.refreshConversations();
     await flush();
 
     expect(state.probes).toEqual(["conv-a"]);
     expect(manager.backgroundJobs.get("conv-a")).toBe("job-a");
+  });
+
+  it("drops it when the probe says the conversation is gone", async () => {
+    // A 404 is an answer, not a blip: this endpoint reports "no live job" as
+    // `200 {job_id: null}` for a conversation that exists, so 404 means the
+    // conversation itself was deleted — in another tab or on another device.
+    // Keeping the entry would 404 on every refresh for ever, which is exactly
+    // the permanent badge this reconciliation exists to remove.
+    const { state, session, manager } = await parkJobOnA();
+    state.page = [conversationRow("conv-b", null)];
+    state.probeStatus = 404;
+
+    await session.refreshConversations();
+    await flush();
+
+    expect(state.probes).toEqual(["conv-a"]);
+    expect(manager.backgroundJobs.has("conv-a")).toBe(false);
   });
 
   it("reconciles on a reconnect's re-seed too", async () => {
