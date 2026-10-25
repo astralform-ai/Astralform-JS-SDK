@@ -91,6 +91,8 @@ export type {
   TodoItem,
   TodoUpdatePayload,
   GoalProgressPayload,
+  GoalActionAvailability,
+  GoalAvailability,
   PlanUpdatePayload,
   NoteUpdatePayload,
   TitleGeneratedPayload,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.12.0
+
+### Added
+
+- **`goal_progress.availability` — the server-computed goal-control contract.** `availability.pause` and `availability.resume` each carry `{allowed, reasonCode?}` (`GoalActionAvailability` / `GoalAvailability`), the ONLY source a client may use to render a Pause or Resume control: `status` and `stopReason` no longer decide it. `reasonCode` is forwarded verbatim, including codes this SDK predates, so a newer server can extend the vocabulary without a client release; a missing or malformed descriptor translates to `null` (no control) rather than half a contract.
+
 ## 9.11.0
 
 ### Added

@@ -529,6 +529,10 @@ describe("the goal progress frame", () => {
       verdict: null,
       blocker: null,
       stop_reason: null,
+      availability: {
+        pause: { allowed: true },
+        resume: { allowed: false, reasonCode: "goalNotPaused" },
+      },
     });
     expect(ev).toEqual({
       type: "goal_progress",
@@ -545,6 +549,10 @@ describe("the goal progress frame", () => {
       blocker: null,
       stopReason: null,
       budgetExhaustedDimension: null,
+      availability: {
+        pause: { allowed: true },
+        resume: { allowed: false, reasonCode: "goalNotPaused" },
+      },
     });
   });
 
@@ -577,6 +585,40 @@ describe("the goal progress frame", () => {
       settled: false,
       continuationCount: 0,
     });
+  });
+
+  it("forwards an unknown future reason code instead of dropping it", () => {
+    // The SDK is a transport here, not a policy: whether a code is renderable
+    // is the CLIENT's decision (chat keeps the control hidden), and a code
+    // this SDK predates must still reach it.
+    const ev = translateCustomEvent("goal_progress", {
+      goal_id: "g1",
+      availability: {
+        pause: { allowed: false, reasonCode: "goalScheduledForTomorrow" },
+        resume: { allowed: true },
+      },
+    });
+    expect(ev).toMatchObject({
+      availability: {
+        pause: { allowed: false, reasonCode: "goalScheduledForTomorrow" },
+        resume: { allowed: true },
+      },
+    });
+  });
+
+  it("nulls a malformed availability descriptor rather than half-forwarding it", () => {
+    // Half a contract cannot be acted on; the client renders no control.
+    for (const availability of [
+      "paused",
+      { pause: { allowed: true } },
+      { pause: { allowed: true }, resume: { reasonCode: "goalNotPaused" } },
+    ]) {
+      const ev = translateCustomEvent("goal_progress", {
+        goal_id: "g1",
+        availability,
+      });
+      expect(ev).toMatchObject({ availability: null });
+    }
   });
 });
 

@@ -8,7 +8,12 @@
 //
 // Custom event payloads live in `custom-events.ts`.
 
-import type { AgentIdentity, MemoryRecord, TodoItem } from "./custom-events.js";
+import type {
+  AgentIdentity,
+  GoalAvailability,
+  MemoryRecord,
+  TodoItem,
+} from "./custom-events.js";
 
 // Re-export so consumers can import from types.ts or custom-events.ts
 export type { AgentIdentity, MemoryRecord, TodoItem };
@@ -483,6 +488,11 @@ export type ChatEvent =
        *  `goal_budget_exhausted` — the field a raise-and-resume affordance
        *  moves. Null when the goal did not stand down on budget. */
       budgetExhaustedDimension?: string | null;
+      /** Server-computed pause/resume availability (chat #360). The control
+       *  renders from `allowed` and words its disabled reasons from
+       *  `reasonCode`; `status`/`stopReason` never decide it. Null/absent from
+       *  a server that predates the field. */
+      availability?: GoalAvailability | null;
     }
   /** Cumulative in-flight usage for a long turn: emitted every ~10 rounds plus
    *  a final frame reconciling with the terminal `message_stop`. Token totals,

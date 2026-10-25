@@ -14,6 +14,10 @@ import type {
   WireEvent,
 } from "./types.js";
 import type { AgentIdentity, MemoryRecord, TodoItem } from "./custom-events.js";
+import type {
+  GoalActionAvailability,
+  GoalAvailability,
+} from "./custom-events.js";
 
 // --- Delta channels ---
 
@@ -97,6 +101,36 @@ function optionalNumber(value: unknown): number | undefined {
 }
 
 /**
+ * One goal-control action's availability, preserved with the server's own
+ * vocabulary. `reasonCode` is deliberately not narrowed to a union: a code this
+ * SDK predates must reach the consumer, which hides the control, instead of
+ * being dropped (or worse, read as its own guess).
+ */
+function translateGoalAction(value: unknown): GoalActionAvailability | null {
+  if (value == null || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.allowed !== "boolean") return null;
+  const reasonCode = optionalString(raw.reasonCode);
+  return reasonCode === undefined
+    ? { allowed: raw.allowed }
+    : { allowed: raw.allowed, reasonCode };
+}
+
+/**
+ * The goal's pause/resume availability. A descriptor missing either side is
+ * null as a whole: half a contract is not something a client may act on, and
+ * a null renders no control.
+ */
+function translateGoalAvailability(value: unknown): GoalAvailability | null {
+  if (value == null || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const pause = translateGoalAction(raw.pause);
+  const resume = translateGoalAction(raw.resume);
+  if (!pause || !resume) return null;
+  return { pause, resume };
+}
+
+/**
  * Translate a wire TodoItem (snake_case — `active_form`, `blocked_by`,
  * mirroring `backend/src/stream/protocol.py`) into the consumer-facing
  * camelCase shape. The backend emits todos exactly as the payload catalog
@@ -162,6 +196,7 @@ export function translateCustomEvent(
         blocker: optionalString(data.blocker) ?? null,
         stopReason: optionalString(data.stop_reason) ?? null,
         budgetExhaustedDimension: optionalString(data.budget_exhausted_dimension) ?? null,
+        availability: translateGoalAvailability(data.availability),
       };
     case "usage_snapshot":
       // Long-horizon phase 3: cumulative in-flight usage for a long turn.
