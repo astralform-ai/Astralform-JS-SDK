@@ -19,7 +19,7 @@
  */
 import { planRestore } from "./restore-plan";
 
-import type { ChatEvent, ModelChoiceOptions } from "./types.js";
+import type { ChatEvent, Conversation, ModelChoiceOptions } from "./types.js";
 import { ChatEventType } from "./types.js";
 import type { ChatSession } from "./session.js";
 
@@ -159,6 +159,12 @@ export type StreamManagerEvent =
     }
   | { type: "conversationChanged"; conversationId: string | null }
   | {
+      /**
+       * The parked-job map changed: a turn was parked by a switch-away, an
+       * entry was claimed by a switch-back, a conversation was deleted, or a
+       * reconcile against server truth dropped entries whose jobs are no
+       * longer live. Always the CURRENT map, never a diff.
+       */
       type: "backgroundJobsChanged";
       jobs: ReadonlyMap<string, string>;
     }
@@ -224,7 +230,28 @@ export class StreamManager {
 
   private _state: StreamState = "idle";
   private _activeConversationId: string | null = null;
+  /**
+   * Conversations this instance left mid-turn, and the job it left running
+   * there.
+   *
+   * A list of jobs this instance may still be able to re-attach to — NOT a
+   * record of what ran. Every entry is reconciled against server truth (see
+   * `reconcileBackgroundJobs`), because nothing here observes a parked job's
+   * own terminal event: detaching the stream is what parking MEANS. Before
+   * that reconciliation existed an entry outlived its run for the life of the
+   * page, and consumers reading the map as a liveness signal polled the
+   * conversation list forever and spun settled conversations.
+   */
   private _backgroundJobs = new Map<string, string>();
+  /**
+   * `"<conversationId>\0<jobId>"` keys whose reconciling probe is on the wire.
+   *
+   * A parked conversation the refreshed page does not mention costs one
+   * `getActiveJob`; without this a stalled request would stack another probe
+   * on every poll. The key carries the job id, so a newer park of the same
+   * conversation is still probed rather than suppressed.
+   */
+  private probingBackgroundJobs = new Set<string>();
   private handlers: EventHandler[] = [];
   private unsub: (() => void) | null = null;
   /**
@@ -263,6 +290,19 @@ export class StreamManager {
     return this._activeConversationId;
   }
 
+  /**
+   * Conversations with a job this instance parked by switching away mid-turn,
+   * keyed by conversation id.
+   *
+   * LIVE, not historical: an entry goes away as soon as an authoritative read
+   * contradicts it — the conversation list's `activeJobId` on a refresh or a
+   * reconnect, a `getActiveJob` probe for a conversation that page did not
+   * mention, a switch back to it, or a delete. So a non-empty map means "last
+   * known running", and the staleness bound is the caller's refresh cadence: a
+   * consumer that never calls `refreshConversations()` never learns a job
+   * ended. The ACTIVE conversation's own turn is `state` /
+   * `session.isStreaming`, not this map.
+   */
   get backgroundJobs(): ReadonlyMap<string, string> {
     return this._backgroundJobs;
   }
@@ -345,6 +385,15 @@ export class StreamManager {
       conversationId: convId,
       event,
     });
+
+    // A conversation page is the only read that carries liveness for
+    // conversations this client is NOT attached to, and parking detaches the
+    // stream that would otherwise announce the job's end. Reconcile the parked
+    // entries against it — before the turn-end branch below, so consumers see
+    // the map corrected in the same tick the page arrived.
+    if (event.type === "conversations_refreshed") {
+      this.reconcileBackgroundJobs(event.conversations);
+    }
 
     // Handle completion — message_stop is the terminal turn event.
     if (event.type === ChatEventType.MessageStop) {
@@ -944,6 +993,7 @@ export class StreamManager {
       this.unsub = null;
     }
     this.handlers = [];
+    this.probingBackgroundJobs.clear();
   }
 
   // ── Internal: helpers ──────────────────────────────────────────
@@ -979,6 +1029,89 @@ export class StreamManager {
     // a `streaming` state seen there afterwards belongs to a NEW send that
     // landed during the caller's own awaits, which owns its own announcement.
     this._state = "idle";
+  }
+
+  /**
+   * Drop parked entries an authoritative conversation page contradicts.
+   *
+   * The map has no terminal-event path: parking detaches the job's stream, so
+   * nothing in this instance ever hears how the job ended. Server truth is the
+   * only answer, and the conversation list is the one read that carries it per
+   * row.
+   *
+   * Two sources, because one page cannot answer for every entry:
+   *
+   *  - **A row on this page** — its `activeJobId` is the server's answer RIGHT
+   *    NOW. Same id → the job is still live, keep it; anything else (a
+   *    different job, `null`, or absent on a server that predates the field,
+   *    all of which `Conversation.activeJobId` documents as "not running") →
+   *    the job this instance parked is gone.
+   *  - **No row** — `refreshConversations` reads page 1 only, so an older
+   *    parked conversation is simply not described here, which is NOT the same
+   *    answer as "idle". Probe that one conversation; `switchTo` already
+   *    trusts exactly this endpoint for the same question.
+   *
+   * Never cancels: an entry is dropped only when the server says that job is
+   * not live, and a job that is already over has nothing to cancel.
+   */
+  private reconcileBackgroundJobs(page: readonly Conversation[]): void {
+    if (this._backgroundJobs.size === 0) return;
+    const rows = new Map(page.map((c) => [c.id, c] as const));
+    let changed = false;
+    // Snapshot: the probe path does not delete synchronously, but the map may
+    // still be mutated by a re-entrant handler while this loop emits below.
+    for (const [conversationId, parkedJobId] of [...this._backgroundJobs]) {
+      const row = rows.get(conversationId);
+      if (row === undefined) {
+        void this.probeParkedJob(conversationId, parkedJobId);
+        continue;
+      }
+      if (row.activeJobId === parkedJobId) continue;
+      this._backgroundJobs.delete(conversationId);
+      changed = true;
+    }
+    if (changed) {
+      this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
+    }
+  }
+
+  /**
+   * Ask the server whether one parked job is still the conversation's live
+   * job, and drop the entry when it is not.
+   *
+   * Errors leave the entry alone — the same best-effort rule `restore`'s probe
+   * follows, where a failed `getActiveJob` reads as "no active job" for the
+   * RECONNECT decision but must not be mistaken for an authoritative "ended"
+   * here, because deleting on a network blip loses the one record of a job the
+   * user can still switch back to.
+   */
+  private async probeParkedJob(
+    conversationId: string,
+    parkedJobId: string,
+  ): Promise<void> {
+    const key = `${conversationId}\u0000${parkedJobId}`;
+    if (this.probingBackgroundJobs.has(key)) return;
+    this.probingBackgroundJobs.add(key);
+    try {
+      let activeJobId: string | null;
+      try {
+        activeJobId = (await this.session.client.getActiveJob(conversationId))
+          .jobId;
+      } catch {
+        return;
+      }
+      // Re-read after the await. A switch may have claimed the job (entry
+      // deleted), the conversation may have been deleted, or a newer turn may
+      // have parked a DIFFERENT job under the same id — only the exact entry
+      // this probe asked about may be dropped, and only by this probe.
+      if (this._backgroundJobs.get(conversationId) !== parkedJobId) return;
+      if (activeJobId === parkedJobId) return;
+      if (this._backgroundJobs.delete(conversationId)) {
+        this.emit({ type: "backgroundJobsChanged", jobs: this._backgroundJobs });
+      }
+    } finally {
+      this.probingBackgroundJobs.delete(key);
+    }
   }
 
   /**

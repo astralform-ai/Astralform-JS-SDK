@@ -322,6 +322,14 @@ export class ChatSession {
       );
       this.hasMoreConversations =
         conversations.value.length === CONVERSATION_PAGE_SIZE;
+      // A re-seed is as authoritative as a refresh: `activeJobId` on these
+      // rows is the server's answer NOW. `StreamManager` reconciles its parked
+      // background jobs against it, so a job that ended while this page was
+      // away does not survive the reconnect.
+      this.emit({
+        type: "conversations_refreshed",
+        conversations: conversations.value,
+      });
     }
     if (agents.status === "fulfilled") {
       this.agents = agents.value;
@@ -1650,6 +1658,11 @@ export class ChatSession {
       this.serverConversationIds.add(c.id);
       known.delete(c.id);
     }
+    // AFTER the merge, so a handler reading `conversations` sees the list this
+    // page produced. The payload is the PAGE, not the merged array: only these
+    // rows were re-read, and offering the stale tail as if it were fresh is
+    // exactly the misreading this event exists to end.
+    this.emit({ type: "conversations_refreshed", conversations: page });
     return page;
   }
 
