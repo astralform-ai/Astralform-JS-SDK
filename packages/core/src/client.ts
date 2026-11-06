@@ -45,6 +45,7 @@ import type {
   VoiceTranscribeOptions,
   VoiceTranscript,
   HarnessIdentity,
+  HarnessCatalogEntry,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.astralform.ai";
@@ -234,6 +235,18 @@ export interface ConversationJob {
    * turn still carried them and its bubble should still show them.
    */
   attachments?: ConversationJobAttachment[] | null;
+  /**
+   * The executor identity this turn was pinned to at admission, from the
+   * stored job snapshot only. Absent/null when the job predates selection
+   * or the server does not project it.
+   */
+  harness?: HarnessIdentity | null;
+  /**
+   * The admitted executor's execution-feature snapshot, from the stored job
+   * row only. Null when the job is historical or carries no snapshot;
+   * absent on servers without harness selection. Never inferred.
+   */
+  supported_features?: string[] | null;
 }
 
 /**
@@ -1491,6 +1504,25 @@ export class AstralformClient {
     },
   };
 
+  // --- Harness catalog ---
+
+  /**
+   * Harness releases the authenticated agent may admit
+   * (`GET /v1/me/harness-catalog`).
+   *
+   * Only published, runnable releases. `supported_features` on each entry
+   * is the authoritative per-release execution-feature set; `capabilities`
+   * is not execution features. `is_default` marks the agent's configured
+   * default (or the latest published astralform when no explicit default
+   * exists) — and since only runnable entries are admitted, the catalog may
+   * carry NO default at all. A catalog choice is not an admitted identity:
+   * the job's `harness` is the only executor record. Never infer one from
+   * `profile`.
+   */
+  async getHarnessCatalog(): Promise<HarnessCatalogEntry[]> {
+    return this.get<HarnessCatalogEntry[]>("/v1/me/harness-catalog");
+  }
+
   // --- Jobs API ---
 
   async createJob(request: ChatStreamRequest): Promise<JobCreateResponse> {
@@ -1520,6 +1552,7 @@ export class AstralformClient {
       job_id: string;
       status: string;
       harness?: HarnessIdentity | null;
+      supported_features?: string[] | null;
       created_at?: string | null;
       started_at?: string | null;
       completed_at?: string | null;
@@ -1537,6 +1570,7 @@ export class AstralformClient {
       inputTokens: raw.input_tokens ?? 0,
       outputTokens: raw.output_tokens ?? 0,
       harness: raw.harness ?? null,
+      supportedFeatures: raw.supported_features ?? null,
     };
   }
 

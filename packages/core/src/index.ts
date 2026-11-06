@@ -189,6 +189,7 @@ export type {
   ToolSource,
   JobCreateResponse,
   HarnessIdentity,
+  HarnessCatalogEntry,
   JobStatus,
   JobSummary,
   ActiveJob,

@@ -102,6 +102,18 @@ export interface SendOptions extends ModelChoiceOptions {
    * without it is no longer a 400. Astralform >= 0.69.46.
    */
   repository?: string;
+  /**
+   * Initial harness release for a NEW conversation (immutable once pinned).
+   * Passed through to the session verbatim; omitted, the key is absent and
+   * the agent's configured default applies. A different release on a pinned
+   * conversation is refused (409) — create a new conversation to switch.
+   */
+  harnessReleaseId?: string;
+  /**
+   * Initial release configuration, passed through verbatim and validated
+   * against the release's schema at admission.
+   */
+  harnessConfiguration?: Record<string, unknown>;
 }
 
 export type StreamManagerEvent =

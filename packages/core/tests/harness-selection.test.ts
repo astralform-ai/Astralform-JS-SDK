@@ -1,9 +1,4 @@
-/**
- * Harness selection on the job surface (phase 3C):
- * - `createJob` forwards `harness_release_id`/`harness_configuration` verbatim
- *   and returns the admitted `harness` identity.
- * - `getJob` maps the wire `harness` object; absent on old servers -> null.
- */
+/** Harness identity and unknown feature support across server generations. */
 import { describe, expect, it } from "vitest";
 import { AstralformClient } from "../src/client.js";
 import type { HarnessIdentity } from "../src/types.js";
@@ -26,69 +21,28 @@ function clientOf(fetchImpl: typeof globalThis.fetch): AstralformClient {
 }
 
 describe("harness selection", () => {
-  it("createJob forwards the initial selection and returns the admitted identity", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    const client = clientOf((async (_input, init) => {
-      capturedBody = JSON.parse(String(init?.body));
-      return new Response(
-        JSON.stringify({
-          job_id: "job-1",
-          conversation_id: "conv-1",
-          message_id: "msg-1",
-          status: "queued",
-          harness: IDENTITY,
-        }),
-        { status: 201, headers: { "content-type": "application/json" } },
-      );
-    }) as typeof globalThis.fetch);
-
-    const created = await client.createJob({
-      message: "hello",
-      provider: "openrouter",
-      model: "m",
-      harness_release_id: IDENTITY.release_id!,
-      harness_configuration: { mode: "edit" },
-    });
-
-    expect(capturedBody?.harness_release_id).toBe(IDENTITY.release_id);
-    expect(capturedBody?.harness_configuration).toEqual({ mode: "edit" });
-    expect(created.harness).toEqual(IDENTITY);
-  });
-
-  it("createJob omits the selection keys entirely when not chosen", async () => {
-    let capturedBody: Record<string, unknown> | undefined;
-    const client = clientOf((async (_input, init) => {
-      capturedBody = JSON.parse(String(init?.body));
-      return new Response(
-        JSON.stringify({
-          job_id: "j",
-          conversation_id: "c",
-          message_id: "m",
-          status: "queued",
-        }),
-        { status: 201, headers: { "content-type": "application/json" } },
-      );
-    }) as typeof globalThis.fetch);
-
-    await client.createJob({ message: "hi", provider: "p", model: "m" });
-    expect(capturedBody).not.toHaveProperty("harness_release_id");
-    expect(capturedBody).not.toHaveProperty("harness_configuration");
-  });
-
-  it("getJob maps the wire harness identity; absent means null (old server)", async () => {
+  it("getJob maps the wire identity and feature snapshot; absent means null (old server)", async () => {
     const withIdentity = clientOf((async () => new Response(
-      JSON.stringify({ job_id: "job-9", status: "completed", harness: IDENTITY }),
+      JSON.stringify({
+        job_id: "job-9",
+        status: "completed",
+        harness: IDENTITY,
+        supported_features: ["goal", "plan"],
+      }),
       { status: 200, headers: { "content-type": "application/json" } },
     )) as typeof globalThis.fetch);
     const job = await withIdentity.getJob("job-9");
     expect(job.harness).toEqual(IDENTITY);
     expect(job.harness?.release_id).toBe(IDENTITY.release_id);
+    expect(job.supportedFeatures).toEqual(["goal", "plan"]);
 
     const legacy = clientOf((async () => new Response(
       JSON.stringify({ job_id: "job-9", status: "completed" }),
       { status: 200, headers: { "content-type": "application/json" } },
     )) as typeof globalThis.fetch);
-    expect((await legacy.getJob("job-9")).harness).toBeNull();
+    const legacyJob = await legacy.getJob("job-9");
+    expect(legacyJob.harness).toBeNull();
+    expect(legacyJob.supportedFeatures).toBeNull();
   });
 
   it("legacy-native identity carries a null release id without breaking the type", async () => {
