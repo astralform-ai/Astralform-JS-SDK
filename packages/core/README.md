@@ -316,6 +316,18 @@ await session.send("Research the latest on WebGPU", {
 });
 ```
 
+A new conversation may name its initial harness release (see
+`client.getHarnessCatalog()` for the choices). The pin is write-once: a
+different value on a pinned conversation is refused (409), so switching
+releases means starting a new conversation.
+
+```ts
+await session.send("Fix the flaky test", {
+  harnessReleaseId: "2578998f-f236-4edf-8721-8c7138db4e01",
+  harnessConfiguration: { mode: "edit" },
+});
+```
+
 ## Low-Level Client
 
 For direct API access without session state management:
@@ -335,6 +347,7 @@ const messages = await client.getMessages("conversation-id");
 const agents = await client.getAgents();
 const skills = await client.getSkills();
 const commands = await client.listSkillCommands();
+const catalog = await client.getHarnessCatalog();
 
 // Job-based streaming
 const job = await client.createJob({

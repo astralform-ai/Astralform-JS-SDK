@@ -956,6 +956,29 @@ export interface HarnessIdentity {
   legacy_native: boolean;
 }
 
+/**
+ * One runnable harness release, from `GET /v1/me/harness-catalog`.
+ *
+ * Only published releases the authenticated agent may actually admit — a
+ * catalog choice is what the caller ASKS for, never the admitted identity
+ * (that is `HarnessIdentity`, on the job). `supported_features` is the
+ * authoritative per-release execution-feature set (revision-aware);
+ * `capabilities` names the release's required capabilities and is NOT
+ * execution features. `is_default` marks the agent's configured default, or
+ * the latest published astralform when no explicit default exists — and
+ * since only runnable entries are admitted, the catalog may carry no
+ * default at all.
+ */
+export interface HarnessCatalogEntry {
+  slug: string;
+  release_id: string;
+  profile: string;
+  image_digest: string;
+  capabilities: string[];
+  supported_features: string[];
+  is_default: boolean;
+}
+
 export interface JobCreateResponse {
   job_id: string;
   conversation_id: string;
@@ -965,6 +988,13 @@ export interface JobCreateResponse {
    *  servers without harness selection — this response is passed through
    *  unmapped; getJob normalizes the same field to null. */
   harness?: HarnessIdentity | null;
+  /**
+   * The admitted executor's execution-feature snapshot. Null when the job
+   * predates snapshots; absent (undefined) on servers without harness
+   * selection — passed through unmapped, like `harness`. Never inferred
+   * from profile.
+   */
+  supported_features?: string[] | null;
 }
 
 export interface JobStatus {
@@ -980,6 +1010,12 @@ export interface JobStatus {
    *  servers without harness selection. Shipped with harness selection (2026-11);
    *  earlier servers omit the field. */
   harness: HarnessIdentity | null;
+  /**
+   * The admitted executor's execution-feature snapshot. Null when the job
+   * predates snapshots or the server omits the field. Never inferred from
+   * profile.
+   */
+  supportedFeatures: string[] | null;
 }
 
 export interface ActiveJob {
@@ -1603,6 +1639,23 @@ export interface SendOptions extends ModelChoiceOptions {
    * turn without it is no longer a 400. Astralform >= 0.69.46.
    */
   repository?: string;
+  /**
+   * Initial harness release for a NEW conversation (immutable once pinned).
+   *
+   * Passed to `harness_release_id` verbatim; omitted, the key is absent and
+   * the agent's configured default applies. Naming one on an existing
+   * conversation pinned to a different release is refused (409) — create a
+   * new conversation to switch. The SDK never defaults, reinterprets, or
+   * second-guesses this: a pin mismatch is the server's refusal, not a
+   * client-side decision.
+   */
+  harnessReleaseId?: string;
+  /**
+   * Initial release configuration, passed to `harness_configuration`
+   * verbatim and validated against the release's schema at admission. Later
+   * turns keep the pinned value; a different one is refused.
+   */
+  harnessConfiguration?: Record<string, unknown>;
 }
 
 /**

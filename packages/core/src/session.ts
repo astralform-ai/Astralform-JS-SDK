@@ -460,6 +460,13 @@ export class ChatSession {
       // The project this task belongs to, when it has one. Write-once
       // server-side: sent on every turn, honoured on the first.
       repository: options?.repository,
+      // Initial harness release + configuration for a NEW conversation,
+      // verbatim: absent options leave the keys out entirely (JSON drops
+      // undefined), never defaulted or reinterpreted here. The pin is
+      // immutable server-side — a different value on a pinned conversation
+      // is refused (409), not switched.
+      harness_release_id: options?.harnessReleaseId,
+      harness_configuration: options?.harnessConfiguration,
       // Per-request model choice (client-side model selection).
       provider: options?.provider,
       model: options?.model,
