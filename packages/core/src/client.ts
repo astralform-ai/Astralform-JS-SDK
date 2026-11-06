@@ -44,6 +44,7 @@ import type {
   VoicePolishRequest,
   VoiceTranscribeOptions,
   VoiceTranscript,
+  HarnessIdentity,
 } from "./types.js";
 
 const DEFAULT_BASE_URL = "https://api.astralform.ai";
@@ -1518,6 +1519,7 @@ export class AstralformClient {
     const raw = await this.get<{
       job_id: string;
       status: string;
+      harness?: HarnessIdentity | null;
       created_at?: string | null;
       started_at?: string | null;
       completed_at?: string | null;
@@ -1534,6 +1536,7 @@ export class AstralformClient {
       errorMessage: raw.error_message ?? null,
       inputTokens: raw.input_tokens ?? 0,
       outputTokens: raw.output_tokens ?? 0,
+      harness: raw.harness ?? null,
     };
   }
 
