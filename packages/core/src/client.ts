@@ -1518,6 +1518,12 @@ export class AstralformClient {
     const raw = await this.get<{
       job_id: string;
       status: string;
+      harness?: {
+        session_id: string;
+        release_id: string | null;
+        profile: string;
+        legacy_native: boolean;
+      } | null;
       created_at?: string | null;
       started_at?: string | null;
       completed_at?: string | null;
@@ -1534,6 +1540,7 @@ export class AstralformClient {
       errorMessage: raw.error_message ?? null,
       inputTokens: raw.input_tokens ?? 0,
       outputTokens: raw.output_tokens ?? 0,
+      harness: raw.harness ?? null,
     };
   }
 

@@ -942,11 +942,27 @@ export type SlashCommandSurface = "web" | "telegram" | "all";
 // Job and request types
 // =============================================================================
 
+/**
+ * The harness a job actually runs on — the effective executor identity recorded
+ * at admission. Never carries configuration or credentials. `legacy_native`
+ * marks a pre-selection conversation (unknown historical release); `release_id`
+ * is null only in that case. Astralform >= 0.70.
+ */
+export interface HarnessIdentity {
+  session_id: string;
+  release_id: string | null;
+  profile: string;
+  legacy_native: boolean;
+}
+
 export interface JobCreateResponse {
   job_id: string;
   conversation_id: string;
   message_id: string;
   status: string;
+  /** The admitted executor identity for this job. Null on servers without
+   *  harness selection. Astralform >= 0.70. */
+  harness?: HarnessIdentity | null;
 }
 
 export interface JobStatus {
@@ -958,6 +974,9 @@ export interface JobStatus {
   errorMessage: string | null;
   inputTokens: number;
   outputTokens: number;
+  /** The executor identity this job was pinned to at admission. Null on
+   *  servers without harness selection. Astralform >= 0.70. */
+  harness: HarnessIdentity | null;
 }
 
 export interface ActiveJob {
@@ -1072,6 +1091,19 @@ export interface ChatStreamRequest {
   repository?: string;
   mcp_manifest?: ToolDefinition[];
   enabled_mcp?: string[];
+  /**
+   * Initial harness release for a NEW conversation (immutable once pinned).
+   * Naming one on an existing conversation that was pinned to a different
+   * release is refused (409) — create a new conversation to switch. Omitted,
+   * the agent's configured default applies. Astralform >= 0.70.
+   */
+  harness_release_id?: string;
+  /**
+   * Initial release configuration, validated against the release's schema at
+   * admission. Later turns keep the pinned value; a different one is refused.
+   * Astralform >= 0.70.
+   */
+  harness_configuration?: Record<string, unknown>;
   continue_from_message?: string;
   resend_from?: string;
   upload_ids?: string[];
